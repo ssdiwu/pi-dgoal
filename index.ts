@@ -260,7 +260,6 @@ function parseCommand(args: string):
 
 async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) {
   if (!objective.trim()) {
-    ctx.ui.notify("用法：/dloop <goal>", "warning");
     return;
   }
 
@@ -276,51 +275,31 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   currentGoal = createGoal(objective.trim());
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify(`Dloop 已启动：${currentGoal.objective}`, "info");
   await sendPrompt(pi, ctx, buildStartPrompt(currentGoal));
 }
 
 function pauseGoal(ctx: LoopContext) {
-  if (!currentGoal) {
-    ctx.ui.notify("当前没有 loop。", "info");
-    return;
-  }
-  if (currentGoal.status !== "active") {
-    ctx.ui.notify(`当前 loop 状态是 ${currentGoal.status}，不能暂停。`, "warning");
-    return;
-  }
+  if (!currentGoal || currentGoal.status !== "active") return;
   cancelPendingContinuation();
   currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify("Dloop 已暂停。", "info");
 }
 
 async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
-  if (!currentGoal) {
-    ctx.ui.notify("当前没有 loop。", "info");
-    return;
-  }
-  if (currentGoal.status !== "paused") {
-    ctx.ui.notify(`当前 loop 状态是 ${currentGoal.status}，不能恢复。`, "warning");
-    return;
-  }
+  if (!currentGoal || currentGoal.status !== "paused") return;
   currentGoal = { ...currentGoal, status: "active", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify("Dloop 已恢复。", "info");
   await sendPrompt(pi, ctx, buildResumePrompt(currentGoal));
 }
 
 function clearGoal(ctx: LoopContext) {
   if (!currentGoal) {
     clearActiveGoal(ctx);
-    ctx.ui.notify("当前没有 loop。", "info");
     return;
   }
-  const objective = currentGoal.objective;
   clearActiveGoal(ctx);
-  ctx.ui.notify(`Dloop 已清除：${objective}`, "warning");
 }
 
 function showStatus(ctx: LoopContext) {
