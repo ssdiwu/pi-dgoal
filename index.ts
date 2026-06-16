@@ -99,8 +99,6 @@ const loopCompleteTool = defineTool({
       };
     }
 
-    ctx.ui.notify("Dloop 正在运行独立完成审核…", "info");
-
     let audit;
     try {
       audit = await runCompletionAuditor({
@@ -148,6 +146,7 @@ const loopCompleteTool = defineTool({
       };
     }
 
+    ctx.ui.notify("审核通过，Dloop 完成。", "info");
     finalizeGoal(ctx);
     return {
       content: [
