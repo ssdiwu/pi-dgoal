@@ -1,7 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import {
+  createAgentSession,
+  defineTool,
+  type ResourceLoader,
+} from "@earendil-works/pi-coding-agent";
+import { SessionManager } from "@earendil-works/pi-coding-agent";
+import { SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createExtensionRuntime } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+
+const AUDITOR_DISABLED = process.env.PI_DLOOP_NO_AUDIT === "1";
+const APPROVED_MARKER = "<APPROVED>";
+const REJECTED_MARKER = "<REJECTED>";
+const AUDITOR_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
 
 type LoopStatus = "active" | "paused" | "complete";
 
@@ -64,25 +76,86 @@ const loopCompleteTool = defineTool({
   }),
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const completedGoal = currentGoal;
-    if (completedGoal) {
-      currentGoal = { ...completedGoal, status: "complete", updatedAt: Date.now() };
-      persistGoal(currentGoal);
+    if (!completedGoal) {
+      return {
+        content: [
+          { type: "text", text: "No active /loops goal to complete." },
+        ],
+        details: { goal: undefined, summary: params.summary.trim(), verification: params.verification.trim() },
+        terminate: true,
+      };
     }
 
-    clearActiveGoal(ctx);
+    const summary = params.summary.trim();
+    const verification = params.verification.trim();
 
+    // 审核默认开启；PI_DLOOP_NO_AUDIT=1 逃生通道，直接放行。
+    if (AUDITOR_DISABLED) {
+      finalizeGoal(ctx);
+      return {
+        content: [
+          { type: "text", text: `Loop complete (audit skipped).\nSummary: ${summary}\nVerification: ${verification}` },
+        ],
+        details: { goal: completedGoal.objective, summary, verification, audited: false },
+        terminate: true,
+      };
+    }
+
+    ctx.ui.notify("Loops 正在运行独立完成审核…", "info");
+
+    let audit;
+    try {
+      audit = await runCompletionAuditor({
+        ctx: ctx as unknown as ExtensionContext,
+        goal: completedGoal,
+        summary,
+        verification,
+      });
+    } catch (error) {
+      // 审核器自身出错 → 安全暂停，不 fail-open，也不烧 token 死循环。
+      pauseOnAuditFailure(ctx, `审核器异常：${formatError(error)}`);
+      return {
+        content: [
+          { type: "text", text: `Audit failed to run; goal paused for review. Run /loops resume to continue and retry completion.\nError: ${formatError(error)}` },
+        ],
+        details: { goal: completedGoal.objective, summary, verification, auditError: formatError(error) },
+        terminate: true,
+      };
+    }
+
+    // 审核被用户中断（Esc）或没给出明确结论 → 同样安全暂停。
+    if (audit.aborted || (!audit.approved && !audit.output)) {
+      pauseOnAuditFailure(ctx, audit.aborted ? "审核被中断" : "审核无输出");
+      return {
+        content: [
+          { type: "text", text: `Audit did not produce a decision; goal paused. ${audit.output ? `\nReport: ${audit.output}` : ""}` },
+        ],
+        details: { goal: completedGoal.objective, summary, verification, auditAborted: audit.aborted },
+        terminate: true,
+      };
+    }
+
+    if (!audit.approved) {
+      // 审核未通过：目标保持 active，报告作为续跑注入，agent 继续修正。
+      ctx.ui.notify("审核未通过，目标保持 active，继续修正。", "warning");
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Audit REJECTED completion. The goal remains active. Fix the issues below and call loop_complete again when truly done.\n\nAudit report:\n${audit.output}`,
+          },
+        ],
+        details: { goal: completedGoal.objective, summary, verification, auditRejected: true, auditOutput: audit.output },
+        terminate: false,
+      };
+    }
+
+    finalizeGoal(ctx);
     return {
       content: [
-        {
-          type: "text",
-          text: `Loop complete.\nSummary: ${params.summary.trim()}\nVerification: ${params.verification.trim()}`,
-        },
+        { type: "text", text: `Loop complete. Audit APPROVED.\nSummary: ${summary}\nVerification: ${verification}` },
       ],
-      details: {
-        goal: completedGoal?.objective,
-        summary: params.summary.trim(),
-        verification: params.verification.trim(),
-      },
+      details: { goal: completedGoal.objective, summary, verification, audited: true, auditOutput: audit.output },
       terminate: true,
     };
   },
@@ -354,6 +427,167 @@ function clearActiveGoal(ctx: LoopContext) {
   currentGoal = undefined;
   persistGoal(null);
   ctx.ui.setStatus(STATUS_KEY, undefined);
+}
+
+// 完成并退出 loop。
+function finalizeGoal(ctx: LoopContext) {
+  const goal = currentGoal;
+  if (goal) {
+    currentGoal = { ...goal, status: "complete", updatedAt: Date.now() };
+    persistGoal(currentGoal);
+  }
+  cancelPendingContinuation();
+  currentGoal = undefined;
+  persistGoal(null);
+  ctx.ui.setStatus(STATUS_KEY, undefined);
+}
+
+// 审核器出错 / 被中断 / 无结论：安全暂停，避免 fail-open 或烧 token 死循环。
+function pauseOnAuditFailure(ctx: LoopContext, reason: string) {
+  if (!currentGoal) return;
+  currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+  persistGoal(currentGoal);
+  clearContinuation();
+  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  ctx.ui.notify(`Loops 已暂停（${reason}）。运行 /loops resume 继续。`, "warning");
+}
+
+interface AuditorResult {
+  approved: boolean;
+  aborted: boolean;
+  output: string;
+  error?: string;
+}
+
+// 独立完成审核：开一个零上下文、只读工具的内存 session，重检目标是否真达成。
+// 设计参考 pi-goal-x 的 auditor；只读、基于事实判定的理念参考 pi-dteam 的 check 角色。
+async function runCompletionAuditor(args: {
+  ctx: ExtensionContext;
+  goal: LoopGoal;
+  summary: string;
+  verification: string;
+}): Promise<AuditorResult> {
+  const { ctx, goal, summary, verification } = args;
+  const model = ctx.model;
+  if (!model) {
+    return { approved: false, aborted: false, output: "", error: "当前没有可用模型，无法运行审核。" };
+  }
+
+  const resourceLoader = makeAuditorResourceLoader();
+  const { session } = await createAgentSession({
+    cwd: ctx.cwd,
+    model,
+    modelRegistry: ctx.modelRegistry,
+    resourceLoader,
+    tools: AUDITOR_ONLY_TOOLS,
+    sessionManager: SessionManager.inMemory(ctx.cwd),
+    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
+  });
+
+  const collected: string[] = [];
+  let aborted = false;
+  const unsubscribe = session.subscribe((event) => {
+    if (event.type !== "message_end" && event.type !== "agent_end") return;
+    const message = event.type === "agent_end" ? undefined : (event as { message?: { role?: string; content?: Array<{ type: string; text?: string }> } }).message;
+    if (message && message.role === "assistant") {
+      for (const part of message.content ?? []) {
+        if (part.type === "text" && typeof part.text === "string") collected.push(part.text);
+      }
+    }
+  });
+
+  // 中断传播：用户 Esc 当前 turn 时，同步中断审核 session。
+  const onAbort = () => {
+    aborted = true;
+    void session.abort();
+  };
+  ctx.signal?.addEventListener("abort", onAbort, { once: true });
+
+  try {
+    await session.prompt(buildAuditorPrompt(goal, summary, verification));
+  } finally {
+    ctx.signal?.removeEventListener("abort", onAbort);
+    unsubscribe();
+    session.dispose();
+  }
+
+  if (aborted) return { approved: false, aborted: true, output: collected.join("\n\n").trim() };
+
+  // 兜底：subscribe 漏抓时直接读 session 末态消息。
+  const output = collected.join("\n\n").trim() || readLastAssistantText(session);
+  const decision = parseAuditorDecision(output);
+  return { approved: decision, aborted: false, output };
+}
+
+function parseAuditorDecision(output: string): boolean {
+  if (!output) return false;
+  const approved = output.includes(APPROVED_MARKER);
+  const rejected = output.includes(REJECTED_MARKER);
+  return approved && !rejected;
+}
+
+function readLastAssistantText(session: { state: { messages: Array<{ role?: string; content?: Array<{ type: string; text?: string }> }> } }) {
+  for (let i = session.state.messages.length - 1; i >= 0; i -= 1) {
+    const msg = session.state.messages[i];
+    if (!msg || msg.role !== "assistant") continue;
+    return (msg.content ?? [])
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string)
+      .join("\n")
+      .trim();
+  }
+  return "";
+}
+
+// 审核器用最小 ResourceLoader：空扩展、只读 system prompt，不继承任何会话上下文。
+function makeAuditorResourceLoader(): ResourceLoader {
+  return {
+    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
+    getSkills: () => ({ skills: [], diagnostics: [] }),
+    getPrompts: () => ({ prompts: [], diagnostics: [] }),
+    getThemes: () => ({ themes: [], diagnostics: [] }),
+    getAgentsFiles: () => ({ agentsFiles: [] }),
+    getSystemPrompt: () => [
+      "你是 pi-dloop 的独立完成审核员（auditor），运行在一个隔离的零上下文会话里。",
+      "你的唯一职责：判定 agent 声称完成的目标是否真的达成。",
+      "",
+      "原则：",
+      "- 基于代码事实和命令输出判定，不基于 agent 的自述或感觉。",
+      "- 逐条对照目标里的可验证要求，用 read/grep/find/ls/bash 实地核验。",
+      "- 若证据是“生成了脚手架 / 占位代码 / 仅 build 通过 / proxy 指标”，且用户目标未被真实满足，判 REJECTED。",
+      "- 若有任何要求缺失、弱验证、矛盾、无法用证据检验，判 REJECTED。",
+      "- 不要修改任何文件，不要跑破坏性命令。",
+      "- 最后必须给出简短审核报告，并以唯一一个标记结尾：",
+      "    通过： <APPROVED>",
+      "    不通过：<REJECTED>",
+    ].join("\n"),
+    getAppendSystemPrompt: () => [],
+    extendResources: () => {},
+    reload: async () => {},
+  };
+}
+
+function buildAuditorPrompt(goal: LoopGoal, summary: string, verification: string) {
+  return [
+    "判定下面的 /loops 目标是否真的完成。",
+    "",
+    "<loop_goal>",
+    escapeXml(goal.objective),
+    "</loop_goal>",
+    "",
+    "Agent 声称的完成说明：",
+    summary || "（未提供）",
+    "",
+    "Agent 声称的验证证据：",
+    verification || "（未提供）",
+    "",
+    "审核检查清单：",
+    "1. 从目标里抽出真实的成功标准（含质量 / 用户可感知结果，不只是“代码存在”）。",
+    "2. 用 read/grep/find/ls/bash 实地检查能证明或证伪这些标准的工件或输出。",
+    "3. agent 声称跑过测试 / 搜索过引用时，用真实的文件或 shell 证据复核——声明不是证明。",
+    "4. 解释任何缺失或弱的证据，特别是“脚手架 vs 最终交付”的质量落差。",
+    "5. 结论行只能是 <APPROVED>（目标真正达成）或 <REJECTED>（否则）。",
+  ].join("\n");
 }
 
 function clearContinuation() {

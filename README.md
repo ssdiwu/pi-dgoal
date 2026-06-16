@@ -75,8 +75,18 @@ pi-dloop/
     └── test-extension-rpc.py
 ```
 
+## 完成审核（auditor）
+
+`loop_complete` 被调用时，会先启动一个**独立完成审核员**：开一个零上下文、只读工具（`read/grep/find/ls/bash`）的内存会话，重检目标是否真的达成，再决定是否终结 loop。这让 `verification` 从 agent 自述升级为独立他证。
+
+- 审核通过：目标完成，loop 结束。
+- 审核未通过：目标保持 active，审核报告注入对话，agent 继续修正后重新 `loop_complete`。
+- 审核器出错 / 被中断 / 无结论：目标安全暂停，避免 fail-open 或烧 token 死循环，用 `/loops resume` 继续。
+- 逃生通道：`PI_DLOOP_NO_AUDIT=1` 跳过审核，直接放行（调试或模型不可用时使用）。
+
 ## 设计边界
 
 - 不自动执行 Git 提交、回滚或删除。
 - 不替代测试命令；agent 仍需根据项目现状选择并运行验证。
-- 第一版只支持当前会话内单目标，不做多目标池和独立 auditor。
+- 只支持当前会话内单目标，不做多目标池。
+- 审核员默认复用当前主模型，不做独立模型配置。
