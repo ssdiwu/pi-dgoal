@@ -1,19 +1,17 @@
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import {
-  createAgentSession,
-  defineTool,
-  type ResourceLoader,
-} from "@earendil-works/pi-coding-agent";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { SettingsManager } from "@earendil-works/pi-coding-agent";
-import { createExtensionRuntime } from "@earendil-works/pi-coding-agent";
+import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const AUDITOR_DISABLED = process.env.PI_DLOOP_NO_AUDIT === "1";
 const APPROVED_MARKER = "<APPROVED>";
 const REJECTED_MARKER = "<REJECTED>";
-const AUDITOR_ONLY_TOOLS = ["read", "grep", "find", "ls", "bash"];
+// 纯只读：auditor 只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
+const AUDITOR_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
 type LoopStatus = "active" | "paused" | "complete";
 
@@ -459,8 +457,9 @@ interface AuditorResult {
   error?: string;
 }
 
-// 独立完成审核：开一个零上下文、只读工具的内存 session，重检目标是否真达成。
-// 设计参考 pi-goal-x 的 auditor；只读、基于事实判定的理念参考 pi-dteam 的 check 角色。
+// 独立完成审核：起一个独立的 pi 子进程（--no-session --mode json --tools 只读），
+// 在零上下文里重检目标是否真达成。对齐官方 subagent 示例的子进程隔离方式。
+// 理念参考 pi-goal-x 的 auditor 和 pi-dteam 的 check 角色：只读、基于事实逐条判定。
 async function runCompletionAuditor(args: {
   ctx: ExtensionContext;
   goal: LoopGoal;
@@ -469,54 +468,115 @@ async function runCompletionAuditor(args: {
 }): Promise<AuditorResult> {
   const { ctx, goal, summary, verification } = args;
   const model = ctx.model;
-  if (!model) {
-    return { approved: false, aborted: false, output: "", error: "当前没有可用模型，无法运行审核。" };
-  }
+  const modelId = model ? `${model.provider}/${model.id}` : undefined;
 
-  const resourceLoader = makeAuditorResourceLoader();
-  const { session } = await createAgentSession({
-    cwd: ctx.cwd,
-    model,
-    modelRegistry: ctx.modelRegistry,
-    resourceLoader,
-    tools: AUDITOR_ONLY_TOOLS,
-    sessionManager: SessionManager.inMemory(ctx.cwd),
-    settingsManager: SettingsManager.inMemory({ compaction: { enabled: false } }),
-  });
-
-  const collected: string[] = [];
-  let aborted = false;
-  const unsubscribe = session.subscribe((event) => {
-    if (event.type !== "message_end" && event.type !== "agent_end") return;
-    const message = event.type === "agent_end" ? undefined : (event as { message?: { role?: string; content?: Array<{ type: string; text?: string }> } }).message;
-    if (message && message.role === "assistant") {
-      for (const part of message.content ?? []) {
-        if (part.type === "text" && typeof part.text === "string") collected.push(part.text);
-      }
-    }
-  });
-
-  // 中断传播：用户 Esc 当前 turn 时，同步中断审核 session。
-  const onAbort = () => {
-    aborted = true;
-    void session.abort();
-  };
-  ctx.signal?.addEventListener("abort", onAbort, { once: true });
-
+  // 角色 system prompt 写临时文件，再用 --append-system-prompt 注入（官方做法，避免命令行长度/转义问题）。
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-dloop-auditor-"));
+  const promptPath = path.join(tmpDir, "auditor-role.md");
   try {
-    await session.prompt(buildAuditorPrompt(goal, summary, verification));
+    await fs.promises.writeFile(promptPath, AUDITOR_SYSTEM_PROMPT, { encoding: "utf-8", mode: 0o600 });
+
+    const procArgs = ["--mode", "json", "-p", "--no-session", "--tools", AUDITOR_ONLY_TOOLS.join(",")];
+    if (modelId) procArgs.push("--model", modelId);
+    procArgs.push("--append-system-prompt", promptPath);
+    procArgs.push(buildAuditorTask(goal, summary, verification));
+
+    const invocation = getPiInvocation(procArgs);
+    return await new Promise<AuditorResult>((resolve) => {
+      const proc = spawn(invocation.command, invocation.args, {
+        cwd: ctx.cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const parts: string[] = [];
+      let stderrText = "";
+      let aborted = false;
+      let buffer = "";
+
+      const finish = (result: AuditorResult) => {
+        proc.removeAllListeners();
+        proc.stdout?.removeAllListeners();
+        proc.stderr?.removeAllListeners();
+        resolve(result);
+      };
+
+      const processLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          for (const part of event.message.content ?? []) {
+            if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
+          }
+        }
+      };
+
+      proc.stdout.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) processLine(line);
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderrText += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (buffer.trim()) processLine(buffer);
+        const output = parts.join("\n\n").trim();
+        if (aborted) {
+          finish({ approved: false, aborted: true, output });
+          return;
+        }
+        // 子进程非零退出且无 assistant 输出 → 审核器未正常完成。
+        if (code !== 0 && !output) {
+          finish({ approved: false, aborted: false, output: "", error: truncate(stderrText) || `pi 退出码 ${code}` });
+          return;
+        }
+        finish({ approved: parseAuditorDecision(output), aborted: false, output });
+      });
+
+      proc.on("error", () => {
+        if (aborted) return;
+        finish({ approved: false, aborted: false, output: "", error: "启动 pi 子进程失败" });
+      });
+
+      // 中断传播：用户 Esc 当前 turn 时，杀掉审核子进程。
+      const killProc = () => {
+        aborted = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) proc.kill("SIGKILL");
+        }, 5000);
+      };
+      if (ctx.signal?.aborted) killProc();
+      else ctx.signal?.addEventListener("abort", killProc, { once: true });
+    });
   } finally {
-    ctx.signal?.removeEventListener("abort", onAbort);
-    unsubscribe();
-    session.dispose();
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
   }
+}
 
-  if (aborted) return { approved: false, aborted: true, output: collected.join("\n\n").trim() };
-
-  // 兜底：subscribe 漏抓时直接读 session 末态消息。
-  const output = collected.join("\n\n").trim() || readLastAssistantText(session);
-  const decision = parseAuditorDecision(output);
-  return { approved: decision, aborted: false, output };
+// 决定用哪个命令跑子进程：优先复用当前 pi 进程的入口（同版本同环境），否则回退到 `pi`。
+// 复刻官方 subagent 示例的 getPiInvocation：避免在 bun 虚拟脚本下误用 process.argv[1]。
+function getPiInvocation(extraArgs: string[]): { command: string; args: string[] } {
+  const currentScript = process.argv[1];
+  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
+  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
+    return { command: process.execPath, args: [currentScript, ...extraArgs] };
+  }
+  const execName = path.basename(process.execPath).toLowerCase();
+  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
+  if (!isGenericRuntime) {
+    return { command: process.execPath, args: extraArgs };
+  }
+  return { command: "pi", args: extraArgs };
 }
 
 function parseAuditorDecision(output: string): boolean {
@@ -526,48 +586,7 @@ function parseAuditorDecision(output: string): boolean {
   return approved && !rejected;
 }
 
-function readLastAssistantText(session: { state: { messages: Array<{ role?: string; content?: Array<{ type: string; text?: string }> }> } }) {
-  for (let i = session.state.messages.length - 1; i >= 0; i -= 1) {
-    const msg = session.state.messages[i];
-    if (!msg || msg.role !== "assistant") continue;
-    return (msg.content ?? [])
-      .filter((p) => p.type === "text" && typeof p.text === "string")
-      .map((p) => p.text as string)
-      .join("\n")
-      .trim();
-  }
-  return "";
-}
-
-// 审核器用最小 ResourceLoader：空扩展、只读 system prompt，不继承任何会话上下文。
-function makeAuditorResourceLoader(): ResourceLoader {
-  return {
-    getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
-    getSkills: () => ({ skills: [], diagnostics: [] }),
-    getPrompts: () => ({ prompts: [], diagnostics: [] }),
-    getThemes: () => ({ themes: [], diagnostics: [] }),
-    getAgentsFiles: () => ({ agentsFiles: [] }),
-    getSystemPrompt: () => [
-      "你是 pi-dloop 的独立完成审核员（auditor），运行在一个隔离的零上下文会话里。",
-      "你的唯一职责：判定 agent 声称完成的目标是否真的达成。",
-      "",
-      "原则：",
-      "- 基于代码事实和命令输出判定，不基于 agent 的自述或感觉。",
-      "- 逐条对照目标里的可验证要求，用 read/grep/find/ls/bash 实地核验。",
-      "- 若证据是“生成了脚手架 / 占位代码 / 仅 build 通过 / proxy 指标”，且用户目标未被真实满足，判 REJECTED。",
-      "- 若有任何要求缺失、弱验证、矛盾、无法用证据检验，判 REJECTED。",
-      "- 不要修改任何文件，不要跑破坏性命令。",
-      "- 最后必须给出简短审核报告，并以唯一一个标记结尾：",
-      "    通过： <APPROVED>",
-      "    不通过：<REJECTED>",
-    ].join("\n"),
-    getAppendSystemPrompt: () => [],
-    extendResources: () => {},
-    reload: async () => {},
-  };
-}
-
-function buildAuditorPrompt(goal: LoopGoal, summary: string, verification: string) {
+function buildAuditorTask(goal: LoopGoal, summary: string, verification: string) {
   return [
     "判定下面的 /loops 目标是否真的完成。",
     "",
@@ -583,12 +602,27 @@ function buildAuditorPrompt(goal: LoopGoal, summary: string, verification: strin
     "",
     "审核检查清单：",
     "1. 从目标里抽出真实的成功标准（含质量 / 用户可感知结果，不只是“代码存在”）。",
-    "2. 用 read/grep/find/ls/bash 实地检查能证明或证伪这些标准的工件或输出。",
-    "3. agent 声称跑过测试 / 搜索过引用时，用真实的文件或 shell 证据复核——声明不是证明。",
+    "2. 用 read/grep/find/ls 实地检查能证明或证伪这些标准的工件或输出。",
+    "3. agent 声称跑过测试 / 搜索过引用时，用真实的文件证据复核——声明不是证明。",
     "4. 解释任何缺失或弱的证据，特别是“脚手架 vs 最终交付”的质量落差。",
     "5. 结论行只能是 <APPROVED>（目标真正达成）或 <REJECTED>（否则）。",
   ].join("\n");
 }
+
+const AUDITOR_SYSTEM_PROMPT = [
+  "你是 pi-dloop 的独立完成审核员（auditor），运行在一个隔离的零上下文会话里。",
+  "你的唯一职责：判定 agent 声称完成的目标是否真的达成。",
+  "",
+  "原则：",
+  "- 基于代码事实和文件证据判定，不基于 agent 的自述或感觉。",
+  "- 逐条对照目标里的可验证要求，用 read/grep/find/ls 实地核验。",
+  "- 若证据是“生成了脚手架 / 占位代码 / 仅 build 通过 / proxy 指标”，且用户目标未被真实满足，判 REJECTED。",
+  "- 若有任何要求缺失、弱验证、矛盾、无法用证据检验，判 REJECTED。",
+  "- 你只有只读工具，不能也不会修改任何文件。",
+  "- 最后必须给出简短审核报告，并以唯一一个标记结尾：",
+  "    通过： <APPROVED>",
+  "    不通过：<REJECTED>",
+].join("\n");
 
 function clearContinuation() {
   pendingContinuation = undefined;

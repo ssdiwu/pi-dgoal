@@ -77,7 +77,9 @@ pi-dloop/
 
 ## 完成审核（auditor）
 
-`loop_complete` 被调用时，会先启动一个**独立完成审核员**：开一个零上下文、只读工具（`read/grep/find/ls/bash`）的内存会话，重检目标是否真的达成，再决定是否终结 loop。这让 `verification` 从 agent 自述升级为独立他证。
+`loop_complete` 被调用时，会先启动一个**独立完成审核员**：起一个独立的 pi 子进程（`--no-session --mode json`，纯只读工具 `read/grep/find/ls`），在零上下文里重检目标是否真的达成，再决定是否终结 loop。这让 `verification` 从 agent 自述升级为独立他证。
+
+子进程隔离对齐官方 subagent 示例：审核员是一个全新进程，物理上拿不到主会话上下文，也注册不了写工具。审核员只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
 
 - 审核通过：目标完成，loop 结束。
 - 审核未通过：目标保持 active，审核报告注入对话，agent 继续修正后重新 `loop_complete`。
