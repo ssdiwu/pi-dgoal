@@ -1,0 +1,37 @@
+{
+  "name": "pi-dloop",
+  "version": "0.1.0",
+  "description": "Pi extension for lightweight durable goal loops with explicit completion verification.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "extension",
+    "goal",
+    "loop",
+    "agent"
+  ],
+  "license": "MIT",
+  "author": "diwu",
+  "scripts": {
+    "test:rpc": "python3 scripts/test-extension-rpc.py"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "files": [
+    "index.ts",
+    "scripts",
+    "README.md"
+  ]
+}

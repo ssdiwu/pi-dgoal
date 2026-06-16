@@ -1,0 +1,82 @@
+# pi-dloop
+
+`pi-dloop` 是一个轻量 Pi 扩展包，用来让 agent 围绕一个明确目标持续工作，直到显式完成并给出验证证据。
+
+## 功能
+
+- `/loops <目标>`：启动持续目标模式。
+- `/loop <目标>`：`/loops` 的短别名。
+- `/loop-goal <目标>`：`/loops` 的命令别名，名称贴近“启动目标”语义。
+- `loop_complete` 工具：agent 完成目标并验证后调用，用于停止自动续跑。
+- 会话内状态：目标状态写入当前 Pi session，不维护全局目标池。
+- 自动续跑：每轮结束后如果目标未完成，会自动发送继续提示。
+- 安全暂停：用户中断或模型错误时自动暂停，避免失控循环。
+
+## 安装到本机 Pi
+
+把本目录加入 `~/.pi/agent/settings.json` 的 `packages`：
+
+```json
+"../../Documents/codes/Githubs/pi-dloop"
+```
+
+然后在 Pi 中执行：
+
+```text
+/reload
+```
+
+## 使用方式
+
+```text
+/loops 修复当前项目里的 failing tests，并运行测试验证
+```
+
+常用控制命令：
+
+```text
+/loops status
+/loops pause
+/loops resume
+/loops clear
+```
+
+也可以使用：
+
+```text
+/loop-goal 根据当前项目需求持续实现并验证
+```
+
+## 测试
+
+使用隔离配置目录和 `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载与命令注册：
+
+```bash
+npm run test:rpc
+```
+
+等价命令：
+
+```bash
+python3 scripts/test-extension-rpc.py
+```
+
+当前自动化断言覆盖 `/loops`、`/loop`、`/loop-goal` 三个命令的注册；完整自动续跑行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
+
+## 文件结构
+
+```text
+pi-dloop/
+├── README.md
+├── package.json
+├── index.ts
+└── scripts/
+    ├── README.md
+    └── test-extension-rpc.py
+```
+
+## 设计边界
+
+- 不自动执行 Git 提交、回滚或删除。
+- 不替代测试命令；agent 仍需根据项目现状选择并运行验证。
+- 第一版只支持当前会话内单目标，不做多目标池和独立 auditor。
