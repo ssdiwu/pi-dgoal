@@ -441,15 +441,15 @@ function buildSystemPrompt(goal: LoopGoal) {
 }
 
 function buildStartPrompt(goal: LoopGoal) {
-  return `Dloop 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
+  return `Dloop 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
 }
 
 function buildResumePrompt(goal: LoopGoal) {
-  return `恢复当前 /dloop 目标并继续直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n调用 loop_complete 前先验证。`;
+  return `恢复当前 /dloop 目标并继续直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n调用 loop_complete 前先验证。`;
 }
 
 function buildContinuePrompt(goal: LoopGoal, marker: string) {
-  return `继续当前 /dloop 目标直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n自动续跑 #${goal.iteration}。从当前已验证状态继续。如果目标已完成，调用 loop_complete 并附上总结和验证证据。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  return `继续当前 /dloop 目标直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n自动续跑 #${goal.iteration}。从当前已验证状态继续。如果目标已完成，调用 loop_complete 并附上总结和验证证据。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 async function sendContinuation(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal) {
