@@ -62,11 +62,11 @@ const loopCompleteTool = defineTool({
   name: "loop_complete",
   label: "Loop Complete",
   description:
-    "Mark the active /dloop goal as complete. Only call this after the goal is fully done and verified.",
-  promptSnippet: "Mark the active /dloop goal as complete after full verification",
+    "标记当前 /dloop 目标为完成。仅在目标全部完成且已验证后调用。",
+  promptSnippet: "在目标全部完成且已验证后标记 /dloop 目标为完成",
   promptGuidelines: [
-    "When a /dloop goal is active, keep working until it is complete; do not stop with only a plan, TODO list, or partial progress.",
-    "Call loop_complete only after auditing every requirement against current files, command output, tests, or external state.",
+    "当 /dloop 目标处于 active 状态时，持续工作直到完成；不要停在分析、计划、TODO 列表或部分进度上。",
+    "仅在对当前文件、命令输出、测试和外部状态逐条核验每项要求后，才调用 loop_complete。",
   ],
   parameters: Type.Object({
     summary: Type.String({ description: "What was completed." }),
@@ -77,7 +77,7 @@ const loopCompleteTool = defineTool({
     if (!completedGoal) {
       return {
         content: [
-          { type: "text", text: "No active /dloop goal to complete." },
+          { type: "text", text: "当前没有 /dloop 目标可完成。" },
         ],
         details: { goal: undefined, summary: params.summary.trim(), verification: params.verification.trim() },
         terminate: true,
@@ -92,7 +92,7 @@ const loopCompleteTool = defineTool({
       finalizeGoal(ctx);
       return {
         content: [
-          { type: "text", text: `Loop complete (audit skipped).\nSummary: ${summary}\nVerification: ${verification}` },
+          { type: "text", text: `Dloop 完成（跳过审核）。\n总结：${summary}\n验证：${verification}` },
         ],
         details: { goal: completedGoal.objective, summary, verification, audited: false },
         terminate: true,
@@ -114,7 +114,7 @@ const loopCompleteTool = defineTool({
       pauseOnAuditFailure(ctx, `审核器异常：${formatError(error)}`);
       return {
         content: [
-          { type: "text", text: `Audit failed to run; goal paused for review. Run /dloop resume to continue and retry completion.\nError: ${formatError(error)}` },
+          { type: "text", text: `审核运行失败，目标已暂停。运行 /dloop resume 继续并重试完成。\n错误：${formatError(error)}` },
         ],
         details: { goal: completedGoal.objective, summary, verification, auditError: formatError(error) },
         terminate: true,
@@ -126,7 +126,7 @@ const loopCompleteTool = defineTool({
       pauseOnAuditFailure(ctx, audit.aborted ? "审核被中断" : "审核无输出");
       return {
         content: [
-          { type: "text", text: `Audit did not produce a decision; goal paused. ${audit.output ? `\nReport: ${audit.output}` : ""}` },
+          { type: "text", text: `审核未产出结论，目标已暂停。${audit.output ? `\n报告：${audit.output}` : ""}` },
         ],
         details: { goal: completedGoal.objective, summary, verification, auditAborted: audit.aborted },
         terminate: true,
@@ -140,7 +140,7 @@ const loopCompleteTool = defineTool({
         content: [
           {
             type: "text",
-            text: `Audit REJECTED completion. The goal remains active. Fix the issues below and call loop_complete again when truly done.\n\nAudit report:\n${audit.output}`,
+            text: `审核未通过，目标保持 active。请修正以下问题后重新调用 loop_complete。\n\n审核报告：\n${audit.output}`,
           },
         ],
         details: { goal: completedGoal.objective, summary, verification, auditRejected: true, auditOutput: audit.output },
@@ -151,7 +151,7 @@ const loopCompleteTool = defineTool({
     finalizeGoal(ctx);
     return {
       content: [
-        { type: "text", text: `Loop complete. Audit APPROVED.\nSummary: ${summary}\nVerification: ${verification}` },
+        { type: "text", text: `Dloop 完成。审核通过。\n总结：${summary}\n验证：${verification}` },
       ],
       details: { goal: completedGoal.objective, summary, verification, audited: true, auditOutput: audit.output },
       terminate: true,
@@ -355,19 +355,19 @@ function createGoal(objective: string): LoopGoal {
 }
 
 function buildSystemPrompt(goal: LoopGoal) {
-  return `Active /dloop goal:\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nLoop rules:\n- Keep working until the active /dloop goal is complete end-to-end.\n- Do not stop with only analysis, a plan, a TODO list, partial fixes, or suggested next steps.\n- Use available tools to implement, inspect, debug, and verify when needed.\n- Treat current files, command outputs, tests, and external state as authoritative.\n- If a tool fails, try reasonable alternatives before yielding.\n- Before completion, audit every requirement against verified evidence.\n- Only call loop_complete after the whole goal is complete and verified.`;
+  return `当前 /dloop 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n循环规则：\n- 持续工作直到 /dloop 目标端到端完成。\n- 不要停在分析、计划、TODO 列表、部分修复或建议下一步上。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 loop_complete。`;
 }
 
 function buildStartPrompt(goal: LoopGoal) {
-  return `Loops mode is active. Complete this goal fully:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nKeep going until it is done end-to-end. Do not stop at a plan or partial progress. Verify the result, then call loop_complete with a concise summary and verification evidence.`;
+  return `Dloop 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
 }
 
 function buildResumePrompt(goal: LoopGoal) {
-  return `Resume the active /dloop goal and continue until complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nVerify before calling loop_complete.`;
+  return `恢复当前 /dloop 目标并继续直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n调用 loop_complete 前先验证。`;
 }
 
 function buildContinuePrompt(goal: LoopGoal, marker: string) {
-  return `Continue the active /dloop goal until it is complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nAutomatic continuation #${goal.iteration}. Continue from the current verified state. If the goal is complete, call loop_complete with summary and verification evidence.\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  return `继续当前 /dloop 目标直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n自动续跑 #${goal.iteration}。从当前已验证状态继续。如果目标已完成，调用 loop_complete 并附上总结和验证证据。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 async function sendContinuation(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal) {
