@@ -51,9 +51,13 @@ interface LoopContext {
 const STATUS_KEY = "dloop";
 const STATE_ENTRY_TYPE = "dloop-state";
 const MAX_OBJECTIVE_LENGTH = 8_000;
+// 模型错误（非用户中断）的自动重试上限：连续 error 达到此值才真正暂停。
+const MAX_ERROR_RETRIES = 3;
 const CONTINUATION_MARKER_PREFIX = "pi-dloop-continuation:";
 
 let currentGoal: LoopGoal | undefined;
+// 连续模型错误计数：正常完成一轮后重置；累计到 MAX_ERROR_RETRIES 后暂停并清零。
+let consecutiveErrors = 0;
 let api: ExtensionAPI | undefined;
 let pendingContinuation: { goalId: string; marker: string } | undefined;
 const cancelledMarkers = new Set<string>();
@@ -197,17 +201,45 @@ export default function dloop(pi: ExtensionAPI) {
     if (!currentGoal || currentGoal.status !== "active") return;
 
     const finalAssistant = findFinalAssistantMessage(event.messages);
-    if (finalAssistant?.stopReason === "aborted" || finalAssistant?.stopReason === "error") {
+    const errorDetail = finalAssistant?.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
+
+    // 用户主动中断：不重试，直接暂停。
+    if (finalAssistant?.stopReason === "aborted") {
+      consecutiveErrors = 0;
       currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
       persistGoal(currentGoal);
       clearContinuation();
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-      const reason = finalAssistant.stopReason === "aborted" ? "用户中断" : "模型错误";
-      const detail = finalAssistant.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
-      ctx.ui.notify(`Dloop 已暂停（${reason}${detail}）。运行 /dloop resume 继续。`, "warning");
+      ctx.ui.notify(`Dloop 已暂停（用户中断${errorDetail}）。运行 /dloop resume 继续。`, "warning");
       return;
     }
 
+    // 模型错误：先自动重试 MAX_ERROR_RETRIES 次，仍失败再暂停，避免瞬时错误直接打断 loop。
+    if (finalAssistant?.stopReason === "error") {
+      consecutiveErrors += 1;
+      if (consecutiveErrors <= MAX_ERROR_RETRIES) {
+        ctx.ui.notify(
+          `模型错误，自动重试（${consecutiveErrors}/${MAX_ERROR_RETRIES}）${errorDetail}`,
+          "warning",
+        );
+        clearContinuation();
+        await sendContinuation(pi, ctx, currentGoal);
+        return;
+      }
+      consecutiveErrors = 0;
+      currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+      persistGoal(currentGoal);
+      clearContinuation();
+      ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+      ctx.ui.notify(
+        `模型错误，已重试 ${MAX_ERROR_RETRIES} 次仍失败，Dloop 已暂停${errorDetail}。运行 /dloop resume 继续。`,
+        "warning",
+      );
+      return;
+    }
+
+    // 正常完成一轮：重置错误计数，推进迭代。
+    consecutiveErrors = 0;
     currentGoal = { ...currentGoal, iteration: currentGoal.iteration + 1, updatedAt: Date.now() };
     persistGoal(currentGoal);
     ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -271,6 +303,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
     if (!replace) return;
   }
 
+  consecutiveErrors = 0;
   clearContinuation();
   currentGoal = createGoal(objective.trim());
   persistGoal(currentGoal);
@@ -288,6 +321,7 @@ function pauseGoal(ctx: LoopContext) {
 
 async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
   if (!currentGoal || currentGoal.status !== "paused") return;
+  consecutiveErrors = 0;
   currentGoal = { ...currentGoal, status: "active", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -390,6 +424,7 @@ function loadGoal(ctx: LoopContext) {
 
 function clearActiveGoal(ctx: LoopContext) {
   cancelPendingContinuation();
+  consecutiveErrors = 0;
   currentGoal = undefined;
   persistGoal(null);
   ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -457,7 +492,10 @@ async function runCompletionAuditor(args: {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
-      const parts: string[] = [];
+      // 只保留最后一条非空 assistant 文本作为审核报告：
+      // auditor 调用 read/grep/find/ls 时每个 turn 的叙述（“我会先读……”等）是过程噪音，
+      // 真正的结论（<APPROVED>/<REJECTED>）只在最后一条，拼接进来既难读又可能污染判定。
+      let finalReport = "";
       let stderrText = "";
       let aborted = false;
       let buffer = "";
@@ -478,9 +516,12 @@ async function runCompletionAuditor(args: {
           return;
         }
         if (event.type === "message_end" && event.message?.role === "assistant") {
-          for (const part of event.message.content ?? []) {
-            if (part.type === "text" && typeof part.text === "string") parts.push(part.text);
-          }
+          const text = (event.message.content ?? [])
+            .filter((part) => part.type === "text" && typeof part.text === "string")
+            .map((part) => part.text!)
+            .join("\n\n");
+          // 非空才覆盖：最后一条空文本（如纯工具调用）时不丢掉上一个真实报告。
+          if (text.trim()) finalReport = text;
         }
       };
 
@@ -497,7 +538,7 @@ async function runCompletionAuditor(args: {
 
       proc.on("close", (code) => {
         if (buffer.trim()) processLine(buffer);
-        const output = parts.join("\n\n").trim();
+        const output = finalReport.trim();
         if (aborted) {
           finish({ approved: false, aborted: true, output });
           return;
