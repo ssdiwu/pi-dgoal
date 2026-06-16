@@ -4,10 +4,8 @@
 
 ## 功能
 
-- `/loops <目标>`：启动持续目标模式。
-- `/loop <目标>`：`/loops` 的短别名。
-- `/loop-goal <目标>`：`/loops` 的命令别名，名称贴近“启动目标”语义。
-- `loop_complete` 工具：agent 完成目标并验证后调用，用于停止自动续跑。
+- `/dloop <目标>`：启动持续目标模式。
+- `loop_complete` 工具：agent 完成目标并验证后调用，触发独立审核，通过后停止自动续跑。
 - 会话内状态：目标状态写入当前 Pi session，不维护全局目标池。
 - 自动续跑：每轮结束后如果目标未完成，会自动发送继续提示。
 - 安全暂停：用户中断或模型错误时自动暂停，避免失控循环。
@@ -29,22 +27,16 @@
 ## 使用方式
 
 ```text
-/loops 修复当前项目里的 failing tests，并运行测试验证
+/dloop 修复当前项目里的 failing tests，并运行测试验证
 ```
 
 常用控制命令：
 
 ```text
-/loops status
-/loops pause
-/loops resume
-/loops clear
-```
-
-也可以使用：
-
-```text
-/loop-goal 根据当前项目需求持续实现并验证
+/dloop status
+/dloop pause
+/dloop resume
+/dloop clear
 ```
 
 ## 测试
@@ -58,10 +50,10 @@ npm run test:rpc
 等价命令：
 
 ```bash
-python3 scripts/test-extension-rpc.py
+python3 test/test-extension-rpc.py
 ```
 
-当前自动化断言覆盖 `/loops`、`/loop`、`/loop-goal` 三个命令的注册；完整自动续跑行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
+当前自动化断言覆盖 `/dloop` 命令的注册；完整自动续跑和审核行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
 
 ## 文件结构
 
@@ -70,8 +62,7 @@ pi-dloop/
 ├── README.md
 ├── package.json
 ├── index.ts
-└── scripts/
-    ├── README.md
+└── test/
     └── test-extension-rpc.py
 ```
 
@@ -83,7 +74,7 @@ pi-dloop/
 
 - 审核通过：目标完成，loop 结束。
 - 审核未通过：目标保持 active，审核报告注入对话，agent 继续修正后重新 `loop_complete`。
-- 审核器出错 / 被中断 / 无结论：目标安全暂停，避免 fail-open 或烧 token 死循环，用 `/loops resume` 继续。
+- 审核器出错 / 被中断 / 无结论：目标安全暂停，避免 fail-open 或烧 token 死循环，用 `/dloop resume` 继续。
 - 逃生通道：`PI_DLOOP_NO_AUDIT=1` 跳过审核，直接放行（调试或模型不可用时使用）。
 
 ## 设计边界

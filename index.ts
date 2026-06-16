@@ -48,10 +48,10 @@ interface LoopContext {
   sessionManager?: unknown;
 }
 
-const STATUS_KEY = "loops";
-const STATE_ENTRY_TYPE = "loops-state";
+const STATUS_KEY = "dloop";
+const STATE_ENTRY_TYPE = "dloop-state";
 const MAX_OBJECTIVE_LENGTH = 8_000;
-const CONTINUATION_MARKER_PREFIX = "pi-loops-continuation:";
+const CONTINUATION_MARKER_PREFIX = "pi-dloop-continuation:";
 
 let currentGoal: LoopGoal | undefined;
 let api: ExtensionAPI | undefined;
@@ -62,10 +62,10 @@ const loopCompleteTool = defineTool({
   name: "loop_complete",
   label: "Loop Complete",
   description:
-    "Mark the active /loops goal as complete. Only call this after the goal is fully done and verified.",
-  promptSnippet: "Mark the active /loops goal as complete after full verification",
+    "Mark the active /dloop goal as complete. Only call this after the goal is fully done and verified.",
+  promptSnippet: "Mark the active /dloop goal as complete after full verification",
   promptGuidelines: [
-    "When a /loops goal is active, keep working until it is complete; do not stop with only a plan, TODO list, or partial progress.",
+    "When a /dloop goal is active, keep working until it is complete; do not stop with only a plan, TODO list, or partial progress.",
     "Call loop_complete only after auditing every requirement against current files, command output, tests, or external state.",
   ],
   parameters: Type.Object({
@@ -77,7 +77,7 @@ const loopCompleteTool = defineTool({
     if (!completedGoal) {
       return {
         content: [
-          { type: "text", text: "No active /loops goal to complete." },
+          { type: "text", text: "No active /dloop goal to complete." },
         ],
         details: { goal: undefined, summary: params.summary.trim(), verification: params.verification.trim() },
         terminate: true,
@@ -99,7 +99,7 @@ const loopCompleteTool = defineTool({
       };
     }
 
-    ctx.ui.notify("Loops 正在运行独立完成审核…", "info");
+    ctx.ui.notify("Dloop 正在运行独立完成审核…", "info");
 
     let audit;
     try {
@@ -114,7 +114,7 @@ const loopCompleteTool = defineTool({
       pauseOnAuditFailure(ctx, `审核器异常：${formatError(error)}`);
       return {
         content: [
-          { type: "text", text: `Audit failed to run; goal paused for review. Run /loops resume to continue and retry completion.\nError: ${formatError(error)}` },
+          { type: "text", text: `Audit failed to run; goal paused for review. Run /dloop resume to continue and retry completion.\nError: ${formatError(error)}` },
         ],
         details: { goal: completedGoal.objective, summary, verification, auditError: formatError(error) },
         terminate: true,
@@ -159,22 +159,12 @@ const loopCompleteTool = defineTool({
   },
 });
 
-export default function loops(pi: ExtensionAPI) {
+export default function dloop(pi: ExtensionAPI) {
   api = pi;
   pi.registerTool(loopCompleteTool);
 
-  pi.registerCommand("loops", {
-    description: "持续推进目标直到完成：/loops <goal> | pause | resume | clear | status",
-    handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
-  });
-
-  pi.registerCommand("loop", {
-    description: "Alias for /loops",
-    handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
-  });
-
-  pi.registerCommand("loop-goal", {
-    description: "启动持续目标模式：/loop-goal <goal>",
+  pi.registerCommand("dloop", {
+    description: "持续推进目标直到完成：/dloop <goal> | pause | resume | clear | status",
     handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
   });
 
@@ -215,7 +205,7 @@ export default function loops(pi: ExtensionAPI) {
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
       const reason = finalAssistant.stopReason === "aborted" ? "用户中断" : "模型错误";
       const detail = finalAssistant.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
-      ctx.ui.notify(`Loops 已暂停（${reason}${detail}）。运行 /loops resume 继续。`, "warning");
+      ctx.ui.notify(`Dloop 已暂停（${reason}${detail}）。运行 /dloop resume 继续。`, "warning");
       return;
     }
 
@@ -264,14 +254,14 @@ function parseCommand(args: string):
   if (text === "resume") return { kind: "resume" };
   if (text === "clear" || text === "stop") return { kind: "clear" };
   if (text.length > MAX_OBJECTIVE_LENGTH) {
-    return `目标太长（${text.length}/${MAX_OBJECTIVE_LENGTH} 字符）。请放到文件中，并在 /loops 中引用路径。`;
+    return `目标太长（${text.length}/${MAX_OBJECTIVE_LENGTH} 字符）。请放到文件中，并在 /dloop 中引用路径。`;
   }
   return { kind: "start", objective: text };
 }
 
 async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) {
   if (!objective.trim()) {
-    ctx.ui.notify("用法：/loops <goal>", "warning");
+    ctx.ui.notify("用法：/dloop <goal>", "warning");
     return;
   }
 
@@ -287,7 +277,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   currentGoal = createGoal(objective.trim());
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify(`Loops 已启动：${currentGoal.objective}`, "info");
+  ctx.ui.notify(`Dloop 已启动：${currentGoal.objective}`, "info");
   await sendPrompt(pi, ctx, buildStartPrompt(currentGoal));
 }
 
@@ -304,7 +294,7 @@ function pauseGoal(ctx: LoopContext) {
   currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify("Loops 已暂停。", "info");
+  ctx.ui.notify("Dloop 已暂停。", "info");
 }
 
 async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
@@ -319,7 +309,7 @@ async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
   currentGoal = { ...currentGoal, status: "active", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify("Loops 已恢复。", "info");
+  ctx.ui.notify("Dloop 已恢复。", "info");
   await sendPrompt(pi, ctx, buildResumePrompt(currentGoal));
 }
 
@@ -331,13 +321,13 @@ function clearGoal(ctx: LoopContext) {
   }
   const objective = currentGoal.objective;
   clearActiveGoal(ctx);
-  ctx.ui.notify(`Loops 已清除：${objective}`, "warning");
+  ctx.ui.notify(`Dloop 已清除：${objective}`, "warning");
 }
 
 function showStatus(ctx: LoopContext) {
   if (!currentGoal) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
-    ctx.ui.notify("当前没有 loop。用法：/loops <goal>", "info");
+    ctx.ui.notify("当前没有 loop。用法：/dloop <goal>", "info");
     return;
   }
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -346,7 +336,7 @@ function showStatus(ctx: LoopContext) {
       `目标：${currentGoal.objective}`,
       `状态：${currentGoal.status}`,
       `轮次：${currentGoal.iteration}`,
-      "命令：/loops pause | /loops resume | /loops clear",
+      "命令：/dloop pause | /dloop resume | /dloop clear",
     ].join("\n"),
     "info",
   );
@@ -365,7 +355,7 @@ function createGoal(objective: string): LoopGoal {
 }
 
 function buildSystemPrompt(goal: LoopGoal) {
-  return `Active /loops goal:\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nLoop rules:\n- Keep working until the active /loops goal is complete end-to-end.\n- Do not stop with only analysis, a plan, a TODO list, partial fixes, or suggested next steps.\n- Use available tools to implement, inspect, debug, and verify when needed.\n- Treat current files, command outputs, tests, and external state as authoritative.\n- If a tool fails, try reasonable alternatives before yielding.\n- Before completion, audit every requirement against verified evidence.\n- Only call loop_complete after the whole goal is complete and verified.`;
+  return `Active /dloop goal:\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nLoop rules:\n- Keep working until the active /dloop goal is complete end-to-end.\n- Do not stop with only analysis, a plan, a TODO list, partial fixes, or suggested next steps.\n- Use available tools to implement, inspect, debug, and verify when needed.\n- Treat current files, command outputs, tests, and external state as authoritative.\n- If a tool fails, try reasonable alternatives before yielding.\n- Before completion, audit every requirement against verified evidence.\n- Only call loop_complete after the whole goal is complete and verified.`;
 }
 
 function buildStartPrompt(goal: LoopGoal) {
@@ -373,11 +363,11 @@ function buildStartPrompt(goal: LoopGoal) {
 }
 
 function buildResumePrompt(goal: LoopGoal) {
-  return `Resume the active /loops goal and continue until complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nVerify before calling loop_complete.`;
+  return `Resume the active /dloop goal and continue until complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nVerify before calling loop_complete.`;
 }
 
 function buildContinuePrompt(goal: LoopGoal, marker: string) {
-  return `Continue the active /loops goal until it is complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nAutomatic continuation #${goal.iteration}. Continue from the current verified state. If the goal is complete, call loop_complete with summary and verification evidence.\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  return `Continue the active /dloop goal until it is complete:\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\nAutomatic continuation #${goal.iteration}. Continue from the current verified state. If the goal is complete, call loop_complete with summary and verification evidence.\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 async function sendContinuation(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal) {
@@ -396,7 +386,7 @@ async function sendPrompt(pi: ExtensionAPI, ctx: LoopContext, prompt: string) {
     await result;
     return true;
   } catch (error) {
-    ctx.ui.notify(`Loops 续跑失败：${formatError(error)}`, "error");
+    ctx.ui.notify(`Dloop 续跑失败：${formatError(error)}`, "error");
     return false;
   }
 }
@@ -447,7 +437,7 @@ function pauseOnAuditFailure(ctx: LoopContext, reason: string) {
   persistGoal(currentGoal);
   clearContinuation();
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify(`Loops 已暂停（${reason}）。运行 /loops resume 继续。`, "warning");
+  ctx.ui.notify(`Dloop 已暂停（${reason}）。运行 /dloop resume 继续。`, "warning");
 }
 
 interface AuditorResult {
@@ -588,7 +578,7 @@ function parseAuditorDecision(output: string): boolean {
 
 function buildAuditorTask(goal: LoopGoal, summary: string, verification: string) {
   return [
-    "判定下面的 /loops 目标是否真的完成。",
+    "判定下面的 /dloop 目标是否真的完成。",
     "",
     "<loop_goal>",
     escapeXml(goal.objective),

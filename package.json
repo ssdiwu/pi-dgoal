@@ -14,7 +14,7 @@
   "license": "MIT",
   "author": "diwu",
   "scripts": {
-    "test:rpc": "python3 scripts/test-extension-rpc.py"
+    "test:rpc": "python3 test/test-extension-rpc.py"
   },
   "pi": {
     "extensions": [
@@ -31,7 +31,7 @@
   },
   "files": [
     "index.ts",
-    "scripts",
+    "test",
     "README.md"
   ]
 }
