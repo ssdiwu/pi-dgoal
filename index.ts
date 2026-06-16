@@ -13,7 +13,7 @@ const REJECTED_MARKER = "<REJECTED>";
 // 纯只读：auditor 只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
 const AUDITOR_ONLY_TOOLS = ["read", "grep", "find", "ls"];
 
-type LoopStatus = "active" | "paused" | "complete";
+type LoopStatus = "pending" | "active" | "paused" | "complete";
 
 type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
@@ -24,10 +24,22 @@ interface LoopGoal {
   startedAt: number;
   updatedAt: number;
   iteration: number;
+  // 启动时从前文讨论固化的背景摘要（目标范围 / 关键约束 / 验收标准）。
+  // 抗 context 压缩与重启：压缩或 resume 后这些隐含信息仍随 goal 持久化在。
+  contextSummary?: string;
 }
 
 interface LoopStateEntryData {
   goal?: LoopGoal | null;
+}
+
+interface SessionBranchEntry {
+  type?: string;
+  message?: {
+    role?: string;
+    content?: unknown;
+    timestamp?: number | string;
+  };
 }
 
 interface AssistantMessageLike {
@@ -296,6 +308,11 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   }
 
   if (currentGoal && currentGoal.status !== "complete") {
+    // pending：上一个 loop 还在 summarizeContext 启动中，不应重叠启动新 loop。
+    if (currentGoal.status === "pending") {
+      ctx.ui.notify("上一个 loop 正在启动中，请稍后再试。", "warning");
+      return;
+    }
     const replace = await ctx.ui.confirm(
       "替换当前 loop？",
       `当前目标：${currentGoal.objective}\n\n新目标：${objective}`,
@@ -305,7 +322,50 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
 
   consecutiveErrors = 0;
   clearContinuation();
-  currentGoal = createGoal(objective.trim());
+  // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
+  // 否则 before_agent_start / agent_end 会提前把它当活跃 loop 推进，甚至打出孤儿 START prompt。
+  const pendingGoal = createGoal(objective.trim());
+  currentGoal = pendingGoal;
+  persistGoal(currentGoal);
+  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+
+  // 启动前固化前文背景：防止 loop 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
+  // 摘要失败不阻断启动——objective 本身仍在，摘要只是补充，挂了降级为空继续。
+  const priorDiscussion = extractPriorDiscussion(ctx);
+  if (priorDiscussion) {
+    ctx.ui.notify("正在从前文讨论固化启动背景…", "info");
+    const result = await summarizeContext({
+      ctx: ctx as ExtensionContext,
+      objective: pendingGoal.objective,
+      priorDiscussion,
+    });
+    // 摘要期间 goal 可能被用户 /dloop clear 或替换；校验仍是同一个 pending goal。
+    if (!currentGoal || currentGoal.id !== pendingGoal.id) {
+      ctx.ui.notify("启动被中断，已放弃本次 loop。", "warning");
+      return;
+    }
+    if (result.aborted) {
+      ctx.ui.notify("背景固化被中断，已放弃本次 loop。", "warning");
+      currentGoal = undefined;
+      persistGoal(null);
+      ctx.ui.setStatus(STATUS_KEY, undefined);
+      return;
+    }
+    if (result.summary && result.summary.trim() && result.summary.trim() !== "无额外背景") {
+      currentGoal = { ...currentGoal, contextSummary: result.summary.trim(), updatedAt: Date.now() };
+      persistGoal(currentGoal);
+    } else if (result.error) {
+      ctx.ui.notify(`背景固化失败（已降级为不带背景启动）：${result.error}`, "warning");
+    }
+  }
+
+  // 再次校验：摘要期间 goal 仍可能在、且仍是本次 pending goal。
+  if (!currentGoal || currentGoal.id !== pendingGoal.id) {
+    ctx.ui.notify("启动被中断，已放弃本次 loop。", "warning");
+    return;
+  }
+  // 正式激活并发 START prompt。此后 agent_end / before_agent_start 才会介入推进。
+  currentGoal = { ...currentGoal, status: "active", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
   await sendPrompt(pi, ctx, buildStartPrompt(currentGoal));
@@ -359,27 +419,36 @@ function createGoal(objective: string): LoopGoal {
   return {
     id: randomUUID(),
     objective,
-    status: "active",
+    // pending：启动中、START prompt 尚未发出。避免 summarizeContext 慢子进程期间被 agent_end 当活跃 loop 推进。
+    status: "pending",
     startedAt: now,
     updatedAt: now,
     iteration: 0,
   };
 }
 
+function buildContextBlock(goal: LoopGoal): string {
+  // 无背景或明确无额外背景时不注入，避免噪音。
+  if (!goal.contextSummary || !goal.contextSummary.trim() || goal.contextSummary.trim() === "无额外背景") {
+    return "";
+  }
+  return `\n\n<loop_context>\n以下是启动前从前文讨论固化的背景，每轮请记住：\n${escapeXml(goal.contextSummary)}\n</loop_context>`;
+}
+
 function buildSystemPrompt(goal: LoopGoal) {
-  return `当前 /dloop 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n循环规则：\n- 持续工作直到 /dloop 目标端到端完成。\n- 不要停在分析、计划、TODO 列表、部分修复或建议下一步上。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 loop_complete。`;
+  return `当前 /dloop 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n循环规则：\n- 持续工作直到 /dloop 目标端到端完成。\n- 不要停在分析、计划、TODO 列表、部分修复或建议下一步上。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 loop_complete。`;
 }
 
 function buildStartPrompt(goal: LoopGoal) {
-  return `Dloop 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
+  return `Dloop 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
 }
 
 function buildResumePrompt(goal: LoopGoal) {
-  return `恢复当前 /dloop 目标并继续直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n调用 loop_complete 前先验证。`;
+  return `恢复当前 /dloop 目标并继续直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n调用 loop_complete 前先验证。`;
 }
 
 function buildContinuePrompt(goal: LoopGoal, marker: string) {
-  return `继续当前 /dloop 目标直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n自动续跑 #${goal.iteration}。从当前已验证状态继续。如果目标已完成，调用 loop_complete 并附上总结和验证证据。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  return `继续当前 /dloop 目标直到完成：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n自动续跑 #${goal.iteration}。从当前已验证状态继续。如果目标已完成，调用 loop_complete 并附上总结和验证证据。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 async function sendContinuation(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal) {
@@ -419,8 +488,187 @@ function loadGoal(ctx: LoopContext) {
     .filter((item) => item.type === "custom" && item.customType === STATE_ENTRY_TYPE)
     .pop();
   const data = entry?.data as LoopStateEntryData | undefined;
-  return isLoopGoal(data?.goal) && data.goal.status !== "complete" ? data.goal : undefined;
+  return isLoopGoal(data?.goal) && data.goal.status !== "complete" && data.goal.status !== "pending"
+    ? data.goal
+    : undefined;
 }
+
+// 从当前会话分支里提取 user/assistant 对话文本，作为摘要子进程的输入素材。
+// 只取真实对话：toolResult / bashExecution / custom 等噪音过滤掉，每条裁到合理长度。
+function extractPriorDiscussion(ctx: LoopContext, maxMessages = 60, maxCharsPerMessage = 400): string {
+  const sessionManager = ctx.sessionManager as
+    | { getBranch?: () => SessionBranchEntry[]; getEntries?: () => SessionBranchEntry[] }
+    | undefined;
+  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+  const lines: string[] = [];
+  let count = 0;
+  for (const entry of entries) {
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+    const text = extractMessageText(message.content);
+    if (!text.trim()) continue;
+    const role = message.role === "user" ? "用户" : "助手";
+    lines.push(`[${role}] ${truncate(text, maxCharsPerMessage)}`);
+    count += 1;
+    if (count >= maxMessages) break;
+  }
+  return lines.join("\n\n").trim();
+}
+
+function extractMessageText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((item): item is { type: string; text?: string } =>
+      !!item && typeof item === "object" && (item as { type?: string }).type === "text"
+    )
+    .map((item) => item.text ?? "")
+    .join("\n");
+}
+
+interface ContextSummaryResult {
+  summary: string;
+  aborted: boolean;
+  error?: string;
+}
+
+// 起隔离子进程把前文讨论固化成结构化背景（目标范围 / 关键约束 / 验收标准）。
+// 与 auditor 同一套 spawn 模式，但纯生成、不给工具：子进程只看喂入的前文文本。
+async function summarizeContext(args: {
+  ctx: ExtensionContext;
+  objective: string;
+  priorDiscussion: string;
+}): Promise<ContextSummaryResult> {
+  const { ctx, objective, priorDiscussion } = args;
+  const model = ctx.model;
+  const modelId = model ? `${model.provider}/${model.id}` : undefined;
+
+  const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-dloop-context-"));
+  const promptPath = path.join(tmpDir, "context-summarizer-role.md");
+  try {
+    await fs.promises.writeFile(promptPath, CONTEXT_SUMMARIZER_SYSTEM_PROMPT, { encoding: "utf-8", mode: 0o600 });
+
+    const procArgs = ["--mode", "json", "-p", "--no-session", "--no-tools"];
+    if (modelId) procArgs.push("--model", modelId);
+    procArgs.push("--append-system-prompt", promptPath);
+    procArgs.push(buildContextSummarizerTask(objective, priorDiscussion));
+
+    const invocation = getPiInvocation(procArgs);
+    return await new Promise<ContextSummaryResult>((resolve) => {
+      const proc = spawn(invocation.command, invocation.args, {
+        cwd: ctx.cwd,
+        shell: false,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let finalReport = "";
+      let stderrText = "";
+      let aborted = false;
+      let buffer = "";
+
+      const finish = (result: ContextSummaryResult) => {
+        proc.removeAllListeners();
+        proc.stdout?.removeAllListeners();
+        proc.stderr?.removeAllListeners();
+        resolve(result);
+      };
+
+      const processLine = (line: string) => {
+        if (!line.trim()) return;
+        let event: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+        try {
+          event = JSON.parse(line);
+        } catch {
+          return;
+        }
+        if (event.type === "message_end" && event.message?.role === "assistant") {
+          const text = (event.message.content ?? [])
+            .filter((part) => part.type === "text" && typeof part.text === "string")
+            .map((part) => part.text!)
+            .join("\n\n");
+          if (text.trim()) finalReport = text;
+        }
+      };
+
+      proc.stdout.on("data", (data) => {
+        buffer += data.toString();
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        for (const line of lines) processLine(line);
+      });
+
+      proc.stderr.on("data", (data) => {
+        stderrText += data.toString();
+      });
+
+      proc.on("close", (code) => {
+        if (buffer.trim()) processLine(buffer);
+        const summary = finalReport.trim();
+        if (aborted) {
+          finish({ summary: "", aborted: true });
+          return;
+        }
+        if (code !== 0 && !summary) {
+          finish({ summary: "", aborted: false, error: truncate(stderrText) || `pi 退出码 ${code}` });
+          return;
+        }
+        finish({ summary, aborted: false });
+      });
+
+      proc.on("error", () => {
+        if (aborted) return;
+        finish({ summary: "", aborted: false, error: "启动 pi 子进程失败" });
+      });
+
+      const killProc = () => {
+        aborted = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => {
+          if (!proc.killed) proc.kill("SIGKILL");
+        }, 5000);
+      };
+      if (ctx.signal?.aborted) killProc();
+      else ctx.signal?.addEventListener("abort", killProc, { once: true });
+    });
+  } finally {
+    try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+  }
+}
+
+function buildContextSummarizerTask(objective: string, priorDiscussion: string) {
+  return [
+    "从下面的用户目标与前文讨论中，提炼出启动这个目标所需的结构化背景。",
+    "",
+    "<loop_objective>",
+    escapeXml(objective),
+    "</loop_objective>",
+    "",
+    "<prior_discussion>",
+    escapeXml(priorDiscussion || "（无前文讨论）"),
+    "</prior_discussion>",
+    "",
+    "要求：",
+    "1. 只提炼 objective 文本之外、但启动者需要在后续每轮记住的隐含信息。",
+    "2. 如果前文讨论中没有超出 objective 的额外约束或验收标准，直接输出“无额外背景”。",
+    "3. 不要复述 objective 本身已经写明的目标。",
+    "4. 严格用以下三段输出（没有的段写“无”）：",
+    "   ## 目标范围补充",
+    "   ## 关键约束",
+    "   ## 验收标准",
+  ].join("\n");
+}
+
+const CONTEXT_SUMMARIZER_SYSTEM_PROMPT = [
+  "你是 pi-dloop 的会话背景固化员，运行在隔离的零上下文会话里。",
+  "你的唯一职责：从启动者提供的“目标”和“前文讨论”中，提炼出后续每轮 loop 都需要记住的结构化背景。",
+    "",
+  "原则：",
+  "- 只记录事实性的隐含信息（讨论中确认的范围边界、设计决策、验收标准、不做什么）。",
+  "- objective 本身已写明的内容不要重复。",
+  "- 没有额外信息就如实说“无额外背景”，不要生造。",
+  "- 不要描述自己的过程，直接输出三段结果。",
+].join("\n");
 
 function clearActiveGoal(ctx: LoopContext) {
   cancelPendingContinuation();
@@ -687,7 +935,7 @@ function isLoopGoal(value: unknown): value is LoopGoal {
   return (
     typeof goal.id === "string" &&
     typeof goal.objective === "string" &&
-    ["active", "paused", "complete"].includes(String(goal.status)) &&
+    ["pending", "active", "paused", "complete"].includes(String(goal.status)) &&
     typeof goal.startedAt === "number" &&
     typeof goal.updatedAt === "number" &&
     typeof goal.iteration === "number"
@@ -698,6 +946,7 @@ function formatStatus(goal: LoopGoal | undefined) {
   if (!goal) return undefined;
   if (goal.status === "complete") return "🔁 complete";
   if (goal.status === "paused") return "🔁 paused";
+  if (goal.status === "pending") return "🔁 starting…";
   return `🔁 active #${goal.iteration}`;
 }
 
@@ -713,6 +962,6 @@ function formatError(error: unknown) {
   return truncate(error instanceof Error ? error.message : String(error));
 }
 
-function truncate(value: string) {
-  return value.length > 160 ? `${value.slice(0, 157)}...` : value;
+function truncate(value: string, max = 160) {
+  return value.length > max ? `${value.slice(0, Math.max(0, max - 3))}...` : value;
 }
