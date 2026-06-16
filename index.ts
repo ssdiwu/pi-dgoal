@@ -63,6 +63,7 @@ interface LoopContext {
 const STATUS_KEY = "dloop";
 const STATE_ENTRY_TYPE = "dloop-state";
 const MAX_OBJECTIVE_LENGTH = 8_000;
+const CONTEXT_INPUT_CAP_BYTES = 50 * 1024;
 // 模型错误（非用户中断）的自动重试上限：连续 error 达到此值才真正暂停。
 const MAX_ERROR_RETRIES = 3;
 const CONTINUATION_MARKER_PREFIX = "pi-dloop-continuation:";
@@ -495,13 +496,12 @@ function loadGoal(ctx: LoopContext) {
 
 // 从当前会话分支里提取 user/assistant 对话文本，作为摘要子进程的输入素材。
 // 只取真实对话：toolResult / bashExecution / custom 等噪音过滤掉，每条裁到合理长度。
-function extractPriorDiscussion(ctx: LoopContext, maxMessages = 60, maxCharsPerMessage = 400): string {
+function extractPriorDiscussion(ctx: LoopContext, capBytes = CONTEXT_INPUT_CAP_BYTES): string {
   const sessionManager = ctx.sessionManager as
     | { getBranch?: () => SessionBranchEntry[]; getEntries?: () => SessionBranchEntry[] }
     | undefined;
   const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
   const lines: string[] = [];
-  let count = 0;
   for (const entry of entries) {
     if (entry.type !== "message") continue;
     const message = entry.message;
@@ -509,11 +509,66 @@ function extractPriorDiscussion(ctx: LoopContext, maxMessages = 60, maxCharsPerM
     const text = extractMessageText(message.content);
     if (!text.trim()) continue;
     const role = message.role === "user" ? "用户" : "助手";
-    lines.push(`[${role}] ${truncate(text, maxCharsPerMessage)}`);
-    count += 1;
-    if (count >= maxMessages) break;
+    lines.push(`[${role}] ${text}`);
   }
-  return lines.join("\n\n").trim();
+  return capPriorDiscussionText(lines, capBytes);
+}
+
+export function capPriorDiscussionText(lines: string[], capBytes = CONTEXT_INPUT_CAP_BYTES): string {
+  if (lines.length === 0) return "";
+
+  const fullText = lines.join("\n\n");
+  if (Buffer.byteLength(fullText, "utf8") <= capBytes) return fullText;
+
+  for (let startIndex = 1; startIndex < lines.length; startIndex += 1) {
+    const keptText = lines.slice(startIndex).join("\n\n");
+    const omittedText = lines.slice(0, startIndex).join("\n\n");
+    const omittedBytes = Buffer.byteLength(omittedText, "utf8");
+    const payload = `[Input truncated: ${omittedBytes} bytes omitted]\n\n${keptText}`;
+    if (Buffer.byteLength(payload, "utf8") <= capBytes) return payload;
+  }
+
+  return truncateOversizedLatestMessage(lines, capBytes);
+}
+
+function truncateOversizedLatestMessage(lines: string[], capBytes: number): string {
+  const latest = lines[lines.length - 1];
+  const earlierText = lines.slice(0, -1).join("\n\n");
+  const earlierOmittedBytes = Buffer.byteLength(earlierText, "utf8");
+  let latestOmittedBytes = 0;
+  let keptLatest = latest;
+
+  for (let attempts = 0; attempts < 3; attempts += 1) {
+    const marker = `[Input truncated: ${earlierOmittedBytes + latestOmittedBytes} bytes omitted; ${earlierOmittedBytes} before latest message, ${latestOmittedBytes} from latest message]\n\n`;
+    const budget = capBytes - Buffer.byteLength(marker, "utf8");
+    const truncated = takeUtf8Tail(latest, budget);
+    keptLatest = truncated.text;
+    latestOmittedBytes = truncated.omittedBytes;
+  }
+
+  return `[Input truncated: ${earlierOmittedBytes + latestOmittedBytes} bytes omitted; ${earlierOmittedBytes} before latest message, ${latestOmittedBytes} from latest message]\n\n${keptLatest}`;
+}
+
+function takeUtf8Tail(text: string, maxBytes: number): { text: string; omittedBytes: number } {
+  if (maxBytes <= 0) return { text: "", omittedBytes: Buffer.byteLength(text, "utf8") };
+  if (Buffer.byteLength(text, "utf8") <= maxBytes) return { text, omittedBytes: 0 };
+
+  const chars = Array.from(text);
+  let low = 0;
+  let high = chars.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    const suffix = chars.slice(mid).join("");
+    if (Buffer.byteLength(suffix, "utf8") <= maxBytes) {
+      high = mid;
+    } else {
+      low = mid + 1;
+    }
+  }
+
+  const omitted = chars.slice(0, low).join("");
+  const kept = chars.slice(low).join("");
+  return { text: kept, omittedBytes: Buffer.byteLength(omitted, "utf8") };
 }
 
 function extractMessageText(content: unknown): string {
