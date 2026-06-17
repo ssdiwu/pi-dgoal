@@ -7,13 +7,12 @@
 ## Features
 
 - `/dgoal <goal>` starts durable goal mode.
-- `/dloop <goal>` remains as a backward-compatible alias; prefer `/dgoal` for new usage.
 - `loop_complete` lets the agent explicitly mark the goal as complete after verification.
 - Session-scoped state: the active goal is persisted in the current Pi session, not in a global goal pool.
 - Automatic continuation: after each agent turn, if the goal is still active, the extension sends a follow-up prompt.
 - Safe pause: user aborts pause immediately; transient model errors are retried before the loop pauses.
 - Startup context hardening: `/dgoal <goal>` summarizes prior discussion into a bounded context summary, but pasted logs, old prompts, old Dgoal state, or other AI output are treated only as evidence, not as new user instructions.
-- Completion audit: `loop_complete` runs an isolated read-only auditor before ending the loop, unless disabled with `PI_DLOOP_NO_AUDIT=1`.
+- Completion audit: `loop_complete` runs an isolated read-only auditor; after approval, the tool sends a completion signal back to the model so the assistant can write the final user-facing reply.
 
 ## Install In Local Pi
 
@@ -37,20 +36,35 @@ For npm-based installation, use the published package name:
 
 ## Usage
 
+Start a durable goal:
+
 ```text
 /dgoal Fix the failing tests in this project and verify the result
 ```
 
-Control commands:
+Check the current goal and iteration:
 
 ```text
 /dgoal status
-/dgoal pause
-/dgoal resume
-/dgoal clear
 ```
 
-The old `/dloop` prefix still works as a compatibility alias.
+Pause automatic continuation without deleting the goal:
+
+```text
+/dgoal pause
+```
+
+Resume a paused goal and send a continuation prompt:
+
+```text
+/dgoal resume
+```
+
+Clear the current goal from the session:
+
+```text
+/dgoal clear
+```
 
 ## Tests
 
@@ -97,10 +111,10 @@ When `loop_complete` is called, `pi-dgoal` starts an isolated completion auditor
 
 The auditor receives no main-session context. It only checks the goal, the agent's claimed summary, and the stated verification evidence with read-only tools. This turns completion from self-report into an independent evidence check.
 
-- Approved: the goal is completed and the loop ends.
+- Approved: the goal state is closed, automatic continuation stops, and the model receives a completion signal so it can summarize what changed and suggest next steps.
 - Rejected: the goal stays active, the audit report is injected, and the agent continues.
 - Auditor error / abort / no clear decision: the goal is safely paused; run `/dgoal resume` to continue.
-- Escape hatch: set `PI_DLOOP_NO_AUDIT=1` to skip the auditor during debugging or when no model is available.
+- Escape hatch: set `PI_DGOAL_NO_AUDIT=1` to skip the auditor during debugging or when no model is available.
 
 ## Design Boundaries
 
@@ -113,4 +127,4 @@ The auditor receives no main-session context. It only checks the goal, the agent
 
 ## Rename Note
 
-This package replaces `pi-dloop`. The old package is deprecated on npm. Use `pi-dgoal` and `/dgoal`; `/dloop` remains as a compatibility alias.
+This package replaces `pi-dloop`. The old package is deprecated on npm. Use `pi-dgoal` and `/dgoal`.

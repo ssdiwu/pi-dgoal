@@ -7,7 +7,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
-const AUDITOR_DISABLED = process.env.PI_DLOOP_NO_AUDIT === "1";
+const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
 const APPROVED_MARKER = "<APPROVED>";
 const REJECTED_MARKER = "<REJECTED>";
 // 纯只读：auditor 只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
@@ -61,8 +61,7 @@ interface LoopContext {
 }
 
 const STATUS_KEY = "dgoal";
-// Keep the old custom entry type so existing pi-dloop sessions can resume active goals.
-const STATE_ENTRY_TYPE = "dloop-state";
+const STATE_ENTRY_TYPE = "dgoal-state";
 const MAX_OBJECTIVE_LENGTH = 8_000;
 const CONTEXT_INPUT_CAP_BYTES = 50 * 1024;
 // 模型错误（非用户中断）的自动重试上限：连续 error 达到此值才真正暂停。
@@ -107,15 +106,15 @@ const loopCompleteTool = defineTool({
     const summary = params.summary.trim();
     const verification = params.verification.trim();
 
-    // 审核默认开启；PI_DLOOP_NO_AUDIT=1 逃生通道，直接放行。
+    // 审核默认开启；PI_DGOAL_NO_AUDIT=1 逃生通道，直接放行。
     if (AUDITOR_DISABLED) {
       finalizeGoal(ctx);
       return {
         content: [
-          { type: "text", text: `Dgoal 完成（跳过审核）。\n总结：${summary}\n验证：${verification}` },
+          { type: "text", text: buildCompletionReplySignal({ goal: completedGoal, summary, verification, audited: false }) },
         ],
         details: { goal: completedGoal.objective, summary, verification, audited: false },
-        terminate: true,
+        terminate: false,
       };
     }
 
@@ -166,14 +165,13 @@ const loopCompleteTool = defineTool({
       };
     }
 
-    ctx.ui.notify("审核通过，Dgoal 完成。", "info");
     finalizeGoal(ctx);
     return {
       content: [
-        { type: "text", text: `Dgoal 完成。审核通过。\n总结：${summary}\n验证：${verification}` },
+        { type: "text", text: buildCompletionReplySignal({ goal: completedGoal, summary, verification, audited: true, auditOutput: audit.output }) },
       ],
       details: { goal: completedGoal.objective, summary, verification, audited: true, auditOutput: audit.output },
-      terminate: true,
+      terminate: false,
     };
   },
 });
@@ -184,11 +182,6 @@ export default function dgoal(pi: ExtensionAPI) {
 
   pi.registerCommand("dgoal", {
     description: "持续推进目标直到完成：/dgoal <goal> | pause | resume | clear | status",
-    handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
-  });
-
-  pi.registerCommand("dloop", {
-    description: "兼容别名：请优先使用 /dgoal",
     handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
   });
 
@@ -594,6 +587,34 @@ interface ContextSummaryResult {
   summary: string;
   aborted: boolean;
   error?: string;
+}
+
+interface CompletionReplySignalArgs {
+  goal: Pick<LoopGoal, "objective">;
+  summary: string;
+  verification: string;
+  audited: boolean;
+  auditOutput?: string;
+}
+
+export function buildCompletionReplySignal(args: CompletionReplySignalArgs) {
+  const auditLine = args.audited ? "审核结论：已通过独立只读审核。" : "审核结论：已按 PI_DGOAL_NO_AUDIT=1 跳过审核。";
+  const auditOutput = args.auditOutput?.trim()
+    ? `
+审核报告：
+${args.auditOutput.trim()}`
+    : "";
+  return [
+    "Dgoal 完成信号：目标状态已关闭，自动续跑已停止。",
+    "请基于当前对话上下文直接回复用户，不要再次调用 loop_complete。",
+    "回复应简要说明完成了哪些内容、验证证据，以及用户可能关心的下一步。",
+    "",
+    `目标：${args.goal.objective}`,
+    `完成总结：${args.summary}`,
+    `验证证据：${args.verification}`,
+    auditLine,
+    auditOutput,
+  ].filter(Boolean).join("\n");
 }
 
 // 带重试的背景固化入口：瞬时 provider 错误不应阻断 /dgoal 启动。

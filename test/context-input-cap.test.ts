@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildCompletionReplySignal,
   buildContextBlock,
   buildContextSummarizerTask,
   capPriorDiscussionText,
@@ -72,5 +73,24 @@ describe("isRetryableSubprocessError", () => {
   test("does not retry ordinary command setup failures", () => {
     expect(isRetryableSubprocessError("启动 pi 子进程失败")).toBe(false);
     expect(isRetryableSubprocessError(undefined)).toBe(false);
+  });
+});
+
+describe("buildCompletionReplySignal", () => {
+  test("signals completion to the model instead of acting as the final user reply", () => {
+    const signal = buildCompletionReplySignal({
+      goal: { objective: "只保留 /dgoal" },
+      summary: "删除 /dloop 兼容命令",
+      verification: "RPC 测试确认 dloop 不再注册",
+      audited: true,
+      auditOutput: "<APPROVED>",
+    });
+
+    expect(signal).toContain("Dgoal 完成信号");
+    expect(signal).toContain("请基于当前对话上下文直接回复用户");
+    expect(signal).toContain("不要再次调用 loop_complete");
+    expect(signal).toContain("完成了哪些内容");
+    expect(signal).toContain("只保留 /dgoal");
+    expect(signal).toContain("<APPROVED>");
   });
 });
