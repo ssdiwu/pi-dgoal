@@ -4,11 +4,11 @@ pi-dgoal 的文档目录。
 
 ## 当前文档结构
 
-pi-dgoal 是单文件扩展，当前**唯一权威文档是根 `README.md`**，本 `doc/` 暂无独立子文档。这个 `doc/README.md` 作为文档入口存在。
+pi-dgoal 是单文件扩展，当前**英文权威入口是根 `README.md`**，中文说明保留在 `README-zh.md`，本 `doc/` 暂无独立子文档。这个 `doc/README.md` 作为文档入口存在。
 
 ## 根 README 阅读地图
 
-先读根 [`README.md`](../README.md)，它的结构是：
+先读根 [`README.md`](../README.md)；需要中文时读 [`README-zh.md`](../README-zh.md)。根 README 的结构是：
 
 1. **功能** — `/dgoal` 目标模式、`loop_complete` 工具、会话内状态、自动续跑、安全暂停、启动背景固化
 2. **安装到本机 Pi** — 加入 `packages` + `/reload`
