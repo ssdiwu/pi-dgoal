@@ -114,8 +114,8 @@ describe("buildCompletionReplySignal", () => {
   test("signals completion to the model instead of acting as the final user reply", () => {
     const signal = buildCompletionReplySignal({
       goal: { objective: "只保留 /dgoal" },
-      summary: "删除 /dloop 兼容命令",
-      verification: "RPC 测试确认 dloop 不再注册",
+      summary: "保留唯一 /dgoal 命令",
+      verification: "RPC 测试确认 dgoal 已注册",
       audited: true,
       auditOutput: "<APPROVED>",
     });

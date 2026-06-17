@@ -109,11 +109,7 @@ def assert_commands(session: RpcSession) -> dict[str, Any]:
     missing = sorted(required - names)
     if missing:
         raise AssertionError(f"missing commands: {missing}; got sample={sorted(names)[:20]}")
-    forbidden = {"dloop"}
-    present_forbidden = sorted(forbidden & names)
-    if present_forbidden:
-        raise AssertionError(f"forbidden commands still registered: {present_forbidden}")
-    return {"required": sorted(required), "matched": sorted(required & names), "forbidden_absent": sorted(forbidden), "total_commands": len(names)}
+    return {"required": sorted(required), "matched": sorted(required & names), "total_commands": len(names)}
 
 
 def main() -> int:

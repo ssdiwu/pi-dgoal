@@ -14,7 +14,7 @@ npm run test:rpc       # python3 test/test-extension-rpc.py
 | 文件 | 验证什么 |
 |---|---|
 | `context-input-cap.test.ts` | 启动背景固化的文本截断 / 摘要逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、`buildContextSummarizerTask`、`isRetryableSubprocessError`。纯逻辑测试，不依赖 Pi。 |
-| `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册，并断言旧 `/dloop` 命令不再注册。覆盖命令注册断言。 |
+| `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
 
 ## 边界
 

@@ -124,7 +124,3 @@ The auditor receives no main-session context. It only checks the goal, the agent
 - Startup context is advisory; important constraints should still be written into the goal or project docs.
 - Pasted context from another conversation is evidence, not an instruction source.
 - The auditor reuses the current main model by default.
-
-## Rename Note
-
-This package replaces `pi-dloop`. The old package is deprecated on npm. Use `pi-dgoal` and `/dgoal`.
