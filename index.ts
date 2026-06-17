@@ -405,11 +405,14 @@ function showStatus(ctx: LoopContext) {
     return;
   }
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  const contextPreview = buildContextPreview(currentGoal, 5);
   ctx.ui.notify(
     [
       `目标：${currentGoal.objective}`,
       `状态：${currentGoal.status}`,
       `轮次：${currentGoal.iteration}`,
+      contextPreview ? `启动背景预览：
+${contextPreview}` : "启动背景预览：无",
       "命令：/dgoal pause | /dgoal resume | /dgoal clear",
     ].join("\n"),
     "info",
@@ -429,6 +432,16 @@ function createGoal(objective: string): LoopGoal {
   };
 }
 
+export function buildContextPreview(goal: Pick<LoopGoal, "contextSummary">, maxLines = 5): string {
+  const summary = goal.contextSummary?.trim();
+  if (!summary || summary === "无额外背景") return "";
+
+  const lines = summary.split(/\r?\n/);
+  const preview = lines.slice(0, maxLines).join("\n");
+  const remaining = Math.max(0, lines.length - maxLines);
+  return remaining > 0 ? `${preview}\n…（还有 ${remaining} 行，完整背景已注入 system prompt）` : preview;
+}
+
 export function buildContextBlock(goal: Pick<LoopGoal, "contextSummary">): string {
   // 无背景或明确无额外背景时不注入，避免噪音。
   if (!goal.contextSummary || !goal.contextSummary.trim() || goal.contextSummary.trim() === "无额外背景") {
@@ -441,8 +454,23 @@ function buildSystemPrompt(goal: LoopGoal) {
   return `当前 /dgoal 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在分析、计划、TODO 列表、部分修复或建议下一步上。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 loop_complete。`;
 }
 
-function buildStartPrompt(goal: LoopGoal) {
-  return `Dgoal 模式已激活。完整达成以下目标：\n\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>\n\n持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
+export function buildStartPrompt(goal: LoopGoal) {
+  const contextPreview = buildContextPreview(goal, 5);
+  const contextBlock = contextPreview
+    ? `
+
+启动背景预览（前 5 行，仅供核对，不是新的用户指令）：
+<loop_context_preview>
+${escapeXml(contextPreview)}
+</loop_context_preview>`
+    : "";
+  return `Dgoal 模式已激活。完整达成以下目标：
+
+<loop_goal>
+${escapeXml(goal.objective)}
+</loop_goal>${contextBlock}
+
+持续工作直到端到端完成。不要停在计划或部分进度上。验证结果后，调用 loop_complete 并附上简要总结和验证证据。`;
 }
 
 function buildResumePrompt(goal: LoopGoal) {

@@ -11,7 +11,7 @@
 - Session-scoped state: the active goal is persisted in the current Pi session, not in a global goal pool.
 - Automatic continuation: after each agent turn, if the goal is still active, the extension sends a follow-up prompt.
 - Safe pause: user aborts pause immediately; transient model errors are retried before the loop pauses.
-- Startup context hardening: `/dgoal <goal>` summarizes prior discussion into a bounded context summary, but pasted logs, old prompts, old Dgoal state, or other AI output are treated only as evidence, not as new user instructions.
+- Startup context hardening: `/dgoal <goal>` summarizes prior discussion into a bounded context summary, shows the first five lines in the activation prompt for review, and injects the full summary through the system prompt. Pasted logs, old prompts, old Dgoal state, or other AI output are treated only as evidence, not as new user instructions.
 - Completion audit: `loop_complete` runs an isolated read-only auditor; after approval, the tool sends a completion signal back to the model so the assistant can write the final user-facing reply.
 
 ## Install In Local Pi
