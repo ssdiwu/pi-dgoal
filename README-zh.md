@@ -1,119 +1,145 @@
 # pi-dgoal
 
-`pi-dgoal` 是一个轻量 Pi 扩展包，用来让 agent 围绕一个明确目标持续工作，直到显式完成并给出验证证据。
+[English README](./README.md)
 
-## 功能
+让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-- `/dgoal <目标>`：启动持续目标模式，带 **Task Plan**——主代理先产出结构化计划（goal + 初始 steps），你通过闸门确认 UI（确认 / 拒绝 / 输入反馈）确认后才进 loop。
-- **Task Plan 两层分离**：Goal 层（你确认过的）冻结为 loop 的方向契约；Step 层进 loop 后可由 agent 用 `dgoal_plan` 工具增改。editor 上方的实时浮层显示 step 进度。
-- `dgoal_done` 工具：agent 声明完成并触发终审；通过后向模型发送完成信号。
-- `dgoal_check` 工具：审核工具，两模式——阶段性自检（agent 执行中主动调，审单个 step）和终审（`dgoal_done` 内部调，审全 goal）。
-- 会话内状态：目标与 plan 状态写入当前 Pi session，不维护全局目标池。
-- 自动续跑：每轮结束后如果目标仍 active，会自动发送继续提示。
-- 安全暂停：模型错误时自动重试 3 次再暂停，避免瞬时错误打断 loop；用户中断则立即暂停。
-- 启动背景固化：`/dgoal <目标>` 启动时，会从前文讨论自动提炼结构化背景（目标范围 / 关键约束 / 验收标准）并随 goal 持久化；摘要输入按总量约 50KB 保留最近完整对话，超限会提示 omitted bytes。激活提示默认展示前 5 行背景预览供核对，完整背景注入 system prompt；摘要失败降级为不带背景启动，不阻断主流程。
-- 背景固化防误导：前文里的粘贴日志、旧 prompt、旧 Dgoal 状态或其它 AI 输出只作为问题证据，不会被当成当前用户指令；背景固化子进程遇到限流、超时或临时 provider error 会重试 3 次。
+> **v0.2.0**：Task Plan（goal/phase/task）+ 启动闸门 + 实时浮层 + 建检循环 + 终审。详见 `doc/30-路线图`。
 
-## 安装到本机 Pi
+## 安装
 
-把本目录加入 `~/.pi/agent/settings.json` 的 `packages`：
+```bash
+pi install npm:pi-dgoal
+```
+
+然后在 Pi 中 `/reload`。
+
+本地开发：
 
 ```json
+// ~/.pi/agent/settings.json
 "../../Documents/codes/Githubs/pi-dgoal"
 ```
 
-然后在 Pi 中执行：
+## 用法
 
-```text
-/reload
-```
-
-## 使用方式
-
-启动一个可持续目标：
+启动带 Task Plan 的目标：
 
 ```text
 /dgoal 修复当前项目里的 failing tests，并运行测试验证
 ```
 
-查看当前目标和轮次：
+启动闸门会展示 agent 提交的计划（goal + phases + tasks），确认 / 拒绝 / 反馈后再进入 loop。
+
+loop 中：
+
+- agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → completed | blocked`）
+- 每个 phase 完成都通过 `dgoal_check`（独立只读子进程）独立审核
+- editor 上方实时浮层显示 phase 进度；task 默认隐藏，`Ctrl+O` 展开
+
+控制目标：
 
 ```text
-/dgoal status
+/dgoal status       # 当前 goal + 迭代 + 状态栏
+/dgoal pause        # 停止自动续跑（保留 goal）
+/dgoal resume       # 恢复暂停的 goal
+/dgoal clear        # 清除当前 session 的 goal
 ```
 
-暂停自动续跑，但保留当前目标：
+声明完成（触发终审）：
+
+agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，loop 停止。
+
+## 工具
+
+| 工具 | 用途 |
+|---|---|
+| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks，用户确认后才进 loop |
+| `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
+| `dgoal_check` | phase 完成门（spawn 独立只读子进程），最后 phase 调用即终审 |
+| `dgoal_done` | 声明 goal 完成，内部触发终审，是关闭 goal 的唯一方式 |
+
+## 设计边界
+
+- 会话内单 goal，不做多目标池
+- Task Plan 必选：`/dgoal` 即复合目标，不允许空 plan 完成
+- Goal 层确认后冻结；phase/task 层 loop 内可调
+- completed task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
+- 独立审核：审核员是独立 `pi` 子进程，无主会话上下文，只读工具，完成不自证
+- 不自动 Git 操作，不替代项目测试，不做固定 workflow engine
+
+## Goal 生命周期
 
 ```text
-/dgoal pause
+pending ──→ active ──→ done                # 正常路径
+              │  ↑
+              ↓  │ rejected                # 终审不过，loop 继续（每轮 prompt 钉审核问题）
+              │  │  ×3 终审不过
+              ↓  ↓
+            paused (audit_failed_3x) ──/dgoal resume──→ active
+            paused (user_abort / model_error / audit_error) ──/dgoal resume──→ active
 ```
 
-恢复暂停的目标，并发送继续提示：
+状态定义见 `doc/术语表.md`，rejected/paused 契约见 `doc/adr/0004`，当前实现见 `doc/10-架构与运行/`。
+
+## 完成审核
+
+`dgoal_done` 走 `dgoal_check` 终审模式：独立 `pi` 子进程，零主会话上下文，只读工具（`read`、`grep`、`find`、`ls`）。
 
 ```text
-/dgoal resume
+--no-session --mode json --tools read,grep,find,ls
 ```
 
-清除当前会话里的目标：
-
-```text
-/dgoal clear
-```
+- 通过：goal 关闭，loop 停止，模型收到完成信号用于最终用户回复
+- 拒绝：goal 进 `rejected`，审核报告注入对话，每轮 prompt 钉着未过问题；连续 3 次拒绝 → 暂停，`/dgoal resume` 清零重试
+- 审核出错 / 中断 / 无结论：goal 安全暂停，`/dgoal resume` 继续
+- 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核（仅调试）
 
 ## 测试
 
-使用隔离配置目录和 `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载与命令注册：
-
 ```bash
-npm run test:context
-npm run test:rpc
+npm test         # bun: 全套（95 测试，8 文件）
+npm run test:rpc # python: RPC 加载 + 命令注册
 ```
 
-等价命令：
+测试文件覆盖数据模型 + 持久化、plan reducer（状态机 + 环检测）、浮层渲染、启动闸门、状态机 + prompt、端到端集成、工具 execute 真实路径集成、上下文固化。
 
-```bash
-bun test test/context-input-cap.test.ts
-python3 test/test-extension-rpc.py
-```
+**TUI 交互行为**（启动闸门确认 UI、`dgoal_check` 子进程审计、终审 rejected 回环、aboveEditor 浮层渲染）需在 Pi TUI 用真实模型做人工 smoke test。
 
-当前自动化断言覆盖背景固化纯逻辑与 `/dgoal` 命令注册；完整自动续跑和审核行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
-
-## 文件结构
+## 项目结构
 
 ```text
 pi-dgoal/
 ├── AGENTS.md
 ├── README.md
 ├── README-zh.md
-├── doc/
-│   └── README.md
+├── doc/                          ← 设计 + 路线图 + 历史（中文）
+│   ├── README.md
+│   ├── 术语表.md
+│   ├── 10-架构与运行/             ← 当前实现
+│   ├── 20-能力参考/               ← 调研参考
+│   ├── 30-路线图/                 ← 路线图
+│   ├── 40-版本实施方案/           ← 当前版本
+│   ├── 90-归档/                   ← 历史归档
+│   └── adr/                       ← 架构决策记录
 ├── package.json
-├── index.ts
+├── index.ts                       ← 单文件扩展（约 2100 行）
 └── test/
-    ├── README.md
     ├── context-input-cap.test.ts
+    ├── task-plan-data-model.test.ts
+    ├── dgoal-plan-reducer.test.ts
+    ├── plan-overlay-render.test.ts
+    ├── startup-gate.test.ts
+    ├── state-machine-and-prompt.test.ts
+    ├── e2e-integration.test.ts
+    ├── tool-execute-integration.test.ts
     └── test-extension-rpc.py
 ```
 
-## 完成审核（auditor）
+## 文档
 
-`dgoal_done` 被调用时，会运行 `dgoal_check` 的终审模式：启动一个**独立完成审核员**，起一个独立的 pi 子进程（`--no-session --mode json`，纯只读工具 `read/grep/find/ls`），在零上下文里重检目标是否真的达成，再决定是否终结 loop。这让 `verification` 从 agent 自述升级为独立他证。
+入口 `doc/README.md`。建检循环 + 三层内容模型是基本盘，决策见 `doc/adr/0006`。
 
-子进程隔离对齐官方 subagent 示例：审核员是一个全新进程，物理上拿不到主会话上下文，也注册不了写工具。审核员只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
+## 协议
 
-- 审核通过：目标状态关闭、自动续跑停止，并向模型发送完成信号，让 assistant 总结完成内容、验证证据和可能的下一步。
-- 审核未通过：目标进入 `rejected` 状态，审核报告注入对话，每轮 prompt 钉着未过问题，agent 继续修正后重新 `dgoal_done`。连续 3 次终审不过，目标转为 `paused`（`audit_failed_3x`），`/dgoal resume` 会清零计数重试。
-- 审核器出错 / 被中断 / 无结论：目标安全暂停，避免 fail-open 或烧 token 死循环，用 `/dgoal resume` 继续（此类 resume 不清零计数）。
-- 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核，直接放行（调试或模型不可用时使用）。
-
-## 设计边界
-
-- 不自动执行 Git 提交、回滚或删除。
-- 不替代测试命令；agent 仍需根据项目现状选择并运行验证。
-- 只支持当前会话内单目标，不做多目标池。
-- Task Plan 必选：用 `/dgoal` 即意味着复合目标，必须有 plan（goal 层 + step 层），无空 plan 放行。详见 `doc/adr/0001`、`doc/adr/0002`。
-- goal/phase/task 三层 + 建检循环：goal（用户确认后冻结）是方向契约，phase（task 聚合）和 task（loop 内可增改，completed 不回退）是执行脚手架，TUI 显示 phase 进度（task 默认隐藏 Ctrl+O 展开）。详见 `doc/adr/0006`、`doc/10-架构与运行/`。
-- 工具规范化：agent 与 dgoal 状态机交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task）、`dgoal_check`（phase completed 唯一入口，阶段建检/终审）、`dgoal_done`（声明完成+触发终审）。原 `loop_complete` 已改名 `dgoal_done`。
-- 启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点，重要决策仍建议落入文件。
-- 前文讨论可能包含用户粘贴的别处上下文；这些内容只作为 bug report / 证据参考，不能覆盖当前 `/dgoal` 目标。
-- 审核员默认复用当前主模型，不做独立模型配置。
+MIT
