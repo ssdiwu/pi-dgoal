@@ -1,18 +1,18 @@
 # doc/
 
-pi-dloop 的文档目录。
+pi-dgoal 的文档目录。
 
 ## 当前文档结构
 
-pi-dloop 是单文件扩展，当前**唯一权威文档是根 `README.md`**，本 `doc/` 暂无独立子文档。这个 `doc/README.md` 作为文档入口存在。
+pi-dgoal 是单文件扩展，当前**唯一权威文档是根 `README.md`**，本 `doc/` 暂无独立子文档。这个 `doc/README.md` 作为文档入口存在。
 
 ## 根 README 阅读地图
 
 先读根 [`README.md`](../README.md)，它的结构是：
 
-1. **功能** — `/dloop` 目标模式、`loop_complete` 工具、会话内状态、自动续跑、安全暂停、启动背景固化
+1. **功能** — `/dgoal` 目标模式、`loop_complete` 工具、会话内状态、自动续跑、安全暂停、启动背景固化
 2. **安装到本机 Pi** — 加入 `packages` + `/reload`
-3. **使用方式** — `/dloop <目标>` 和控制命令（status / pause / resume / clear）
+3. **使用方式** — `/dgoal <目标>` 和控制命令（status / pause / resume / clear）；`/dloop` 是兼容旧命令
 4. **测试** — `npm run test:rpc`
 5. **文件结构**
 6. **完成审核（auditor）** — 独立审核员子进程隔离设计（这是 ADR 级决策，见该节）

@@ -22,7 +22,7 @@ class RpcSession:
 
     @classmethod
     def start(cls) -> "RpcSession":
-        tmp_dir = tempfile.mkdtemp(prefix="pi-dloop-agent.")
+        tmp_dir = tempfile.mkdtemp(prefix="pi-dgoal-agent.")
         env = os.environ.copy()
         env["PI_CODING_AGENT_DIR"] = tmp_dir
         env["PI_OFFLINE"] = "1"
@@ -105,7 +105,7 @@ def assert_commands(session: RpcSession) -> dict[str, Any]:
     if not response.get("success", True):
         raise AssertionError(f"get_commands failed: {response}")
     names = command_names(response)
-    required = {"dloop"}
+    required = {"dgoal", "dloop"}
     missing = sorted(required - names)
     if missing:
         raise AssertionError(f"missing commands: {missing}; got sample={sorted(names)[:20]}")

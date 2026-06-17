@@ -1,6 +1,6 @@
 {
-  "name": "pi-dloop",
-  "version": "0.1.1",
+  "name": "pi-dgoal",
+  "version": "0.1.2",
   "description": "Pi extension for lightweight durable goal loops with explicit completion verification.",
   "type": "module",
   "keywords": [

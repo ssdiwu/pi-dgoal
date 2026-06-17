@@ -1,6 +1,6 @@
-# AGENTS.md — pi-dloop
+# AGENTS.md — pi-dgoal
 
-> pi-dloop 是一个 Pi 扩展，让 agent 围绕一个明确目标持续工作，直到显式完成并给出验证证据。
+> pi-dgoal 是一个 Pi 扩展，让 agent 围绕一个明确目标持续工作，直到显式完成并给出验证证据。
 
 ## 先读
 
@@ -10,7 +10,7 @@
 ## 项目结构
 
 ```text
-pi-dloop/
+pi-dgoal/
 ├── index.ts                          ← Pi 扩展入口（单文件，~1000 行）
 ├── test/
 │   ├── test-extension-rpc.py         ← RPC 加载与命令注册测试
@@ -32,7 +32,7 @@ pi-dloop/
 改动后至少执行：
 
 ```bash
-npm run test:rpc      # RPC 加载 + /dloop 命令注册
+npm run test:rpc      # RPC 加载 + /dgoal 命令注册
 npm run test:context  # 启动背景固化逻辑（bun test）
 ```
 
