@@ -36,7 +36,7 @@ pi-dgoal/
 - **会话内单目标**：只支持当前会话内单目标，不做多目标池。
 - **Task Plan 必选**：`/dgoal` 即复合目标，必须有 plan（phase + task 两层内容）；无空 plan 放行。详见 ADR 0002/0006。
 - **三层内容 + 建检循环**：goal（冻结）/phase（task 聚合）/task（按需分解）三层；dgoal 是建检循环——定义 goal + 完成后 check，不过继续干，过则结束。phase completed 唯一入口是 `dgoal_check`（独立子进程，建检不可绕过）。详见 ADR 0006、`doc/10-架构与运行/`。
-- **工具规范化**：agent 与 dgoal 状态机的交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 step）、`dgoal_check`（阶段性自检/终审两模式）、`dgoal_done`（声明完成+触发终审）。原 `loop_complete` 已改名 `dgoal_done`。
+- **工具规范化**：agent 与 dgoal 状态机的交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task）、`dgoal_check`（phase completed 唯一入口，阶段建检/终审）、`dgoal_done`（声明完成+触发终审）。原 `loop_complete` 已改名 `dgoal_done`。
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
 - **背景固化是补充**：启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点。

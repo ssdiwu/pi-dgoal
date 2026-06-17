@@ -112,8 +112,8 @@ pi-dgoal/
 - 不替代测试命令；agent 仍需根据项目现状选择并运行验证。
 - 只支持当前会话内单目标，不做多目标池。
 - Task Plan 必选：用 `/dgoal` 即意味着复合目标，必须有 plan（goal 层 + step 层），无空 plan 放行。详见 `doc/adr/0001`、`doc/adr/0002`。
-- goal/step 两层分离：goal 层（用户确认后冻结）是方向契约，step 层（loop 内可增改，completed 不回退）是执行脚手架，TUI 显示 step 进度。详见 `doc/adr/0001`。
-- 工具规范化：agent 与 dgoal 状态机交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 step）、`dgoal_check`（阶段性自检/终审两模式）、`dgoal_done`（声明完成+触发终审）。原 `loop_complete` 已改名 `dgoal_done`。
+- goal/phase/task 三层 + 建检循环：goal（用户确认后冻结）是方向契约，phase（task 聚合）和 task（loop 内可增改，completed 不回退）是执行脚手架，TUI 显示 phase 进度（task 默认隐藏 Ctrl+O 展开）。详见 `doc/adr/0006`、`doc/10-架构与运行/`。
+- 工具规范化：agent 与 dgoal 状态机交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task）、`dgoal_check`（phase completed 唯一入口，阶段建检/终审）、`dgoal_done`（声明完成+触发终审）。原 `loop_complete` 已改名 `dgoal_done`。
 - 启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点，重要决策仍建议落入文件。
 - 前文讨论可能包含用户粘贴的别处上下文；这些内容只作为 bug report / 证据参考，不能覆盖当前 `/dgoal` 目标。
 - 审核员默认复用当前主模型，不做独立模型配置。

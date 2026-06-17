@@ -122,7 +122,7 @@ describe("buildCompletionReplySignal", () => {
 
     expect(signal).toContain("Dgoal 完成信号");
     expect(signal).toContain("请基于当前对话上下文直接回复用户");
-    expect(signal).toContain("不要再次调用 loop_complete");
+    expect(signal).toContain("不要再次调用 dgoal_done");
     expect(signal).toContain("完成了哪些内容");
     expect(signal).toContain("只保留 /dgoal");
     expect(signal).toContain("<APPROVED>");
