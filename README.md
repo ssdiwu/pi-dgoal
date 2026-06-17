@@ -46,25 +46,32 @@
 使用隔离配置目录和 `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载与命令注册：
 
 ```bash
+npm run test:context
 npm run test:rpc
 ```
 
 等价命令：
 
 ```bash
+bun test test/context-input-cap.test.ts
 python3 test/test-extension-rpc.py
 ```
 
-当前自动化断言覆盖 `/dloop` 命令的注册；完整自动续跑和审核行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
+当前自动化断言覆盖背景固化纯逻辑与 `/dloop` 命令注册；完整自动续跑和审核行为仍需要在 Pi TUI 中用真实模型做人工 smoke test。
 
 ## 文件结构
 
 ```text
 pi-dloop/
+├── AGENTS.md
 ├── README.md
+├── doc/
+│   └── README.md
 ├── package.json
 ├── index.ts
 └── test/
+    ├── README.md
+    ├── context-input-cap.test.ts
     └── test-extension-rpc.py
 ```
 
