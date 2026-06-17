@@ -1,7 +1,7 @@
 {
   "name": "pi-dgoal",
-  "version": "0.1.3",
-  "description": "Pi extension for lightweight durable goal loops with explicit completion verification.",
+  "version": "0.2.0",
+  "description": "Pi extension for durable goal loops with explicit Task Plan + build-check loop (建检循环) + auditor verification.",
   "type": "module",
   "keywords": [
     "pi-package",
@@ -15,7 +15,8 @@
   "author": "diwu",
   "scripts": {
     "test:context": "bun test test/context-input-cap.test.ts",
-    "test:rpc": "python3 test/test-extension-rpc.py"
+    "test:rpc": "python3 test/test-extension-rpc.py",
+    "test": "bun test"
   },
   "pi": {
     "extensions": [
