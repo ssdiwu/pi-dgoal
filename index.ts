@@ -615,6 +615,8 @@ export default function dgoal(pi: ExtensionAPI) {
     }
 
     // 模型错误：先自动重试 MAX_ERROR_RETRIES 次，仍失败再暂停，避免瞬时错误直接打断 loop。
+    // 不要 clearContinuation + sendContinuation——前一个 followUp 还未消费时重发会堆 N 条。
+    // sendContinuation 本身的 guard（pendingContinuation?.goalId === goal.id）会去重。
     if (finalAssistant?.stopReason === "error") {
       consecutiveErrors += 1;
       if (consecutiveErrors <= MAX_ERROR_RETRIES) {
@@ -622,7 +624,6 @@ export default function dgoal(pi: ExtensionAPI) {
           `模型错误，自动重试（${consecutiveErrors}/${MAX_ERROR_RETRIES}）${errorDetail}`,
           "warning",
         );
-        clearContinuation();
         await sendContinuation(pi, ctx, currentGoal);
         return;
       }
