@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __handleProposalConfirmationForTest, __setI18nForTest, buildProposalConfirmationOptions, formatProposalConfirmTitle, formatProposalForConfirm, type LoopGoal, type PlanProposal } from "../index.ts";
+import { __handleProposalConfirmationForTest, __setI18nForTest, buildProposalConfirmationOptions, formatProposalConfirmTitle, formatProposalForConfirm, validateProposalInput, type LoopGoal, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 未 export，通过 formatProposalForConfirm 间接覆盖；
 // 这里单独 export 测需要，先确认是否 export。
@@ -12,6 +12,34 @@ import { __handleProposalConfirmationForTest, __setI18nForTest, buildProposalCon
 function goal(): LoopGoal {
   return { id: "g1", objective: "修测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
 }
+
+describe("切片4 · validateProposalInput（verification 必填，ADR 0007）", () => {
+  test("缺 verification 被拒（no verification）", () => {
+    const r = validateProposalInput({ objective: "o", phaseCount: 1 });
+    expect(r).not.toBeNull();
+    expect(r!.error).toBe("no verification");
+    expect(r!.message).toContain("verification");
+  });
+
+  test("verification 为空字符串 / 纯空白被拒", () => {
+    expect(validateProposalInput({ objective: "o", verification: "   ", phaseCount: 1 })).not.toBeNull();
+    expect(validateProposalInput({ objective: "o", verification: "", phaseCount: 1 })).not.toBeNull();
+  });
+
+  test("有明确 verification 通过", () => {
+    expect(validateProposalInput({ objective: "o", verification: "npm test 全过且 RPC 测试确认命令注册", phaseCount: 2 })).toBeNull();
+  });
+
+  test("缺 objective 被拒（no objective）", () => {
+    const r = validateProposalInput({ objective: "", verification: "v", phaseCount: 1 });
+    expect(r!.error).toBe("no objective");
+  });
+
+  test("phases 为空被拒（no phases，向后兼容）", () => {
+    const r = validateProposalInput({ objective: "o", verification: "v", phaseCount: 0 });
+    expect(r!.error).toBe("no phases");
+  });
+});
 
 describe("切片4 · buildProposalConfirmationOptions", () => {
   test("默认摘要态与 task 明细态使用短切换文案", () => {

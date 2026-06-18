@@ -627,6 +627,29 @@ export function proposalToPlan(proposal: PlanProposal): TaskPlan {
   return { phases, nextId };
 }
 
+// 校验 dgoal_propose 提案字段完整性。返回 { error, message } 或 null（通过）。
+// verification 必填：没有可验收完成口的 goal 不应进入启动闸门（ADR 0007）。
+// 这里只做「非空」校验；「是不是空话」靠 prompt 引导 + 终审兜底，不在工具层做启发式。
+export function validateProposalInput(input: {
+  objective: string;
+  verification?: string;
+  phaseCount: number;
+}): { error: string; message: string } | null {
+  if (!input.objective.trim()) {
+    return { error: "no objective", message: "proposal 必须包含 objective（goal 简述）。" };
+  }
+  if (!input.verification || !input.verification.trim()) {
+    return {
+      error: "no verification",
+      message: "proposal 必须包含 verification（goal 级完成验证说明）：交付什么、凭什么算完成。可参考启动背景里的“验收标准”，但要显式写出，不要留空，也不要用“完成并验证”“确保没问题”这类空话。",
+    };
+  }
+  if (input.phaseCount === 0) {
+    return { error: "no phases", message: "proposal 至少需要一个 phase。" };
+  }
+  return null;
+}
+
 const dgoalProposeTool = defineTool({
   name: DGOAL_PROPOSE_TOOL_NAME,
   label: "Dgoal Propose",
@@ -641,7 +664,7 @@ const dgoalProposeTool = defineTool({
   ],
   parameters: Type.Object({
     objective: Type.String({ description: "goal 的简述（一句话，用户确认的方向）" }),
-    verification: Type.Optional(Type.String({ description: "goal 级完成验证说明（跨 phase 全局）" })),
+    verification: Type.String({ description: "goal 级完成验证说明（跨 phase 全局，必填）：交付什么、凭什么算完成。可参考 contextSummary 的“验收标准”，但必须显式写出，不要留空或写“完成并验证”这类空话。" }),
     phases: Type.Array(
       Type.Object({
         subject: Type.String({ description: "阶段性目标" }),
@@ -668,17 +691,17 @@ const dgoalProposeTool = defineTool({
         details: { error: "no pending goal" },
       };
     }
-    const proposal: PlanProposal = {
-      objective: String(params.objective).trim(),
-      phases: (params.phases as PlanProposal["phases"]) ?? [],
-    };
-    if (params.verification) proposal.verification = String(params.verification).trim();
-    if (proposal.phases.length === 0) {
+    const objective = String(params.objective).trim();
+    const verification = String(params.verification ?? "").trim();
+    const phases = (params.phases as PlanProposal["phases"]) ?? [];
+    const invalid = validateProposalInput({ objective, verification, phaseCount: phases.length });
+    if (invalid) {
       return {
-        content: [{ type: "text", text: "proposal 至少需要一个 phase。" }],
-        details: { error: "no phases" },
+        content: [{ type: "text", text: invalid.message }],
+        details: { error: invalid.error },
       };
     }
+    const proposal: PlanProposal = { objective, verification, phases };
     pendingProposal = { goalId: goal.id, proposal };
     return {
       content: [{ type: "text", text: `已提交计划提案（${proposal.phases.length} 个 phase）。等待用户确认…` }],
@@ -1133,8 +1156,9 @@ function buildProposePrompt(goal: LoopGoal) {
     `要求：`,
     `1. 读相关代码/文档，理解目标涉及的范围。`,
     `2. 拆成若干 phase（阶段性目标），每个 phase 可带初始 task。`,
-    `3. 用 dgoal_propose 提交 {objective, phases, verification?}。`,
-    `4. 提交后用户会确认；不要直接开始执行，等确认。`,
+    `3. 明确 goal 级验收口：这个目标最后凭什么算完成（交付什么、满足什么标准）。可参考上面 <loop_context> 里的“验收标准”，但要显式写成 verification，不要留空，也不要写“完成并验证”“确保没问题”这类空话。`,
+    `4. 用 dgoal_propose 提交 {objective, phases, verification}（verification 必填）。`,
+    `5. 提交后用户会确认；不要直接开始执行，等确认。`,
   ].join("\n");
 }
 
