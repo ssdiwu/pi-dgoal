@@ -1,0 +1,60 @@
+# Changelog
+
+All notable changes to `pi-dgoal` will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [Unreleased]
+
+### Fixed
+
+- **Task ID 编号**：`proposalToPlan()` 中 phase 和 task 各自从 1 编号（原共用计数器导致 phase 抢 ID=1，task 从 2 起步）
+- **blockedBy 映射**：proposal 中 `blockedBy` 的 phase 内 1-based 索引现在正确映射到全局 task ID（原直接透传导致引用错位）
+- **阶段顺序执行**：system prompt 新增阶段顺序硬约束；`dgoal_plan` 工具侧新增 `enforcePhaseOrder()` 防护，拦截跨 phase 操作（agent 在当前 phase 未完成时直接开始后续 phase 的 task）
+
+## [0.2.0] - 2025-06
+
+### Added
+
+- **Task Plan 三层内容**：goal（冻结）→ phase（阶段性目标）→ task（按需分解细粒度执行单元），支持 `dgoal_plan` 工具 CRUD
+- **建检循环**：phase completed 唯一入口是 `dgoal_check`（独立只读子进程核验），不可绕过
+- **启动闸门**：`dgoal_propose` 提交计划 → 用户确认 UI（确认/拒绝/反馈）→ 激活 loop
+- **终审审核**：`dgoal_done` 触发独立只读子进程审核，连续 3 次不过自动暂停
+- **计划浮层**：TUI aboveEditor widget 展示 plan 状态（phase 默认可见，task 可展开）
+- **启动背景固化**：`/dgoal` 启动前自动从前文讨论提取结构化背景（目标范围/关键约束/验收标准），注入后续每轮 system prompt
+
+### Changed
+
+- 重命名 `pi-dloop` → `pi-dgoal`
+- README 改为英文 facade 风格入口，中文文档移至 `README-zh.md`
+- 建立完整设计文档体系（`doc/10-架构与运行/`、ADR 0001–0006）
+
+### Fixed
+
+- 完成后正确交回模型回复用户（不再自断续跑）
+- 清理旧 dloop 残留引用
+
+## [0.1.1] - 2025-05
+
+### Added
+
+- 启动前自动固化前文背景（summarizeContext 子进程）
+- 模型错误自动重试（上限 3 次）
+- 审核报告净化（去除噪音）
+
+### Fixed
+
+- 背景固化输入改用总量上限（原按消息数截断可能超限）
+- 避免 loop context 在用户消息中完整展开（改用预览 + system prompt 注入双轨）
+- 防止 Dloop 背景固化误导（明确标注为参考证据而非新指令）
+- 删除审核进行中的残留通知，补审核通过结果通知
+
+## [0.1.0] - 2025-05
+
+### Added
+
+- 初始版本：轻量目标循环扩展（`/dloop` 命令）
+- 独立完成审核（in-process session 版，后重构为子进程）
+- 审核器改为官方 CLI 子进程方式，纯只读
+- 中文提示统一
