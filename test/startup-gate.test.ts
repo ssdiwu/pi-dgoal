@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { formatProposalForConfirm, type LoopGoal, type PlanProposal } from "../index.ts";
+import { __setI18nForTest, formatProposalConfirmTitle, formatProposalForConfirm, type LoopGoal, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 未 export，通过 formatProposalForConfirm 间接覆盖；
 // 这里单独 export 测需要，先确认是否 export。
@@ -19,7 +19,13 @@ describe("切片4 · formatProposalForConfirm", () => {
       objective: "修好 auth 测试",
       verification: "npm test auth 全过",
       phases: [
-        { subject: "修复登录", tasks: [{ subject: "修登录用例" }, { subject: "修权限用例" }] },
+        {
+          subject: "修复登录",
+          tasks: [
+            { subject: "修登录用例", description: "覆盖 token 过期", activeForm: "正在修登录", blockedBy: [1] },
+            { subject: "修权限用例" },
+          ],
+        },
         { subject: "加回归测试" },
       ],
     };
@@ -28,6 +34,11 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("验证：npm test auth 全过");
     expect(text).toContain("阶段计划（2 个 phase）");
     expect(text).toContain("1. 修复登录（2 个 task）");
+    expect(text).toContain("- task 1: 修登录用例");
+    expect(text).toContain("说明：覆盖 token 过期");
+    expect(text).toContain("进行时：正在修登录");
+    expect(text).toContain("依赖：#1");
+    expect(text).toContain("- task 2: 修权限用例");
     expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
   });
 
@@ -53,6 +64,58 @@ describe("切片4 · formatProposalForConfirm", () => {
     const proposal: PlanProposal = { objective: "o", phases: [] };
     const text = formatProposalForConfirm(goal(), proposal);
     expect(text).toContain("阶段计划（0 个 phase）");
+  });
+
+  test("确认标题直接包含完整方案细节", () => {
+    const proposal: PlanProposal = {
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phases: [{ subject: "修复登录", description: "覆盖 token 过期", tasks: [{ subject: "修登录用例" }] }],
+    };
+    const title = formatProposalConfirmTitle(goal(), proposal);
+    expect(title).toContain("确认 /dgoal 计划？");
+    expect(title).toContain("目标：修好 auth 测试");
+    expect(title).toContain("验证：npm test auth 全过");
+    expect(title).toContain("1. 修复登录（1 个 task）");
+    expect(title).toContain("- task 1: 修登录用例");
+    expect(title).toContain("覆盖 token 过期");
+  });
+
+  test("pi-di18n 可覆盖确认 UI 文案为英文", () => {
+    __setI18nForTest({
+      t(fullKey, params) {
+        const messages: Record<string, string> = {
+          "dgoal.proposal.objective": "Goal: {objective}",
+          "dgoal.proposal.verification": "Verification: {verification}",
+          "dgoal.proposal.planHeading": "Phase plan ({count} phases):",
+          "dgoal.proposal.taskCount": " ({count} tasks)",
+          "dgoal.proposal.taskLine": "     - task {index}: {subject}",
+          "dgoal.proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
+          "dgoal.replaceConfirm.title": "Replace current loop?",
+          "dgoal.replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
+        };
+        return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
+      },
+    });
+    try {
+      const proposal: PlanProposal = {
+        objective: "fix tests",
+        verification: "npm test",
+        phases: [{ subject: "repair", tasks: [{ subject: "update assertions" }] }],
+      };
+      const text = formatProposalForConfirm(goal(), proposal);
+      const title = formatProposalConfirmTitle(goal(), proposal);
+      expect(text).toContain("Goal: fix tests");
+      expect(text).toContain("Verification: npm test");
+      expect(text).toContain("Phase plan (1 phases):");
+      expect(text).toContain("1. repair (1 tasks)");
+      expect(text).toContain("- task 1: update assertions");
+      expect(text).not.toContain("Confirm /dgoal plan?");
+      expect(title).toContain("Confirm /dgoal plan?");
+      expect(title).toContain("Goal: fix tests");
+    } finally {
+      __setI18nForTest(undefined);
+    }
   });
 });
 

@@ -29,13 +29,14 @@ pi install npm:pi-dgoal
 /dgoal 修复当前项目里的 failing tests，并运行测试验证
 ```
 
-启动闸门会展示 agent 提交的计划（goal + phases + tasks），确认 / 拒绝 / 反馈后再进入 loop。
+启动闸门对话框会直接展示 agent 提交的完整计划（goal + verification + phases + task 明细），确认 / 拒绝 / 反馈后再进入 loop。
 
 loop 中：
 
 - agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → completed | blocked`）
 - 每个 phase 完成都通过 `dgoal_check`（独立子进程，带受限核验工具，含 `bash`）独立审核
-- editor 上方实时浮层显示 phase 进度；task 默认隐藏，跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`）展开
+- editor 上方实时浮层显示 phase 进度；task 默认隐藏，跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`）展开，底部同一行提示快捷键与常用命令说明
+- 安装 `pi-di18n` 时，浮层、状态栏、通知和启动闸门等用户可见文案可跟随 locale；模型侧 prompt 和工具 schema 保持不变
 
 控制目标：
 

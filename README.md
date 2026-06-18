@@ -33,13 +33,14 @@ Start a goal with a Task Plan:
 /dgoal Fix the failing tests in this project and verify the result
 ```
 
-The startup gate shows the agent's proposed plan (goal + phases + tasks). Approve, reject, or give feedback before the loop begins.
+The startup gate dialog shows the full proposed plan inline (goal + verification + phases + task details). Approve, reject, or give feedback before the loop begins.
 
 During the loop:
 
 - The agent updates task status via `dgoal_plan` (`pending → in_progress → completed | blocked`).
 - Each phase completion is independently audited via `dgoal_check` (isolated subprocess with limited verification tools, including `bash`).
-- A live overlay above the editor shows phase progress; tasks default-hidden, and follow Pi's `app.tools.expand` action (default `Ctrl+O`) when expanded.
+- A live overlay above the editor shows phase progress; tasks default-hidden, follow Pi's `app.tools.expand` action (default `Ctrl+O`) when expanded, and show a single bottom line with the shortcut plus common command descriptions.
+- User-facing overlay, status, notification, and startup-gate text can follow `pi-di18n` when that extension is installed; model-facing prompts and tool schemas stay unchanged.
 
 Control the goal:
 

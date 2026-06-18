@@ -16,10 +16,15 @@ const AUDITOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
 type LoopStatus = "pending" | "active" | "rejected" | "paused" | "done";
 
 // 0.2.0 Task Plan 三层内容的状态机（见 doc/10-架构与运行/11-状态机.md）。
-// Phase/Task 共用四态：pending → in_progress → completed | blocked。
-// - phase 状态由其下 task 聚合（agent 不能直接标 phase completed，唯一入口是 dgoal_check）。
-// - task：completed 不回退（错了新建接续 task），blocked 可回退 in_progress。
-type PlanStatus = "pending" | "in_progress" | "done" | "blocked";
+// Phase/Task 共用四态：pending → in_progress → done | blocked。
+// 兼容旧持久化里的 completed；新写入统一用 done。
+// - phase 状态由其下 task 聚合（agent 不能直接标 phase done，唯一入口是 dgoal_check）。
+// - task：done 不回退（错了新建接续 task），blocked 可回退 in_progress。
+type PlanStatus = "pending" | "in_progress" | "done" | "completed" | "blocked";
+
+function isDonePlanStatus(status: PlanStatus): boolean {
+  return status === "done" || status === "completed";
+}
 
 // goal 暂停原因，resume 时按此决定是否清零 rejectedCount（见 ADR 0004）。
 type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x";
@@ -103,8 +108,217 @@ interface LoopContext {
     setStatus: (key: string, value: string | undefined) => void;
   };
   isIdle?: () => boolean;
+  abort?: () => void;
   hasPendingMessages?: () => boolean;
   sessionManager?: unknown;
+}
+
+type I18nMessageValue = string | { description?: string; value: string };
+
+interface I18nBundleV1 {
+  version: 1;
+  namespace: string;
+  locale: string;
+  messages: Record<string, I18nMessageValue>;
+  integration?: {
+    capability?: "pi.i18n.v1";
+    provider?: string;
+  };
+}
+
+interface I18nApiLike {
+  t: (fullKey: string, params?: Record<string, string | number>) => string;
+  registerBundle?: (bundle: I18nBundleV1) => { ok: boolean; errors: string[] };
+}
+
+type I18nRequestPayload = {
+  reply?: (api: I18nApiLike) => void;
+};
+
+const I18N_NAMESPACE = "dgoal";
+
+const I18N_BUNDLES: I18nBundleV1[] = [
+  {
+    version: 1,
+    namespace: I18N_NAMESPACE,
+    locale: "zh-CN",
+    integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
+    messages: {
+      "overlay.commands": "/dgoal status查 | pause停 | resume续 | clear清",
+      "overlay.showTasks": "⌨ Ctrl+O 显示 task · {commands}",
+      "overlay.hideTasks": "⌨ Ctrl+O 隐藏 task · {commands}",
+      "overlay.more": "└─ +{count} more",
+      "status.done": "🔁 done",
+      "status.paused": "🔁 paused",
+      "status.starting": "🔁 starting…",
+      "status.rejected": "🔁 rejected ×{count}",
+      "status.active": "🔁 active #{iteration}",
+      "proposal.objective": "目标：{objective}",
+      "proposal.verification": "验证：{verification}",
+      "proposal.planHeading": "阶段计划（{count} 个 phase）：",
+      "proposal.taskCount": "（{count} 个 task）",
+      "proposal.taskLine": "     - task {index}: {subject}",
+      "proposal.taskDescription": "       说明：{description}",
+      "proposal.taskActiveForm": "       进行时：{activeForm}",
+      "proposal.taskBlockedBy": "       依赖：{blockedBy}",
+      "proposal.confirmTitle": "确认 /dgoal 计划？",
+      "proposal.confirmTitleWithPlan": "确认 /dgoal 计划？\n\n{plan}",
+      "proposal.confirmStart": "确认，开始执行",
+      "proposal.reject": "拒绝，放弃目标",
+      "proposal.feedback": "输入反馈意见",
+      "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
+      "replaceConfirm.title": "替换当前 loop？",
+      "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
+      "status.noLoop": "当前没有 loop。用法：/dgoal <goal>",
+      "status.objective": "目标：{objective}",
+      "status.state": "状态：{status}",
+      "status.iteration": "轮次：{iteration}",
+      "status.contextPreview": "启动背景预览：\n{preview}",
+      "status.noContextPreview": "启动背景预览：无",
+      "status.commands": "命令：/dgoal pause | /dgoal resume | /dgoal clear",
+      "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
+      "notify.auditRejected": "终审未通过（第 {count}/3 次），进 rejected，请修正后重新 dgoal_done。",
+      "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
+      "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
+      "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，Dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
+      "notify.pendingGoal": "上一个 loop 正在启动中，请稍后再试。",
+      "notify.summarizingContext": "正在从前文讨论固化启动背景…",
+      "notify.startInterrupted": "启动被中断，已放弃本次 loop。",
+      "notify.contextAborted": "背景固化被中断，已放弃本次 loop。",
+      "notify.contextFailed": "背景固化失败（已降级为不带背景启动）：{error}",
+      "notify.cleared": "Dgoal 已清除；若当前仍在执行，会同步触发一次中断。",
+      "notify.proposalRejected": "已拒绝计划，目标放弃。",
+      "notify.proposalConfirmed": "计划已确认，进入 loop。",
+      "notify.feedbackSent": "已反馈，agent 将重新整理计划。",
+      "notify.emptyFeedback": "未提供反馈，目标放弃。",
+      "notify.proposalRetry": "未收到计划提案，降级引导重试（{count}/{max}）",
+      "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
+      "notify.continuationFailed": "Dgoal 续跑失败：{error}",
+      "notify.auditFailurePaused": "Dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
+      "command.objectiveTooLong": "目标太长（{length}/{max} 字符）。请放到文件中，并在 /dgoal 中引用路径。",
+    },
+  },
+  {
+    version: 1,
+    namespace: I18N_NAMESPACE,
+    locale: "en",
+    integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
+    messages: {
+      "overlay.commands": "/dgoal status | pause | resume | clear",
+      "overlay.showTasks": "⌨ Ctrl+O show tasks · {commands}",
+      "overlay.hideTasks": "⌨ Ctrl+O hide tasks · {commands}",
+      "overlay.more": "└─ +{count} more",
+      "status.done": "🔁 done",
+      "status.paused": "🔁 paused",
+      "status.starting": "🔁 starting…",
+      "status.rejected": "🔁 rejected ×{count}",
+      "status.active": "🔁 active #{iteration}",
+      "proposal.objective": "Goal: {objective}",
+      "proposal.verification": "Verification: {verification}",
+      "proposal.planHeading": "Phase plan ({count} phases):",
+      "proposal.taskCount": " ({count} tasks)",
+      "proposal.taskLine": "     - task {index}: {subject}",
+      "proposal.taskDescription": "       Description: {description}",
+      "proposal.taskActiveForm": "       Active form: {activeForm}",
+      "proposal.taskBlockedBy": "       Depends on: {blockedBy}",
+      "proposal.confirmTitle": "Confirm /dgoal plan?",
+      "proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
+      "proposal.confirmStart": "Confirm and start",
+      "proposal.reject": "Reject and abandon goal",
+      "proposal.feedback": "Enter feedback",
+      "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
+      "replaceConfirm.title": "Replace current loop?",
+      "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
+      "status.noLoop": "No active loop. Usage: /dgoal <goal>",
+      "status.objective": "Goal: {objective}",
+      "status.state": "Status: {status}",
+      "status.iteration": "Iteration: {iteration}",
+      "status.contextPreview": "Startup context preview:\n{preview}",
+      "status.noContextPreview": "Startup context preview: none",
+      "status.commands": "Commands: /dgoal pause | /dgoal resume | /dgoal clear",
+      "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
+      "notify.auditRejected": "Final audit failed ({count}/3); moved to rejected. Fix the issues, then call dgoal_done again.",
+      "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
+      "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
+      "notify.modelPaused": "Model error persisted after {max} retries; Dgoal paused{detail}. Run /dgoal resume to continue.",
+      "notify.pendingGoal": "A previous loop is still starting. Try again shortly.",
+      "notify.summarizingContext": "Persisting startup context from prior discussion…",
+      "notify.startInterrupted": "Startup was interrupted; this loop was abandoned.",
+      "notify.contextAborted": "Startup context persistence was interrupted; this loop was abandoned.",
+      "notify.contextFailed": "Startup context persistence failed; continuing without it: {error}",
+      "notify.cleared": "Dgoal cleared; if a turn is still running, it will also be interrupted once.",
+      "notify.proposalRejected": "Plan rejected; goal abandoned.",
+      "notify.proposalConfirmed": "Plan confirmed; entering loop.",
+      "notify.feedbackSent": "Feedback sent; the agent will revise the plan.",
+      "notify.emptyFeedback": "No feedback provided; goal abandoned.",
+      "notify.proposalRetry": "No plan proposal received; retrying startup guidance ({count}/{max}).",
+      "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
+      "notify.continuationFailed": "Dgoal continuation failed: {error}",
+      "notify.auditFailurePaused": "Dgoal paused ({reason}). Run /dgoal resume to continue.",
+      "command.objectiveTooLong": "Goal too long ({length}/{max} chars). Put it in a file and reference the path in /dgoal.",
+    },
+  },
+];
+
+let i18nApi: I18nApiLike | undefined;
+
+function interpolate(template: string, params?: Record<string, string | number>): string {
+  if (!params) return template;
+  return template.replace(/\{([a-zA-Z0-9_]+)\}/g, (_match, name: string) => {
+    const value = params[name];
+    return value === undefined || value === null ? `{${name}}` : String(value);
+  });
+}
+
+function localMessage(key: string): string {
+  const value = I18N_BUNDLES[0].messages[key];
+  if (typeof value === "string") return value;
+  return value?.value ?? `${I18N_NAMESPACE}.${key}`;
+}
+
+function t(key: string, params?: Record<string, string | number>): string {
+  const fullKey = `${I18N_NAMESPACE}.${key}`;
+  try {
+    const translated = i18nApi?.t(fullKey, params);
+    if (translated && translated !== fullKey) return translated;
+  } catch {
+    // soft dependency: keep local zh-CN fallback
+  }
+  return interpolate(localMessage(key), params);
+}
+
+function setupI18n(pi: ExtensionAPI): void {
+  const register = (target?: I18nApiLike) => {
+    if (!target?.registerBundle) return;
+    for (const bundle of I18N_BUNDLES) {
+      try { target.registerBundle(bundle); } catch { /* soft dependency */ }
+    }
+  };
+
+  const request = (eventName: string) => {
+    try {
+      pi.events?.emit?.(eventName, {
+        reply: (api: I18nApiLike) => {
+          i18nApi = api;
+          register(api);
+          planOverlay?.update();
+        },
+      } satisfies I18nRequestPayload);
+    } catch {
+      // pi-di18n is optional
+    }
+  };
+
+  const publishBundle = (eventName: string) => {
+    for (const bundle of I18N_BUNDLES) {
+      try { pi.events?.emit?.(eventName, bundle); } catch { /* pi-di18n is optional */ }
+    }
+  };
+
+  request("pi-core/i18n/requestApi");
+  request("pi-i18n/requestApi");
+  publishBundle("pi-core/i18n/registerBundle");
+  publishBundle("pi-i18n/registerBundle");
 }
 
 const STATUS_KEY = "dgoal";
@@ -217,7 +431,8 @@ const dgoalDoneTool = defineTool({
         persistGoal(currentGoal);
         clearContinuation();
         ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-        ctx.ui.notify(`终审连续 ${newCount} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。`, "warning");
+        planOverlay?.update();
+        ctx.ui.notify(t("notify.auditPaused", { count: newCount }), "warning");
         return {
           content: [{ type: "text", text: `终审连续 ${newCount} 次未通过，目标已暂停。\n\n审核报告：\n${audit.output}` }],
           details: { goal: completedGoal.objective, summary, verification, auditRejected: true, auditPaused: true, auditOutput: audit.output },
@@ -227,7 +442,7 @@ const dgoalDoneTool = defineTool({
       currentGoal = { ...completedGoal, status: "rejected", rejectedCount: newCount, updatedAt: Date.now() };
       persistGoal(currentGoal);
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-      ctx.ui.notify(`终审未通过（第 ${newCount}/3 次），进 rejected，请修正后重新 dgoal_done。`, "warning");
+      ctx.ui.notify(t("notify.auditRejected", { count: newCount }), "warning");
       return {
         content: [
           { type: "text", text: `终审未通过，目标进 rejected（第 ${newCount}/3 次）。请修正以下问题后重新调用 dgoal_done。\n\n审核报告：\n${audit.output}` },
@@ -376,24 +591,15 @@ const MAX_PROPOSAL_RETRIES = 2;
 
 // 把 proposal 转成 TaskPlan（分配 id，建 phase + 初始 task）。
 export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  let nextPhaseId = 1;
-  let nextTaskId = 1;
+  let nextId = 1;
   const phases: Phase[] = proposal.phases.map((ph) => {
-    const phaseId = nextPhaseId++;
-    // phase 和 task 各自从 1 编号；blockedBy 是 phase 内 1-based 索引，需映射到全局 task ID。
-    const rawTasks = (ph.tasks ?? []);
-    const taskGlobalIds: number[] = [];
-    for (let i = 0; i < rawTasks.length; i++) {
-      taskGlobalIds.push(nextTaskId++);
-    }
+    const phaseId = nextId++;
+    const rawTasks = ph.tasks ?? [];
+    const taskGlobalIds = rawTasks.map(() => nextId++);
     const tasks: Task[] = rawTasks.map((tt, idx) => {
       const mappedBlockedBy = tt.blockedBy
-        ?.map((localOneBased) => {
-            const globalId = taskGlobalIds[localOneBased - 1];
-            if (globalId === undefined) return NaN;
-            return globalId;
-          })
-        .filter((id) => !Number.isNaN(id)) ?? [];
+        ?.map((localOneBased) => taskGlobalIds[localOneBased - 1])
+        .filter((id): id is number => typeof id === "number") ?? [];
       return {
         id: taskGlobalIds[idx],
         subject: tt.subject,
@@ -411,7 +617,7 @@ export function proposalToPlan(proposal: PlanProposal): TaskPlan {
       ...(ph.description ? { description: ph.description } : {}),
     };
   });
-  return { phases, nextId: nextTaskId };
+  return { phases, nextId };
 }
 
 const dgoalProposeTool = defineTool({
@@ -507,7 +713,7 @@ const dgoalCheckTool = defineTool({
       return { content: [{ type: "text", text: `phase #${phaseId} 不存在。` }], details: { error: "phase not found" } };
     }
     // 任务未全终态直接拒（setPhaseCompleted 也会拒，这里先给清晰提示）
-    const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
+    const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => isDonePlanStatus(t.status) || t.status === "blocked");
     if (!allTerminal) {
       return { content: [{ type: "text", text: `phase #${phaseId} 的 task 未全部终态，不能建检。` }], details: { error: "tasks not terminal" } };
     }
@@ -549,6 +755,7 @@ const dgoalCheckTool = defineTool({
 
 export default function dgoal(pi: ExtensionAPI) {
   api = pi;
+  setupI18n(pi);
   pi.registerTool(dgoalDoneTool);
   pi.registerTool(dgoalPlanTool);
   pi.registerTool(dgoalProposeTool);
@@ -586,8 +793,7 @@ export default function dgoal(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", (event) => {
     markContinuationDelivered(event.prompt);
-    // 切片3：completed 闪现——下一轮 agent 开始时隐藏上一轮显示过的 completed phase
-    planOverlay?.hideCompletedFromPreviousTurn();
+    // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
     if (!currentGoal || !isLooping(currentGoal.status)) return;
 
     return {
@@ -621,7 +827,8 @@ export default function dgoal(pi: ExtensionAPI) {
       persistGoal(currentGoal);
       clearContinuation();
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-      ctx.ui.notify(`Dgoal 已暂停（用户中断${errorDetail}）。运行 /dgoal resume 继续。`, "warning");
+      planOverlay?.update();
+      ctx.ui.notify(t("notify.abortedPaused", { detail: errorDetail }), "warning");
       return;
     }
 
@@ -632,7 +839,7 @@ export default function dgoal(pi: ExtensionAPI) {
       consecutiveErrors += 1;
       if (consecutiveErrors <= MAX_ERROR_RETRIES) {
         ctx.ui.notify(
-          `模型错误，自动重试（${consecutiveErrors}/${MAX_ERROR_RETRIES}）${errorDetail}`,
+          t("notify.modelRetry", { count: consecutiveErrors, max: MAX_ERROR_RETRIES, detail: errorDetail }),
           "warning",
         );
         await sendContinuation(pi, ctx, currentGoal);
@@ -643,8 +850,9 @@ export default function dgoal(pi: ExtensionAPI) {
       persistGoal(currentGoal);
       clearContinuation();
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+      planOverlay?.update();
       ctx.ui.notify(
-        `模型错误，已重试 ${MAX_ERROR_RETRIES} 次仍失败，Dgoal 已暂停${errorDetail}。运行 /dgoal resume 继续。`,
+        t("notify.modelPaused", { max: MAX_ERROR_RETRIES, detail: errorDetail }),
         "warning",
       );
       return;
@@ -696,7 +904,7 @@ function parseCommand(args: string):
   if (text === "resume") return { kind: "resume" };
   if (text === "clear" || text === "stop") return { kind: "clear" };
   if (text.length > MAX_OBJECTIVE_LENGTH) {
-    return `目标太长（${text.length}/${MAX_OBJECTIVE_LENGTH} 字符）。请放到文件中，并在 /dgoal 中引用路径。`;
+    return t("command.objectiveTooLong", { length: text.length, max: MAX_OBJECTIVE_LENGTH });
   }
   return { kind: "start", objective: text };
 }
@@ -709,12 +917,12 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   if (currentGoal && currentGoal.status !== "done") {
     // pending：上一个 loop 还在 summarizeContext 启动中，不应重叠启动新 loop。
     if (currentGoal.status === "pending") {
-      ctx.ui.notify("上一个 loop 正在启动中，请稍后再试。", "warning");
+      ctx.ui.notify(t("notify.pendingGoal"), "warning");
       return;
     }
     const replace = await ctx.ui.confirm(
-      "替换当前 loop？",
-      `当前目标：${currentGoal.objective}\n\n新目标：${objective}`,
+      t("replaceConfirm.title"),
+      t("replaceConfirm.message", { current: currentGoal.objective, next: objective }),
     );
     if (!replace) return;
   }
@@ -732,7 +940,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   // 摘要失败不阻断启动——objective 本身仍在，摘要只是补充，挂了降级为空继续。
   const priorDiscussion = extractPriorDiscussion(ctx);
   if (priorDiscussion) {
-    ctx.ui.notify("正在从前文讨论固化启动背景…", "info");
+    ctx.ui.notify(t("notify.summarizingContext"), "info");
     const result = await summarizeContext({
       ctx: ctx as ExtensionContext,
       objective: pendingGoal.objective,
@@ -740,11 +948,11 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
     });
     // 摘要期间 goal 可能被用户 /dgoal clear 或替换；校验仍是同一个 pending goal。
     if (!currentGoal || currentGoal.id !== pendingGoal.id) {
-      ctx.ui.notify("启动被中断，已放弃本次 loop。", "warning");
+      ctx.ui.notify(t("notify.startInterrupted"), "warning");
       return;
     }
     if (result.aborted) {
-      ctx.ui.notify("背景固化被中断，已放弃本次 loop。", "warning");
+      ctx.ui.notify(t("notify.contextAborted"), "warning");
       currentGoal = undefined;
       persistGoal(null);
       ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -754,13 +962,13 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
       currentGoal = { ...currentGoal, contextSummary: result.summary.trim(), updatedAt: Date.now() };
       persistGoal(currentGoal);
     } else if (result.error) {
-      ctx.ui.notify(`背景固化失败（已降级为不带背景启动）：${result.error}`, "warning");
+      ctx.ui.notify(t("notify.contextFailed", { error: result.error }), "warning");
     }
   }
 
   // 再次校验：摘要期间 goal 仍可能在、且仍是本次 pending goal。
   if (!currentGoal || currentGoal.id !== pendingGoal.id) {
-    ctx.ui.notify("启动被中断，已放弃本次 loop。", "warning");
+    ctx.ui.notify(t("notify.startInterrupted"), "warning");
     return;
   }
   // 切片4：启动闸门——保持 pending，发"请用 dgoal_propose 提交计划"指令让主代理整理 plan。
@@ -777,6 +985,7 @@ function pauseGoal(ctx: LoopContext) {
   currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  planOverlay?.update();
 }
 
 async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
@@ -793,33 +1002,36 @@ async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
   };
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  planOverlay?.update();
   await sendPrompt(pi, ctx, buildResumePrompt(currentGoal));
 }
 
+export function shouldAbortCurrentTurnOnClear(ctx: Pick<LoopContext, "isIdle">): boolean {
+  return typeof ctx.isIdle === "function" ? !ctx.isIdle() : true;
+}
+
 function clearGoal(ctx: LoopContext) {
-  if (!currentGoal) {
-    clearActiveGoal(ctx);
-    return;
-  }
+  const hadGoal = Boolean(currentGoal);
+  if (hadGoal && shouldAbortCurrentTurnOnClear(ctx)) ctx.abort?.();
   clearActiveGoal(ctx);
+  if (hadGoal) ctx.ui.notify(t("notify.cleared"), "info");
 }
 
 function showStatus(ctx: LoopContext) {
   if (!currentGoal) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
-    ctx.ui.notify("当前没有 loop。用法：/dgoal <goal>", "info");
+    ctx.ui.notify(t("status.noLoop"), "info");
     return;
   }
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
   const contextPreview = buildContextPreview(currentGoal, 5);
   ctx.ui.notify(
     [
-      `目标：${currentGoal.objective}`,
-      `状态：${currentGoal.status}`,
-      `轮次：${currentGoal.iteration}`,
-      contextPreview ? `启动背景预览：
-${contextPreview}` : "启动背景预览：无",
-      "命令：/dgoal pause | /dgoal resume | /dgoal clear",
+      t("status.objective", { objective: currentGoal.objective }),
+      t("status.state", { status: currentGoal.status }),
+      t("status.iteration", { iteration: currentGoal.iteration }),
+      contextPreview ? t("status.contextPreview", { preview: contextPreview }) : t("status.noContextPreview"),
+      t("status.commands"),
     ].join("\n"),
     "info",
   );
@@ -921,15 +1133,27 @@ function buildProposePrompt(goal: LoopGoal) {
 
 // 切片4：把 proposal 格式化成确认 UI 的展示文本（纯函数，可测）。
 export function formatProposalForConfirm(goal: LoopGoal, proposal: PlanProposal): string {
-  const lines: string[] = [`目标：${proposal.objective}`];
-  if (proposal.verification) lines.push(`验证：${proposal.verification}`);
-  lines.push(``, `阶段计划（${proposal.phases.length} 个 phase）：`);
+  const lines: string[] = [t("proposal.objective", { objective: proposal.objective })];
+  if (proposal.verification) lines.push(t("proposal.verification", { verification: proposal.verification }));
+  lines.push(``, t("proposal.planHeading", { count: proposal.phases.length }));
   proposal.phases.forEach((ph, i) => {
     const taskCount = ph.tasks?.length ?? 0;
-    lines.push(`  ${i + 1}. ${ph.subject}${taskCount ? `（${taskCount} 个 task）` : ""}`);
+    lines.push(`  ${i + 1}. ${ph.subject}${taskCount ? t("proposal.taskCount", { count: taskCount }) : ""}`);
     if (ph.description) lines.push(`     ${ph.description}`);
+    for (const [taskIndex, task] of (ph.tasks ?? []).entries()) {
+      lines.push(t("proposal.taskLine", { index: taskIndex + 1, subject: task.subject }));
+      if (task.description) lines.push(t("proposal.taskDescription", { description: task.description }));
+      if (task.activeForm) lines.push(t("proposal.taskActiveForm", { activeForm: task.activeForm }));
+      if (task.blockedBy?.length) {
+        lines.push(t("proposal.taskBlockedBy", { blockedBy: task.blockedBy.map((id) => `#${id}`).join(", ") }));
+      }
+    }
   });
   return lines.join("\n");
+}
+
+export function formatProposalConfirmTitle(goal: LoopGoal, proposal: PlanProposal): string {
+  return t("proposal.confirmTitleWithPlan", { plan: formatProposalForConfirm(goal, proposal) });
 }
 
 // 切片4：启动闸门确认流程。返回 "confirmed" | "rejected" | { feedback: string }。
@@ -939,15 +1163,17 @@ async function handleProposalConfirmation(
   goal: LoopGoal,
   proposal: PlanProposal,
 ): Promise<"confirmed" | "rejected" | { feedback: string }> {
-  const body = formatProposalForConfirm(goal, proposal);
+  const confirmStart = t("proposal.confirmStart");
+  const reject = t("proposal.reject");
+  const feedbackOption = t("proposal.feedback");
   const choice = await (ctx.ui as { select?: (title: string, options: string[]) => Promise<string | undefined>; confirm?: (t: string, m: string) => Promise<boolean>; editor?: (t: string, prefill: string) => Promise<string | undefined> }).select?.(
-    "确认 /dgoal 计划？",
-    ["确认，开始执行", "拒绝，放弃目标", "输入反馈意见"],
+    formatProposalConfirmTitle(goal, proposal),
+    [confirmStart, reject, feedbackOption],
   );
-  if (choice === "确认，开始执行") return "confirmed";
-  if (choice === "拒绝，放弃目标") return "rejected";
+  if (choice === confirmStart) return "confirmed";
+  if (choice === reject) return "rejected";
   // 输入反馈
-  const feedback = await (ctx.ui as { editor?: (t: string, prefill: string) => Promise<string | undefined> }).editor?.("反馈意见（agent 会据此调整计划）：", "");
+  const feedback = await (ctx.ui as { editor?: (t: string, prefill: string) => Promise<string | undefined> }).editor?.(t("proposal.feedbackTitle"), "");
   return { feedback: (feedback ?? "").trim() };
 }
 
@@ -962,7 +1188,7 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
 
     const decision = await handleProposalConfirmation(ctx, goal, proposal);
     if (decision === "rejected") {
-      ctx.ui.notify("已拒绝计划，目标放弃。", "info");
+      ctx.ui.notify(t("notify.proposalRejected"), "info");
       clearActiveGoal(ctx);
       return;
     }
@@ -982,19 +1208,19 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
       persistGoal(currentGoal);
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
       planOverlay?.update();
-      ctx.ui.notify("计划已确认，进入 loop。", "info");
+      ctx.ui.notify(t("notify.proposalConfirmed"), "info");
       await sendPrompt(pi, ctx, buildStartPrompt(currentGoal));
       return;
     }
     // feedback：喂回主代理，重新整理
     const fb = (decision as { feedback: string }).feedback;
     if (fb) {
-      ctx.ui.notify("已反馈，agent 将重新整理计划。", "info");
+      ctx.ui.notify(t("notify.feedbackSent"), "info");
       await sendPrompt(pi, ctx, `用户对计划的反馈意见，请据此调整后重新用 dgoal_propose 提交：\n\n${fb}`);
       return;
     }
     // 空反馈当拒绝处理
-    ctx.ui.notify("未提供反馈，目标放弃。", "info");
+    ctx.ui.notify(t("notify.emptyFeedback"), "info");
     clearActiveGoal(ctx);
     return;
   }
@@ -1002,12 +1228,12 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
   // 没收到 proposal：兜底重试（拷问25：上限 MAX_PROPOSAL_RETRIES=2）
   proposalRetryCount += 1;
   if (proposalRetryCount <= MAX_PROPOSAL_RETRIES) {
-    ctx.ui.notify(`未收到计划提案，降级引导重试（${proposalRetryCount}/${MAX_PROPOSAL_RETRIES}）`, "warning");
+    ctx.ui.notify(t("notify.proposalRetry", { count: proposalRetryCount, max: MAX_PROPOSAL_RETRIES }), "warning");
     await sendPrompt(pi, ctx, buildProposePrompt(goal));
     return;
   }
   // 重试耗尽：中止（不进 active，清 goal）
-  ctx.ui.notify(`连续 ${MAX_PROPOSAL_RETRIES} 次未收到计划提案，已中止启动。请重新 /dgoal。`, "warning");
+  ctx.ui.notify(t("notify.proposalFailed", { max: MAX_PROPOSAL_RETRIES }), "warning");
   proposalRetryCount = 0;
   clearActiveGoal(ctx);
 }
@@ -1056,7 +1282,7 @@ async function sendPrompt(pi: ExtensionAPI, ctx: LoopContext, prompt: string) {
     await result;
     return true;
   } catch (error) {
-    ctx.ui.notify(`Dgoal 续跑失败：${formatError(error)}`, "error");
+    ctx.ui.notify(t("notify.continuationFailed", { error: formatError(error) }), "error");
     return false;
   }
 }
@@ -1403,6 +1629,7 @@ function clearActiveGoal(ctx: LoopContext) {
   currentGoal = undefined;
   persistGoal(null);
   ctx.ui.setStatus(STATUS_KEY, undefined);
+  planOverlay?.update();
 }
 
 // 完成并退出 loop。
@@ -1427,7 +1654,8 @@ function pauseOnAuditFailure(ctx: LoopContext, reason: string) {
   persistGoal(currentGoal);
   clearContinuation();
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  ctx.ui.notify(`Dgoal 已暂停（${reason}）。运行 /dgoal resume 继续。`, "warning");
+  planOverlay?.update();
+  ctx.ui.notify(t("notify.auditFailurePaused", { reason }), "warning");
 }
 
 interface AuditorResult {
@@ -1847,6 +2075,15 @@ export function __setApiForTest(mockApi: { appendEntry: <T>(type: string, data: 
 // 测试专用：重置模块级 currentGoal，避免测试间状态泄漏。
 export function __resetGoalForTest() {
   currentGoal = undefined;
+  i18nApi = undefined;
+}
+
+export function __setGoalForTest(goal: LoopGoal | undefined) {
+  currentGoal = goal;
+}
+
+export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
+  i18nApi = mockI18n;
 }
 
 // ============================================================================
@@ -1879,8 +2116,8 @@ function planError(goal: LoopGoal, message: string): PlanApplyResult {
 // pending ⇄ in_progress；任一 → completed | blocked；blocked → in_progress（可回退）；completed 终态不回退。
 function isTaskTransitionValid(from: PlanStatus, to: PlanStatus): boolean {
   if (from === to) return true;
-  if (from === "done") return false; // done 不回退（ADR 0005）
-  if (to === "done" || to === "blocked") return true; // 任一非终态 → done/blocked
+  if (isDonePlanStatus(from)) return false; // done/completed 不回退（ADR 0005）
+  if (isDonePlanStatus(to) || to === "blocked") return true; // 任一非终态 → done/blocked
   // pending ⇄ in_progress，blocked → in_progress
   return (from === "pending" && to === "in_progress") || (from === "in_progress" && to === "pending") || (from === "blocked" && to === "in_progress");
 }
@@ -1943,7 +2180,7 @@ function recomputePhaseStatus(phase: Phase): PlanStatus {
   const hasInProgress = phase.tasks.some((t) => t.status === "in_progress");
   if (hasInProgress) return "in_progress";
   const hasBlocked = phase.tasks.some((t) => t.status === "blocked");
-  const allTerminal = phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
+  const allTerminal = phase.tasks.every((t) => isDonePlanStatus(t.status) || t.status === "blocked");
   if (allTerminal && hasBlocked) return "blocked";
   // 全 completed（无 blocked）→ 聚合应为 completed，但 phase completed 由 dgoal_check 显式触发，
   // 聚合这里保持 in_progress 以外的状态由 dgoal_check 接管。返回当前 status 不主动升 completed。
@@ -1957,7 +2194,7 @@ function enforcePhaseOrder(goal: LoopGoal, action: PlanAction, params: Record<st
   if (!goal.plan || goal.plan.phases.length <= 1) return null;
   if (action === "list" || action === "get") return null;
 
-  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => ph.status !== "done");
+  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => !isDonePlanStatus(ph.status));
   if (firstIncompleteIdx < 0) return null;
 
   let targetPhaseIdx = -1;
@@ -2118,10 +2355,11 @@ export function setPhaseCompleted(goal: LoopGoal, phaseId: number): PlanApplyRes
   if (idx === -1) return planError(goal, `phase #${phaseId} not found`);
   const phase = goal.plan.phases[idx];
   // 只有 task 全终态才允许标 completed
-  const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
+  const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => isDonePlanStatus(t.status) || t.status === "blocked");
   if (!allTerminal) return planError(goal, `phase #${phaseId} 的 task 未全部终态，不能标 done`);
-  const phases = goal.plan.phases.map((ph, i) => (i === idx ? { ...ph, status: "done" as PlanStatus } : ph));
-  return { goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() }, op: { kind: "update", taskId: -1, fromStatus: phase.status, toStatus: "done" } };
+  const targetStatus: PlanStatus = phase.tasks.some((t) => t.status === "completed") && !phase.tasks.some((t) => t.status === "done") ? "completed" : "done";
+  const phases = goal.plan.phases.map((ph, i) => (i === idx ? { ...ph, status: targetStatus } : ph));
+  return { goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() }, op: { kind: "update", taskId: -1, fromStatus: phase.status, toStatus: targetStatus } };
 }
 
 // ============================================================================
@@ -2139,10 +2377,11 @@ const PHASE_ICON: Record<PlanStatus, string> = {
   pending: "○",
   in_progress: "◐",
   done: "✓",
+  completed: "✓",
   blocked: "⚠",
 };
 
-// 渲染选项：hiddenPhaseIds = 本轮应隐藏的 completed phase（completed 闪现机制）。
+// 渲染选项。hiddenPhaseIds 保留给旧测试/调用点兼容；phase 完成后仍持久显示，不再使用它隐藏。
 interface RenderPlanOptions {
   hiddenPhaseIds: Set<number>;
   expandTasks: boolean; // 跟随 Pi 的 app.tools.expand（默认 Ctrl+O）展开 task
@@ -2155,44 +2394,43 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
   // pending 不显示；done 状态仍显示最终结果（供用户确认后消失）
   if (goal.status === "pending") return [];
 
-  // done 状态：不隐藏任何 phase，展示完整最终状态
-  const isDone = goal.status === "done";
-  const visiblePhases = isDone
-    ? goal.plan.phases
-    : goal.plan.phases.filter((ph) => !(ph.status === "done" && opts.hiddenPhaseIds.has(ph.id)));
+  // Phase 是计划主干：done/completed 后仍持续展示，直到 goal done/clear 后浮层消失。
+  const visiblePhases = goal.plan.phases;
   if (visiblePhases.length === 0) return [];
 
   const total = goal.plan.phases.length;
-  const doneCount = goal.plan.phases.filter((ph) => ph.status === "done").length;
+  const doneCount = goal.plan.phases.filter((ph) => isDonePlanStatus(ph.status)).length;
 
-  // 计时器：显示已用时间
-  const elapsed = formatElapsed(Date.now() - goal.startedAt);
+  // active/rejected 实时走表；paused/done 冻结在 updatedAt，避免暂停后计时继续跳。
+  const elapsed = formatElapsed(getGoalElapsedMs(goal));
   const heading = `🎯 ${truncateLine(goal.objective, 40)} (${doneCount}/${total}) ⏱ ${elapsed}`;
 
-  const lines: string[] = [heading];
+  const bodyLines: string[] = [];
   for (const ph of visiblePhases) {
-    if (lines.length >= PLAN_OVERLAY_MAX_LINES) break;
     const icon = PHASE_ICON[ph.status] ?? "○";
     const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
-    lines.push(`├─ ${icon} ${truncateLine(ph.subject, 50)}${blk}`);
+    bodyLines.push(`├─ ${icon} ${truncateLine(ph.subject, 50)}${blk}`);
     if (opts.expandTasks) {
       for (const t of ph.tasks) {
-        if (lines.length >= PLAN_OVERLAY_MAX_LINES) break;
         const ti = PHASE_ICON[t.status] ?? "○";
         const subject = truncateLine(t.subject, 46);
-        const renderedSubject = t.status === "done" ? ansiStrikethrough(subject) : subject;
+        const renderedSubject = isDonePlanStatus(t.status) ? ansiStrikethrough(subject) : subject;
         const tf = t.status === "in_progress" && t.activeForm ? ` (${truncateLine(t.activeForm, 30)})` : "";
-        lines.push(`│    ${ti} ${renderedSubject}${tf}`);
+        bodyLines.push(`│    ${ti} ${renderedSubject}${tf}`);
       }
     }
   }
 
-  // 溢出摘要
-  const hidden = total - visiblePhases.length - (total - goal.plan.phases.filter((p) => !(p.status === "done" && opts.hiddenPhaseIds.has(p.id))).length);
-  if (hidden > 0) {
-    lines.push(`└─ +${hidden} more`);
-  }
-  return lines;
+  const commands = t("overlay.commands");
+  const hintLine = opts.expandTasks
+    ? t("overlay.hideTasks", { commands })
+    : t("overlay.showTasks", { commands });
+  const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2; // heading + 底部 hint
+  if (bodyLines.length <= maxBodyLines) return [heading, ...bodyLines, hintLine];
+
+  const visibleBodyLines = bodyLines.slice(0, Math.max(0, maxBodyLines - 1));
+  const hidden = bodyLines.length - visibleBodyLines.length;
+  return [heading, ...visibleBodyLines, t("overlay.more", { count: hidden }), hintLine];
 }
 
 function truncateLine(s: string, max: number): string {
@@ -2201,6 +2439,11 @@ function truncateLine(s: string, max: number): string {
 
 function ansiStrikethrough(s: string): string {
   return `\u001b[9m${s}\u001b[29m`;
+}
+
+function getGoalElapsedMs(goal: Pick<LoopGoal, "status" | "startedAt" | "updatedAt">): number {
+  if (goal.status === "paused" || goal.status === "done") return goal.updatedAt - goal.startedAt;
+  return Date.now() - goal.startedAt;
 }
 
 // 格式化毫秒为可读耗时（如 "2m 34s" 或 "1h 34m 5s"）。总是包含秒，方便看出实时跳动。
@@ -2224,8 +2467,6 @@ type PlanOverlayUI = Pick<ExtensionUIContext, "setWidget" | "getToolsExpanded" |
 
 export class PlanOverlay {
   private ui: PlanOverlayUI | undefined;
-  private donePhaseIdsPendingHide = new Set<number>();
-  private hiddenPhaseIds = new Set<number>();
   private expandTasks = false;
   private terminalInputUnsubscribe: (() => void) | undefined;
   // 延迟隐藏：goal done 后保留最终状态展示的定时器
@@ -2288,8 +2529,10 @@ export class PlanOverlay {
     if (!this.ui) return;
     this.syncExpandTasksFromToolsState();
     const goal = this.doneSnapshot ?? currentGoal;
+    if (goal && isLooping(goal.status)) this.startTick();
+    else this.stopTick();
     const lines = renderPlanLines(goal, {
-      hiddenPhaseIds: this.hiddenPhaseIds,
+      hiddenPhaseIds: new Set(),
       expandTasks: this.expandTasks,
     });
     if (lines.length === 0) {
@@ -2298,22 +2541,6 @@ export class PlanOverlay {
     }
     this.ui.setWidget(PLAN_WIDGET_KEY, lines, { placement: "aboveEditor" });
 
-    // 记录本轮新显示的 done phase，供 hideCompletedFromPreviousTurn 搬运
-    if (goal?.plan) {
-      for (const ph of goal.plan.phases) {
-        if (ph.status === "done" && !this.hiddenPhaseIds.has(ph.id)) {
-          this.donePhaseIdsPendingHide.add(ph.id);
-        }
-      }
-    }
-  }
-
-  // agent_start 时调用：把上一轮显示过的 done 搬进 hidden（done 闪现机制）
-  hideCompletedFromPreviousTurn(): void {
-    if (this.donePhaseIdsPendingHide.size === 0) return;
-    for (const id of this.donePhaseIdsPendingHide) this.hiddenPhaseIds.add(id);
-    this.donePhaseIdsPendingHide.clear();
-    this.update();
   }
 
   // goal done 时调用：快照最终状态，展示全 ✓ + 计时器，延迟后自动隐藏。
@@ -2339,8 +2566,6 @@ export class PlanOverlay {
       this.terminalInputUnsubscribe = undefined;
     }
     this.stopTick();
-    this.donePhaseIdsPendingHide.clear();
-    this.hiddenPhaseIds.clear();
     this.doneSnapshot = undefined;
   }
 
@@ -2361,11 +2586,11 @@ let planOverlay: PlanOverlay | undefined;
 
 function formatStatus(goal: LoopGoal | undefined) {
   if (!goal) return undefined;
-  if (goal.status === "done") return "🔁 done";
-  if (goal.status === "paused") return "🔁 paused";
-  if (goal.status === "pending") return "🔁 starting…";
-  if (goal.status === "rejected") return `🔁 rejected ×${goal.rejectedCount ?? 0}`;
-  return `🔁 active #${goal.iteration}`;
+  if (goal.status === "done") return t("status.done");
+  if (goal.status === "paused") return t("status.paused");
+  if (goal.status === "pending") return t("status.starting");
+  if (goal.status === "rejected") return t("status.rejected", { count: goal.rejectedCount ?? 0 });
+  return t("status.active", { iteration: goal.iteration });
 }
 
 function escapeXml(value: string) {

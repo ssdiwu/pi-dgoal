@@ -34,7 +34,7 @@ overlay 在 `tool_execution_end` 触发 update，但不 replay（branch 已 stal
 - `setWidget(WIDGET_KEY, factory, { placement: "aboveEditor" })`，factory `(tui, theme) => ({ render, invalidate })`。
 - 空了 `setWidget(key, undefined)` 自动隐藏。
 - **12 行折叠，completed 先掉 / pending 最后留**：`selectOverlayLayout` 算可见+被藏数量，溢出时保证用户始终看到"还没做的"，末尾 `+N more` 摘要。
-- **completed "显示到下一轮 agent_start 才消失"**：两个 Set（pendingHide/hidden），render 记新完成，agent_start 搬进 hidden。
+- **completed 隐藏机制不照搬到 phase**：rpiv-todo 的 completed item 可在下一轮隐藏；dgoal 的 phase 是用户确认过的进度主干，完成后应持久显示，直到整个 goal done / clear。
 - **hasActive 改 heading 样式**：有 in_progress 时 accent 色 + ●，否则 dim + ○。
 
 dgoal 的扩展：phase 层显式显示（heading 下每行一个 phase），task 层默认隐藏 Ctrl+O 展开（双可见性轴）。
@@ -45,4 +45,4 @@ dgoal 的扩展：phase 层显式显示（heading 下每行一个 phase），tas
 - **Op closed union**：`formatContent` switch 编译器强制 exhaustive——加新 action 不改 envelope 就编译失败。
 - **工具名 + details schema 是 persistence 契约**：dgoal 对应——dgoal-state customType + LoopGoal schema 是契约，字段名 pin 死。
 - **promptGuidelines 教模型用工具**：rpiv-todo 的 guidance（3+ 步才用、一次只一个 in_progress、完成立即标不 batch）。dgoal 的 dgoal_plan/dgoal_check guidance 借鉴此风格。
-- **i18n 软依赖**：dynamic import + try/catch，SDK 缺失降级英文不挂。dgoal 暂不需要 i18n，但软依赖模式可参考。
+- **i18n 软依赖**：dynamic import + try/catch，SDK 缺失降级英文不挂。dgoal 已借鉴为 `pi-di18n` A-line 软依赖：只本地化用户可见 UI 文案，缺失 provider 时降级内置中文；不本地化模型侧 prompt / tool schema。

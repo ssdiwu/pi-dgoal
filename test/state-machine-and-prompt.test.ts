@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   buildPlanContextBlock,
+  shouldAbortCurrentTurnOnClear,
   shouldDeliverContinuationNow,
   type LoopGoal,
   type Phase,
@@ -93,6 +94,16 @@ describe("续跑发送时机", () => {
 
   test("idle 且无待处理消息时才递送 continuation", () => {
     expect(shouldDeliverContinuationNow({ isIdle: () => true, hasPendingMessages: () => false })).toBe(true);
+  });
+});
+
+describe("clear 行为", () => {
+  test("busy 时 clear 应触发一次中断", () => {
+    expect(shouldAbortCurrentTurnOnClear({ isIdle: () => false })).toBe(true);
+  });
+
+  test("idle 时 clear 不需要额外中断", () => {
+    expect(shouldAbortCurrentTurnOnClear({ isIdle: () => true })).toBe(false);
   });
 });
 
