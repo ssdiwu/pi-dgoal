@@ -14,15 +14,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **阶段顺序执行**：system prompt 新增阶段顺序硬约束；`dgoal_plan` 工具侧新增 `enforcePhaseOrder()` 防护，拦截跨 phase 操作
 - **TUI goal done 后不消失**：`finalizeGoal()` 现在调用 `planOverlay.dispose()` 清除浮层
 - **TUI 最后阶段不显示完成状态**：done 状态下不再隐藏已完成 phase，展示完整最终结果（全 ✓ + N/N）
+- **建检子进程空闲超时误判**：`dgoal_check` / auditor 子进程现在在收到任意 `stdout` 数据块时就续命，不再等完整换行 JSON 才重置 watchdog，避免半行流式输出被误杀
+- **建检子进程收尸不完整**：超时/中断时改为优先终止 detached process group，避免孙进程继承 pipe 导致 `close` 长时间挂住
 
 ### Changed
 
 - **PlanStatus 终态命名统一为 `done`**：task/phase 的终态从 `completed` 统一改为 `done`（与 goal 层 `LoopStatus.done` 一致），涉及类型定义、TUI 图标、system prompt、工具描述、错误消息全链路
+- **启动闸门默认展示摘要**：确认 UI 默认展示 goal / verification / phases / task 数量，用户按需展开 task 明细，避免初始对话被细粒度 task 淹没
 
 ### Added
 
 - **TUI 计时器**：浮层标题栏显示已用时间（如 `⏱ 2m 34s`）
 - **TUI done 延迟消失**：goal 完成后浮层保留最终状态展示 10 秒后自动隐藏（agent 在当前 phase 未完成时直接开始后续 phase 的 task）
+- **子进程监督回归测试**：新增 `subprocess-supervision.test.ts`，复现父进程退出但孙进程继承 pipe 的收尸场景
 
 ## [0.2.0] - 2025-06
 

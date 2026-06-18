@@ -29,7 +29,7 @@ pi install npm:pi-dgoal
 /dgoal 修复当前项目里的 failing tests，并运行测试验证
 ```
 
-启动闸门对话框会直接展示 agent 提交的完整计划（goal + verification + phases + task 明细），确认 / 拒绝 / 反馈后再进入 loop。
+启动闸门对话框默认只展示阶段级摘要（goal + verification + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再进入 loop。
 
 loop 中：
 
@@ -101,13 +101,13 @@ pending ──→ active ──→ done                # 正常路径
 ## 测试
 
 ```bash
-npm test         # bun: 全套（95 测试，8 文件）
+npm test         # bun: 全套
 npm run test:rpc # python: RPC 加载 + 命令注册
 ```
 
-测试文件覆盖数据模型 + 持久化、plan reducer（状态机 + 环检测）、浮层渲染、启动闸门、状态机 + prompt、端到端集成、工具 execute 真实路径集成、上下文固化。
+测试文件覆盖数据模型 + 持久化、plan reducer（状态机 + 环检测）、浮层渲染、启动闸门、状态机 + prompt、端到端集成、工具 execute 真实路径集成、上下文固化，以及 detached process group（独立进程组）收尸监督。
 
-**TUI 交互行为**（启动闸门确认 UI、`dgoal_check` 子进程审计、终审 rejected 回环、aboveEditor 浮层渲染）需在 Pi TUI 用真实模型做人工 smoke test。
+**TUI 交互行为**（启动闸门确认 UI、真实 `dgoal_check` 子进程审计内容、终审 rejected 回环、aboveEditor 浮层渲染）仍需在 Pi TUI 用真实模型做人工 smoke test。
 
 ## 项目结构
 
@@ -136,6 +136,7 @@ pi-dgoal/
     ├── state-machine-and-prompt.test.ts
     ├── e2e-integration.test.ts
     ├── tool-execute-integration.test.ts
+    ├── subprocess-supervision.test.ts
     └── test-extension-rpc.py
 ```
 

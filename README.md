@@ -33,7 +33,7 @@ Start a goal with a Task Plan:
 /dgoal Fix the failing tests in this project and verify the result
 ```
 
-The startup gate dialog shows the full proposed plan inline (goal + verification + phases + task details). Approve, reject, or give feedback before the loop begins.
+The startup gate dialog shows a phase-level summary by default (goal + verification + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before the loop begins.
 
 During the loop:
 
@@ -105,13 +105,13 @@ See `doc/术语表.md` for state definitions, `doc/adr/0004` for the rejected/pa
 ## Tests
 
 ```bash
-npm test         # bun: full suite (95 tests across 8 files)
+npm test         # bun: full suite
 npm run test:rpc # python: RPC loading + command registration
 ```
 
-Test files cover data model + persistence, plan reducer (state machine + cycle detection), overlay rendering, startup gate, state machine + prompt, end-to-end integration, tool execute real-path integration, and context hardening.
+Test files cover data model + persistence, plan reducer (state machine + cycle detection), overlay rendering, startup gate, state machine + prompt, end-to-end integration, tool execute real-path integration, context hardening, and subprocess supervision for detached process-group cleanup.
 
-**TUI interaction behavior** (startup gate confirm UI, `dgoal_check` subprocess audit, terminal rejected re-loop, aboveEditor widget rendering) requires a manual smoke test in the Pi TUI with a real model.
+**TUI interaction behavior** (startup gate confirm UI, real `dgoal_check` subprocess audit content, terminal rejected re-loop, aboveEditor widget rendering) still requires a manual smoke test in the Pi TUI with a real model.
 
 ## Project Layout
 
@@ -140,6 +140,7 @@ pi-dgoal/
     ├── state-machine-and-prompt.test.ts
     ├── e2e-integration.test.ts
     ├── tool-execute-integration.test.ts
+    ├── subprocess-supervision.test.ts
     └── test-extension-rpc.py
 ```
 

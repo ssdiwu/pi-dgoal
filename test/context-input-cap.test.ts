@@ -10,6 +10,7 @@ import {
   buildPhaseCheckTask,
   buildStartPrompt,
   capPriorDiscussionText,
+  consumeBufferedLines,
   isRetryableSubprocessError,
   summarizeCheckProgress,
 } from "../index.ts";
@@ -111,6 +112,28 @@ describe("isRetryableSubprocessError", () => {
   test("does not retry ordinary command setup failures", () => {
     expect(isRetryableSubprocessError("启动 pi 子进程失败")).toBe(false);
     expect(isRetryableSubprocessError(undefined)).toBe(false);
+  });
+});
+
+describe("consumeBufferedLines", () => {
+  test("treats partial stdout as activity before a full JSON line arrives", () => {
+    const lines: string[] = [];
+    let buffer = "";
+    let activityCount = 0;
+
+    buffer = consumeBufferedLines(buffer, '{"type":"message_update"', (line) => lines.push(line), () => {
+      activityCount += 1;
+    });
+    expect(activityCount).toBe(1);
+    expect(lines).toEqual([]);
+    expect(buffer).toBe('{"type":"message_update"');
+
+    buffer = consumeBufferedLines(buffer, ',"delta":"ok"}\n', (line) => lines.push(line), () => {
+      activityCount += 1;
+    });
+    expect(activityCount).toBe(2);
+    expect(lines).toEqual(['{"type":"message_update","delta":"ok"}']);
+    expect(buffer).toBe("");
   });
 });
 

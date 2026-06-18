@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __setI18nForTest, formatProposalConfirmTitle, formatProposalForConfirm, type LoopGoal, type PlanProposal } from "../index.ts";
+import { __handleProposalConfirmationForTest, __setI18nForTest, buildProposalConfirmationOptions, formatProposalConfirmTitle, formatProposalForConfirm, type LoopGoal, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 未 export，通过 formatProposalForConfirm 间接覆盖；
 // 这里单独 export 测需要，先确认是否 export。
@@ -13,8 +13,103 @@ function goal(): LoopGoal {
   return { id: "g1", objective: "修测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
 }
 
+describe("切片4 · buildProposalConfirmationOptions", () => {
+  test("默认摘要态与 task 明细态使用短切换文案", () => {
+    expect(buildProposalConfirmationOptions(false)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "展开 task"]);
+    expect(buildProposalConfirmationOptions(true)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "收起 task"]);
+  });
+
+  test("pi-di18n 可覆盖切换文案为英文短标签", () => {
+    __setI18nForTest({
+      t(fullKey, params) {
+        const messages: Record<string, string> = {
+          "dgoal.proposal.confirmStart": "Confirm and start",
+          "dgoal.proposal.reject": "Reject and abandon goal",
+          "dgoal.proposal.feedback": "Enter feedback",
+          "dgoal.proposal.viewTasks": "Show tasks",
+          "dgoal.proposal.backToSummary": "Hide tasks",
+        };
+        return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
+      },
+    });
+    try {
+      expect(buildProposalConfirmationOptions(false)).toEqual(["Confirm and start", "Reject and abandon goal", "Enter feedback", "Show tasks"]);
+      expect(buildProposalConfirmationOptions(true)).toEqual(["Confirm and start", "Reject and abandon goal", "Enter feedback", "Hide tasks"]);
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+});
+
+describe("切片4 · handleProposalConfirmation", () => {
+  test("可在摘要/明细间往返切换，再执行拒绝", async () => {
+    const proposal: PlanProposal = {
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
+    };
+    const titles: string[] = [];
+    const optionsSeen: string[][] = [];
+    const choices = ["展开 task", "收起 task", "拒绝，放弃目标"];
+    const result = await __handleProposalConfirmationForTest(
+      {
+        cwd: process.cwd(),
+        ui: {
+          confirm: async () => true,
+          notify: () => {},
+          setStatus: () => {},
+          select: async (title: string, options: string[]) => {
+            titles.push(title);
+            optionsSeen.push(options);
+            return choices.shift();
+          },
+          editor: async () => undefined,
+        },
+      } as never,
+      goal(),
+      proposal,
+    );
+    expect(result).toBe("rejected");
+    expect(titles).toHaveLength(3);
+    expect(titles[0]).not.toContain("- task 1: 修登录用例");
+    expect(titles[1]).toContain("- task 1: 修登录用例");
+    expect(titles[2]).not.toContain("- task 1: 修登录用例");
+    expect(optionsSeen[0][3]).toBe("展开 task");
+    expect(optionsSeen[1][3]).toBe("收起 task");
+    expect(optionsSeen[2][3]).toBe("展开 task");
+  });
+
+  test("选择反馈意见时调用 editor 并返回去首尾空白后的反馈", async () => {
+    const proposal: PlanProposal = {
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
+    };
+    const editorCalls: Array<{ title: string; prefill: string }> = [];
+    const result = await __handleProposalConfirmationForTest(
+      {
+        cwd: process.cwd(),
+        ui: {
+          confirm: async () => true,
+          notify: () => {},
+          setStatus: () => {},
+          select: async () => "输入反馈意见",
+          editor: async (title: string, prefill: string) => {
+            editorCalls.push({ title, prefill });
+            return "  请先补一个回归测试  ";
+          },
+        },
+      } as never,
+      goal(),
+      proposal,
+    );
+    expect(result).toEqual({ feedback: "请先补一个回归测试" });
+    expect(editorCalls).toEqual([{ title: "反馈意见（agent 会据此调整计划）：", prefill: "" }]);
+  });
+});
+
 describe("切片4 · formatProposalForConfirm", () => {
-  test("基本格式：目标 + phase 列表 + task 计数", () => {
+  test("默认只显示目标 + phase 列表 + task 计数，不展开 task 明细", () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
       verification: "npm test auth 全过",
@@ -34,12 +129,35 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("验证：npm test auth 全过");
     expect(text).toContain("阶段计划（2 个 phase）");
     expect(text).toContain("1. 修复登录（2 个 task）");
+    expect(text).not.toContain("- task 1: 修登录用例");
+    expect(text).not.toContain("说明：覆盖 token 过期");
+    expect(text).not.toContain("进行时：正在修登录");
+    expect(text).not.toContain("依赖：#1");
+    expect(text).not.toContain("- task 2: 修权限用例");
+    expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
+  });
+
+  test("showTasks=true 时显示 task 明细", () => {
+    const proposal: PlanProposal = {
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phases: [
+        {
+          subject: "修复登录",
+          tasks: [
+            { subject: "修登录用例", description: "覆盖 token 过期", activeForm: "正在修登录", blockedBy: [1] },
+            { subject: "修权限用例" },
+          ],
+        },
+      ],
+    };
+    const text = formatProposalForConfirm(goal(), proposal, { showTasks: true });
+    expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).toContain("- task 1: 修登录用例");
     expect(text).toContain("说明：覆盖 token 过期");
     expect(text).toContain("进行时：正在修登录");
     expect(text).toContain("依赖：#1");
     expect(text).toContain("- task 2: 修权限用例");
-    expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
   });
 
   test("无 verification 时不显示验证行", () => {
@@ -66,19 +184,22 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("阶段计划（0 个 phase）");
   });
 
-  test("确认标题直接包含完整方案细节", () => {
+  test("确认标题默认只包含阶段概览，查看 task 明细时才展开", () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
       verification: "npm test auth 全过",
       phases: [{ subject: "修复登录", description: "覆盖 token 过期", tasks: [{ subject: "修登录用例" }] }],
     };
-    const title = formatProposalConfirmTitle(goal(), proposal);
-    expect(title).toContain("确认 /dgoal 计划？");
-    expect(title).toContain("目标：修好 auth 测试");
-    expect(title).toContain("验证：npm test auth 全过");
-    expect(title).toContain("1. 修复登录（1 个 task）");
-    expect(title).toContain("- task 1: 修登录用例");
-    expect(title).toContain("覆盖 token 过期");
+    const summaryTitle = formatProposalConfirmTitle(goal(), proposal);
+    expect(summaryTitle).toContain("确认 /dgoal 计划？");
+    expect(summaryTitle).toContain("目标：修好 auth 测试");
+    expect(summaryTitle).toContain("验证：npm test auth 全过");
+    expect(summaryTitle).toContain("1. 修复登录（1 个 task）");
+    expect(summaryTitle).not.toContain("- task 1: 修登录用例");
+    expect(summaryTitle).toContain("覆盖 token 过期");
+
+    const detailTitle = formatProposalConfirmTitle(goal(), proposal, { showTasks: true });
+    expect(detailTitle).toContain("- task 1: 修登录用例");
   });
 
   test("pi-di18n 可覆盖确认 UI 文案为英文", () => {
@@ -104,12 +225,14 @@ describe("切片4 · formatProposalForConfirm", () => {
         phases: [{ subject: "repair", tasks: [{ subject: "update assertions" }] }],
       };
       const text = formatProposalForConfirm(goal(), proposal);
+      const detailText = formatProposalForConfirm(goal(), proposal, { showTasks: true });
       const title = formatProposalConfirmTitle(goal(), proposal);
       expect(text).toContain("Goal: fix tests");
       expect(text).toContain("Verification: npm test");
       expect(text).toContain("Phase plan (1 phases):");
       expect(text).toContain("1. repair (1 tasks)");
-      expect(text).toContain("- task 1: update assertions");
+      expect(text).not.toContain("- task 1: update assertions");
+      expect(detailText).toContain("- task 1: update assertions");
       expect(text).not.toContain("Confirm /dgoal plan?");
       expect(title).toContain("Confirm /dgoal plan?");
       expect(title).toContain("Goal: fix tests");

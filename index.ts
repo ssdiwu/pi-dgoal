@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -166,6 +166,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.confirmStart": "确认，开始执行",
       "proposal.reject": "拒绝，放弃目标",
       "proposal.feedback": "输入反馈意见",
+      "proposal.viewTasks": "展开 task",
+      "proposal.backToSummary": "收起 task",
       "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
       "replaceConfirm.title": "替换当前 loop？",
       "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
@@ -227,6 +229,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.confirmStart": "Confirm and start",
       "proposal.reject": "Reject and abandon goal",
       "proposal.feedback": "Enter feedback",
+      "proposal.viewTasks": "Show tasks",
+      "proposal.backToSummary": "Hide tasks",
       "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
       "replaceConfirm.title": "Replace current loop?",
       "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
@@ -337,6 +341,7 @@ const MAX_CONTEXT_SUMMARY_ATTEMPTS = 3;
 const CONTEXT_SUMMARY_TIMEOUT_MS = 120_000;
 const CHECK_IDLE_TIMEOUT_MS = 120_000;
 const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
+const SUBPROCESS_FORCE_KILL_TIMEOUT_MS = 5_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
 const CONTINUATION_POLL_INTERVAL_MS = 250;
 
@@ -1133,8 +1138,12 @@ function buildProposePrompt(goal: LoopGoal) {
   ].join("\n");
 }
 
+type ProposalConfirmFormatOptions = {
+  showTasks?: boolean;
+};
+
 // 切片4：把 proposal 格式化成确认 UI 的展示文本（纯函数，可测）。
-export function formatProposalForConfirm(goal: LoopGoal, proposal: PlanProposal): string {
+export function formatProposalForConfirm(goal: LoopGoal, proposal: PlanProposal, options: ProposalConfirmFormatOptions = {}): string {
   const lines: string[] = [t("proposal.objective", { objective: proposal.objective })];
   if (proposal.verification) lines.push(t("proposal.verification", { verification: proposal.verification }));
   lines.push(``, t("proposal.planHeading", { count: proposal.phases.length }));
@@ -1142,6 +1151,7 @@ export function formatProposalForConfirm(goal: LoopGoal, proposal: PlanProposal)
     const taskCount = ph.tasks?.length ?? 0;
     lines.push(`  ${i + 1}. ${ph.subject}${taskCount ? t("proposal.taskCount", { count: taskCount }) : ""}`);
     if (ph.description) lines.push(`     ${ph.description}`);
+    if (!options.showTasks) return;
     for (const [taskIndex, task] of (ph.tasks ?? []).entries()) {
       lines.push(t("proposal.taskLine", { index: taskIndex + 1, subject: task.subject }));
       if (task.description) lines.push(t("proposal.taskDescription", { description: task.description }));
@@ -1154,8 +1164,17 @@ export function formatProposalForConfirm(goal: LoopGoal, proposal: PlanProposal)
   return lines.join("\n");
 }
 
-export function formatProposalConfirmTitle(goal: LoopGoal, proposal: PlanProposal): string {
-  return t("proposal.confirmTitleWithPlan", { plan: formatProposalForConfirm(goal, proposal) });
+export function formatProposalConfirmTitle(goal: LoopGoal, proposal: PlanProposal, options: ProposalConfirmFormatOptions = {}): string {
+  return t("proposal.confirmTitleWithPlan", { plan: formatProposalForConfirm(goal, proposal, options) });
+}
+
+export function buildProposalConfirmationOptions(showTasks: boolean): string[] {
+  return [
+    t("proposal.confirmStart"),
+    t("proposal.reject"),
+    t("proposal.feedback"),
+    t(showTasks ? "proposal.backToSummary" : "proposal.viewTasks"),
+  ];
 }
 
 // 切片4：启动闸门确认流程。返回 "confirmed" | "rejected" | { feedback: string }。
@@ -1167,16 +1186,23 @@ async function handleProposalConfirmation(
 ): Promise<"confirmed" | "rejected" | { feedback: string }> {
   const confirmStart = t("proposal.confirmStart");
   const reject = t("proposal.reject");
-  const feedbackOption = t("proposal.feedback");
-  const choice = await (ctx.ui as { select?: (title: string, options: string[]) => Promise<string | undefined>; confirm?: (t: string, m: string) => Promise<boolean>; editor?: (t: string, prefill: string) => Promise<string | undefined> }).select?.(
-    formatProposalConfirmTitle(goal, proposal),
-    [confirmStart, reject, feedbackOption],
-  );
-  if (choice === confirmStart) return "confirmed";
-  if (choice === reject) return "rejected";
-  // 输入反馈
-  const feedback = await (ctx.ui as { editor?: (t: string, prefill: string) => Promise<string | undefined> }).editor?.(t("proposal.feedbackTitle"), "");
-  return { feedback: (feedback ?? "").trim() };
+  const ui = ctx.ui as { select?: (title: string, options: string[]) => Promise<string | undefined>; confirm?: (t: string, m: string) => Promise<boolean>; editor?: (t: string, prefill: string) => Promise<string | undefined> };
+  let showTasks = false;
+
+  while (true) {
+    const options = buildProposalConfirmationOptions(showTasks);
+    const toggleOption = options[3];
+    const choice = await ui.select?.(formatProposalConfirmTitle(goal, proposal, { showTasks }), options);
+    if (choice === confirmStart) return "confirmed";
+    if (choice === reject) return "rejected";
+    if (choice === toggleOption) {
+      showTasks = !showTasks;
+      continue;
+    }
+    // 输入反馈
+    const feedback = await ui.editor?.(t("proposal.feedbackTitle"), "");
+    return { feedback: (feedback ?? "").trim() };
+  }
 }
 
 // 切片4：启动闸门主逻辑——agent_end 在 goal pending 时调用。
@@ -1481,20 +1507,18 @@ async function runContextSummarizerOnce(args: {
 
     const invocation = getPiInvocation(procArgs);
     return await new Promise<ContextSummaryResult>((resolve) => {
-      const proc = spawn(invocation.command, invocation.args, {
-        cwd: ctx.cwd,
-        shell: false,
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const proc = spawnManagedSubprocess(invocation.command, invocation.args, ctx.cwd);
 
       let finalReport = "";
       let stderrText = "";
       let abortReason: "user" | "timeout" | undefined;
       let buffer = "";
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
       const finish = (result: ContextSummaryResult) => {
         if (timeout) clearTimeout(timeout);
+        if (forceKillTimer) clearTimeout(forceKillTimer);
         proc.removeAllListeners();
         proc.stdout?.removeAllListeners();
         proc.stderr?.removeAllListeners();
@@ -1519,10 +1543,7 @@ async function runContextSummarizerOnce(args: {
       };
 
       proc.stdout.on("data", (data) => {
-        buffer += data.toString();
-        const lines = buffer.split("\n");
-        buffer = lines.pop() || "";
-        for (const line of lines) processLine(line);
+        buffer = consumeBufferedLines(buffer, data.toString(), processLine);
       });
 
       proc.stderr.on("data", (data) => {
@@ -1553,11 +1574,9 @@ async function runContextSummarizerOnce(args: {
       });
 
       const killProc = (reason: "user" | "timeout") => {
+        if (abortReason) return;
         abortReason = reason;
-        proc.kill("SIGTERM");
-        setTimeout(() => {
-          if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL");
-        }, 5000);
+        forceKillTimer = terminateManagedSubprocess(proc);
       };
 
       timeout = setTimeout(() => killProc("timeout"), CONTEXT_SUMMARY_TIMEOUT_MS);
@@ -1699,11 +1718,7 @@ async function runIsolatedCheck(args: {
   const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
   const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
-    const proc = spawn(invocation.command, invocation.args, {
-      cwd: ctx.cwd,
-      shell: false,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const proc = spawnManagedSubprocess(invocation.command, invocation.args, ctx.cwd);
 
     let finalReport = "";
     let partialReport = "";
@@ -1711,7 +1726,9 @@ async function runIsolatedCheck(args: {
     let abortReason: "user" | "idle_timeout" | undefined;
     let buffer = "";
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
     let lastProgressUpdateAt = 0;
+    let sawChildFeedback = false;
 
     const clearIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -1762,6 +1779,7 @@ async function runIsolatedCheck(args: {
 
     const finish = (result: AuditorResult) => {
       clearIdleTimer();
+      if (forceKillTimer) clearTimeout(forceKillTimer);
       proc.removeAllListeners();
       proc.stdout?.removeAllListeners();
       proc.stderr?.removeAllListeners();
@@ -1775,12 +1793,13 @@ async function runIsolatedCheck(args: {
     };
 
     proc.stdout.on("data", (data) => {
-      buffer += data.toString();
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      for (const line of lines) processLine(line);
+      buffer = consumeBufferedLines(buffer, data.toString(), processLine, () => {
+        sawChildFeedback = true;
+        armIdleTimer();
+      });
     });
     proc.stderr.on("data", (data) => {
+      sawChildFeedback = true;
       stderrText += data.toString();
       armIdleTimer();
     });
@@ -1793,7 +1812,9 @@ async function runIsolatedCheck(args: {
         return;
       }
       if (abortReason === "idle_timeout") {
-        finish({ approved: false, aborted: false, output, error: `审核空闲超时（${args.idleTimeoutMs}ms 无新反馈）` });
+        const timeoutLabel = sawChildFeedback ? "审核空闲超时" : "审核启动超时";
+        const timeoutDetail = sawChildFeedback ? "无新反馈" : "无首个反馈";
+        finish({ approved: false, aborted: false, output, error: `${timeoutLabel}（${args.idleTimeoutMs}ms ${timeoutDetail}）` });
         return;
       }
       if (code !== 0 && !output) {
@@ -1809,9 +1830,9 @@ async function runIsolatedCheck(args: {
     });
 
     const killProc = (reason: "user" | "idle_timeout") => {
+      if (abortReason) return;
       abortReason = reason;
-      proc.kill("SIGTERM");
-      setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); }, 5000);
+      forceKillTimer = terminateManagedSubprocess(proc);
     };
     armIdleTimer();
     if (ctx.signal?.aborted) killProc("user");
@@ -1926,11 +1947,60 @@ function getPiInvocation(extraArgs: string[]): { command: string; args: string[]
   return { command: "pi", args: extraArgs };
 }
 
+function canKillProcessGroup() {
+  return process.platform !== "win32";
+}
+
+function spawnManagedSubprocess(command: string, args: string[], cwd: string) {
+  return spawn(command, args, {
+    cwd,
+    shell: false,
+    stdio: ["ignore", "pipe", "pipe"],
+    detached: canKillProcessGroup(),
+  });
+}
+
+function sendManagedSignal(proc: ChildProcess, signal: NodeJS.Signals) {
+  if (canKillProcessGroup() && typeof proc.pid === "number") {
+    try {
+      process.kill(-proc.pid, signal);
+      return;
+    } catch {
+      // Fall back to the direct child if the process group is already gone.
+    }
+  }
+  try {
+    proc.kill(signal);
+  } catch {
+    // Ignore already-exited races.
+  }
+}
+
+function terminateManagedSubprocess(proc: ChildProcess, forceKillDelayMs = SUBPROCESS_FORCE_KILL_TIMEOUT_MS) {
+  sendManagedSignal(proc, "SIGTERM");
+  return setTimeout(() => {
+    if (proc.exitCode === null && proc.signalCode === null) sendManagedSignal(proc, "SIGKILL");
+  }, forceKillDelayMs);
+}
+
 function parseAuditorDecision(output: string): boolean {
   if (!output) return false;
   const approved = output.includes(APPROVED_MARKER);
   const rejected = output.includes(REJECTED_MARKER);
   return approved && !rejected;
+}
+
+export function consumeBufferedLines(
+  buffer: string,
+  chunk: string,
+  onLine: (line: string) => void,
+  onActivity?: () => void,
+) {
+  onActivity?.();
+  const lines = `${buffer}${chunk}`.split("\n");
+  const nextBuffer = lines.pop() || "";
+  for (const line of lines) onLine(line);
+  return nextBuffer;
 }
 
 export function summarizeCheckProgress(output: string): string {
@@ -2080,12 +2150,22 @@ export function __resetGoalForTest() {
   i18nApi = undefined;
 }
 
+// 测试专用：复用生产里的子进程终止逻辑，验证 detached process group 能被整体收尸。
+export function __terminateManagedSubprocessForTest(proc: ChildProcess, forceKillDelayMs = SUBPROCESS_FORCE_KILL_TIMEOUT_MS) {
+  return terminateManagedSubprocess(proc, forceKillDelayMs);
+}
+
 export function __setGoalForTest(goal: LoopGoal | undefined) {
   currentGoal = goal;
 }
 
 export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
   i18nApi = mockI18n;
+}
+
+// 测试专用：覆盖启动闸门确认 UI 的摘要/明细切换与确认分支。
+export function __handleProposalConfirmationForTest(ctx: LoopContext, goal: LoopGoal, proposal: PlanProposal) {
+  return handleProposalConfirmation(ctx, goal, proposal);
 }
 
 // ============================================================================
