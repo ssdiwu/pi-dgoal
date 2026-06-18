@@ -146,7 +146,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     const lines = renderPlanLines(g, noHide);
     expect(lines.some((l) => l.includes("task1"))).toBe(false);
     expect(lines.at(-1)).toContain("Ctrl+O 显示 task");
-    expect(lines.at(-1)).toContain("/dgoal status查 | pause停 | resume续 | clear清");
+    expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
   test("expandTasks=true 显示 task（缩进 + 符号）", () => {
@@ -159,7 +159,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     expect(taskLine).toContain("◐");
     expect(taskLine).toContain("(正在做)"); // activeForm
     expect(lines.at(-1)).toContain("Ctrl+O 隐藏 task");
-    expect(lines.at(-1)).toContain("/dgoal status查 | pause停 | resume续 | clear清");
+    expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
   test("done task 显示删除线", () => {

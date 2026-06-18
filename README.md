@@ -45,10 +45,10 @@ During the loop:
 Control the goal:
 
 ```text
-/dgoal status       # current goal + iteration + status bar
-/dgoal pause        # stop auto-continuation (keep goal)
-/dgoal resume       # resume paused goal
-/dgoal clear        # remove goal from session
+/dgoal status | s   # current goal + iteration + status bar
+/dgoal pause  | p   # stop auto-continuation (keep goal)
+/dgoal resume | r   # resume paused goal
+/dgoal clear  | c   # remove goal from session
 ```
 
 Declare completion (triggers final audit):

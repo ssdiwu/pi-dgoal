@@ -144,7 +144,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "zh-CN",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal status查 | pause停 | resume续 | clear清",
+      "overlay.commands": "/dgoal s查询 | p停止 | r继续 | c清理",
       "overlay.showTasks": "⌨ Ctrl+O 显示 task · {commands}",
       "overlay.hideTasks": "⌨ Ctrl+O 隐藏 task · {commands}",
       "overlay.more": "└─ +{count} more",
@@ -171,14 +171,14 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
       "replaceConfirm.title": "替换当前 loop？",
       "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
-      "command.description": "持续推进目标直到完成：/dgoal <goal> | pause | resume | clear | status",
+      "command.description": "持续推进目标直到完成：/dgoal <goal> | status(s) | pause(p) | resume(r) | clear(c)",
       "status.noLoop": "当前没有 loop。用法：/dgoal <goal>",
       "status.objective": "目标：{objective}",
       "status.state": "状态：{status}",
       "status.iteration": "轮次：{iteration}",
       "status.contextPreview": "启动背景预览：\n{preview}",
       "status.noContextPreview": "启动背景预览：无",
-      "status.commands": "命令：/dgoal pause | /dgoal resume | /dgoal clear",
+      "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
       "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
       "notify.auditRejected": "终审未通过（第 {count}/3 次），进 rejected，请修正后重新 dgoal_done。",
       "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
@@ -207,7 +207,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "en",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal status | pause | resume | clear",
+      "overlay.commands": "/dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
       "overlay.showTasks": "⌨ Ctrl+O show tasks · {commands}",
       "overlay.hideTasks": "⌨ Ctrl+O hide tasks · {commands}",
       "overlay.more": "└─ +{count} more",
@@ -234,14 +234,14 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
       "replaceConfirm.title": "Replace current loop?",
       "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
-      "command.description": "Keep working on a goal until completion: /dgoal <goal> | pause | resume | clear | status",
+      "command.description": "Keep working on a goal until completion: /dgoal <goal> | [s]tatus | [p]ause | [r]esume | [c]lear",
       "status.noLoop": "No active loop. Usage: /dgoal <goal>",
       "status.objective": "Goal: {objective}",
       "status.state": "Status: {status}",
       "status.iteration": "Iteration: {iteration}",
       "status.contextPreview": "Startup context preview:\n{preview}",
       "status.noContextPreview": "Startup context preview: none",
-      "status.commands": "Commands: /dgoal pause | /dgoal resume | /dgoal clear",
+      "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
       "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
       "notify.auditRejected": "Final audit failed ({count}/3); moved to rejected. Fix the issues, then call dgoal_done again.",
       "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
@@ -929,10 +929,11 @@ function parseCommand(args: string):
   | { kind: "start"; objective: string }
   | string {
   const text = args.trim();
-  if (!text || text === "status") return { kind: "status" };
-  if (text === "pause") return { kind: "pause" };
-  if (text === "resume") return { kind: "resume" };
-  if (text === "clear" || text === "stop") return { kind: "clear" };
+  // 全拼 + 单字母别名（s/p/r/c），无 stop 别名。
+  if (!text || text === "status" || text === "s") return { kind: "status" };
+  if (text === "pause" || text === "p") return { kind: "pause" };
+  if (text === "resume" || text === "r") return { kind: "resume" };
+  if (text === "clear" || text === "c") return { kind: "clear" };
   if (text.length > MAX_OBJECTIVE_LENGTH) {
     return t("command.objectiveTooLong", { length: text.length, max: MAX_OBJECTIVE_LENGTH });
   }
@@ -2185,6 +2186,11 @@ export function __setGoalForTest(goal: LoopGoal | undefined) {
 
 export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
   i18nApi = mockI18n;
+}
+
+// 测试专用：暴露 /dgoal 子命令解析，覆盖全拼/单字母与 stop 删除后的行为。
+export function __parseCommandForTest(args: string) {
+  return parseCommand(args);
 }
 
 // 测试专用：覆盖启动闸门确认 UI 的摘要/明细切换与确认分支。

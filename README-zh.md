@@ -41,10 +41,10 @@ loop 中：
 控制目标：
 
 ```text
-/dgoal status       # 当前 goal + 迭代 + 状态栏
-/dgoal pause        # 停止自动续跑（保留 goal）
-/dgoal resume       # 恢复暂停的 goal
-/dgoal clear        # 清除当前 session 的 goal
+/dgoal status | s   # 当前 goal + 迭代 + 状态栏
+/dgoal pause  | p   # 停止自动续跑（保留 goal）
+/dgoal resume | r   # 恢复暂停的 goal
+/dgoal clear  | c   # 清除当前 session 的 goal
 ```
 
 声明完成（触发终审）：

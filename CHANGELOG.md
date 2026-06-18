@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-06-19
+
+### Added
+
+- **`/dgoal` 单字母命令**：用户现在可以用 `/dgoal s`、`/dgoal p`、`/dgoal r`、`/dgoal c` 分别执行查询、停止、继续和清理
+
+### Changed
+
+- **命令提示文案**：Ctrl+O 浮层、状态输出和中英文说明文档同步改为展示全拼 + 单字母快捷形式，英文帮助使用 `[s]tatus` / `[p]ause` / `[r]esume` / `[c]lear`
+
+### Removed
+
+- **移除 `/dgoal stop` 别名**：`stop` 不再映射到 `clear`；请改用 `/dgoal clear` 或 `/dgoal c`
+
 ### Fixed
 
 - **TUI 计时器图标渲染**：浮层标题栏的计时器改为显式 emoji 形式 `⏱️`（附带 variation selector），避免部分终端按文本字符样式渲染成黑白字形
