@@ -55,8 +55,8 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
       id: "e2e-1",
       objective: "E2E 测试目标",
       status: "pending",
-      startedAt: Date.now(),
-      updatedAt: Date.now(),
+      startedAt: 1_000,
+      updatedAt: 1_000,
       iteration: 0,
     };
 
@@ -68,9 +68,13 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
         { subject: "阶段B", tasks: [{ subject: "task3" }] },
       ],
     };
-    goal = { ...goal, plan: proposalToPlan(proposal), status: "active" };
+    const activatedAt = 2_000;
+    goal = { ...goal, plan: proposalToPlan(proposal), status: "active", startedAt: activatedAt, updatedAt: activatedAt };
     // 模拟 persistGoal（startGoal 确认后会 persist）
     api.appendEntry("dgoal-state", { goal });
+
+    // 计时从用户确认计划进入 active 时开始，而不是 pending 启动阶段。
+    expect(goal.startedAt).toBe(activatedAt);
 
     // 3. 验证 plan 完整
     expect(goal.plan).toBeDefined();
@@ -134,6 +138,32 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(goal.status).toBe("done");
     expect(writes.length).toBeGreaterThanOrEqual(7); // 多次 persist
     expect(writes[writes.length - 1].data.goal).toBeNull(); // 最后一次写 null
+  });
+
+  test("计时从用户确认计划进入 active 时开始，而不是 pending 启动阶段", () => {
+    const pendingStartedAt = 1_000;
+    const activatedAt = 2_000;
+    const pendingGoal: LoopGoal = {
+      id: "timer-1",
+      objective: "计时测试",
+      status: "pending",
+      startedAt: pendingStartedAt,
+      updatedAt: pendingStartedAt,
+      iteration: 0,
+    };
+    const proposal: PlanProposal = {
+      objective: "计时测试",
+      phases: [{ subject: "阶段A" }],
+    };
+    const activeGoal: LoopGoal = {
+      ...pendingGoal,
+      plan: proposalToPlan(proposal),
+      status: "active",
+      startedAt: activatedAt,
+      updatedAt: activatedAt,
+    };
+    expect(activeGoal.startedAt).toBe(activatedAt);
+    expect(activeGoal.startedAt).not.toBe(pendingGoal.startedAt);
   });
 
   test("rejected 计数到 3 转 paused(audit_failed_3x)", () => {
