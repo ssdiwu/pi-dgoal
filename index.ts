@@ -19,7 +19,7 @@ type LoopStatus = "pending" | "active" | "rejected" | "paused" | "done";
 // Phase/Task 共用四态：pending → in_progress → completed | blocked。
 // - phase 状态由其下 task 聚合（agent 不能直接标 phase completed，唯一入口是 dgoal_check）。
 // - task：completed 不回退（错了新建接续 task），blocked 可回退 in_progress。
-type PlanStatus = "pending" | "in_progress" | "completed" | "blocked";
+type PlanStatus = "pending" | "in_progress" | "done" | "blocked";
 
 // goal 暂停原因，resume 时按此决定是否清零 rejectedCount（见 ADR 0004）。
 type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x";
@@ -284,15 +284,15 @@ const dgoalPlanTool = defineTool({
   name: DGOAL_PLAN_TOOL_NAME,
   label: "Dgoal Plan",
   description:
-    "管理当前 /dgoal 目标的 Task Plan（phase 内的 task）：create（建 task）、update（改状态/字段/依赖）、list（列 task）、get（取单 task）。task 四态 pending→in_progress→completed|blocked；completed 不回退，blocked 可回退 in_progress 且必带 blockedReason。用 blockedBy 表达依赖（涌现分解）。注意：标 phase completed 必须用 dgoal_check，不能用本工具。",
+    "管理当前 /dgoal 目标的 Task Plan（phase 内的 task）：create（建 task）、update（改状态/字段/依赖）、list（列 task）、get（取单 task）。task 四态 pending→in_progress→done|blocked；done 不回退，blocked 可回退 in_progress 且必带 blockedReason。用 blockedBy 表达依赖（涌现分解）。注意：标 phase done 必须用 dgoal_check，不能用本工具。",
   promptSnippet: "管理 /dgoal 目标的 task 计划推进",
   promptGuidelines: [
-    "建 plan 后立即执行第一个 task 并标 in_progress；完成立即标 completed（带可复验 evidence，如命令/测试结果），不要批量标完成。",
+    "建 plan 后立即执行第一个 task 并标 in_progress；完成立即标 done（带可复验 evidence，如命令/测试结果），不要批量标完成。",
     "某 task 做不下去时标 blocked 并带 blockedReason；外部条件解除后可回退 in_progress 重试。",
-    "completed 不回退：发现完成的 task 有错，新建接续 task（blockedBy 指向原 task），不要回退原 task。",
+    "done 不回退：发现完成的 task 有错，新建接续 task（blockedBy 指向原 task），不要回退原 task。",
     "用 blockedBy 表达 task 依赖（A blockedBy B 表示 A 等 B）。create 传初始集，update 用 addBlockedBy/removeBlockedBy 增量合并，不要重发全数组。环依赖会被拒。",
     "evidence 必须是可被独立复验的形态（命令/文件/测试结果），不要写 agent 的文字自述。",
-    "标 phase completed 用 dgoal_check，不要用本工具。",
+    "标 phase done 用 dgoal_check，不要用本工具。",
   ],
   parameters: Type.Object({
     action: Type.Union(
@@ -306,7 +306,7 @@ const dgoalPlanTool = defineTool({
     activeForm: Type.Optional(Type.String({ description: "in_progress 时浮层显示的进行时标签" })),
     status: Type.Optional(
       Type.Union(
-        [Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("completed"), Type.Literal("blocked")],
+        [Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("done"), Type.Literal("blocked")],
         { description: "task 目标状态（update）" },
       ),
     ),
@@ -476,11 +476,11 @@ const dgoalCheckTool = defineTool({
   name: DGOAL_CHECK_TOOL_NAME,
   label: "Dgoal Check",
   description:
-    "阶段建检：审指定 phase 的成果是否真的完成。这是标 phase completed 的唯一入口——通过独立只读子进程核验 task 的 evidence，不让学生判卷。通过则 phase 标 completed；不过则 phase 回 in_progress 并附审核报告。最后一个 phase 的 check 即终审。",
+    "阶段建检：审指定 phase 的成果是否真的完成。这是标 phase done 的唯一入口——通过独立只读子进程核验 task 的 evidence，不让学生判卷。通过则 phase 标 done；不过则 phase 回 in_progress 并附审核报告。最后一个 phase 的 check 即终审。",
   promptSnippet: "对 phase 做阶段建检（独立核验成果）",
   promptGuidelines: [
-    "当一个 phase 的 task 全终态（completed/blocked），调用本工具对该 phase 建检，通过才会标 completed。",
-    "不要用 dgoal_plan 直接标 phase completed——必须走本工具的独立核验。",
+    "当一个 phase 的 task 全终态（done/blocked），调用本工具对该 phase 建检，通过才会标 done。",
+    "不要用 dgoal_plan 直接标 phase done——必须走本工具的独立核验。",
     "建检不过时，根据报告修正后重新做相关 task，再重新建检。",
     "最后一个 phase 建检通过即等于终审通过，goal 完成。",
   ],
@@ -501,7 +501,7 @@ const dgoalCheckTool = defineTool({
       return { content: [{ type: "text", text: `phase #${phaseId} 不存在。` }], details: { error: "phase not found" } };
     }
     // 任务未全终态直接拒（setPhaseCompleted 也会拒，这里先给清晰提示）
-    const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "completed" || t.status === "blocked");
+    const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
     if (!allTerminal) {
       return { content: [{ type: "text", text: `phase #${phaseId} 的 task 未全部终态，不能建检。` }], details: { error: "tasks not terminal" } };
     }
@@ -518,12 +518,12 @@ const dgoalCheckTool = defineTool({
     if (result.approved) {
       const r = setPhaseCompleted(goal, phaseId);
       if (r.op.kind === "error") {
-        return { content: [{ type: "text", text: `建检通过但标 completed 失败：${(r.op as { message: string }).message}` }], details: { error: (r.op as { message: string }).message } };
+        return { content: [{ type: "text", text: `建检通过但标 done 失败：${(r.op as { message: string }).message}` }], details: { error: (r.op as { message: string }).message } };
       }
       currentGoal = r.goal;
       persistGoal(currentGoal);
       planOverlay?.update();
-      return { content: [{ type: "text", text: `✓ phase #${phaseId} 建检通过，已标 completed。${result.output ? `\n审核报告：\n${result.output}` : ""}` }], details: { phaseId, approved: true } };
+      return { content: [{ type: "text", text: `✓ phase #${phaseId} 建检通过，已标 done。${result.output ? `\n审核报告：\n${result.output}` : ""}` }], details: { phaseId, approved: true } };
     }
     // 不通过：phase 回 in_progress（若已是 in_progress 保持），报告注入
     if (phase.status !== "in_progress") {
@@ -1378,6 +1378,8 @@ function finalizeGoal(ctx: LoopContext) {
     persistGoal(currentGoal);
   }
   cancelPendingContinuation();
+  // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失
+  planOverlay?.showDoneThenHide();
   currentGoal = undefined;
   persistGoal(null);
   ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -1548,7 +1550,7 @@ function buildPhaseCheckTask(goal: LoopGoal, phase: Phase) {
     "审核要求：",
     "1. 用只读工具（read/grep/find/ls）核验 task 的 evidence 是否站得住（命令/文件/测试结果是否真实）。",
     "2. blocked 的 task：判断 blockedReason 是否真实（真外部 blocker 还是偷懒）。",
-    "3. 只有 task 全终态（completed/blocked）且 completed 的成果经得起核验，才判通过。",
+    "3. 只有 task 全终态（done/blocked）且 done 的成果经得起核验，才判通过。",
     "4. 不要偏袒，发现虚报/偷懒就拒绝。",
     "",
     "判定结论：在最后一条回复中包含 <APPROVED> 或 <REJECTED>，并附简要理由。",
@@ -1731,8 +1733,8 @@ function planError(goal: LoopGoal, message: string): PlanApplyResult {
 // pending ⇄ in_progress；任一 → completed | blocked；blocked → in_progress（可回退）；completed 终态不回退。
 function isTaskTransitionValid(from: PlanStatus, to: PlanStatus): boolean {
   if (from === to) return true;
-  if (from === "completed") return false; // completed 不回退（ADR 0005）
-  if (to === "completed" || to === "blocked") return true; // 任一非终态 → completed/blocked
+  if (from === "done") return false; // done 不回退（ADR 0005）
+  if (to === "done" || to === "blocked") return true; // 任一非终态 → done/blocked
   // pending ⇄ in_progress，blocked → in_progress
   return (from === "pending" && to === "in_progress") || (from === "in_progress" && to === "pending") || (from === "blocked" && to === "in_progress");
 }
@@ -1795,7 +1797,7 @@ function recomputePhaseStatus(phase: Phase): PlanStatus {
   const hasInProgress = phase.tasks.some((t) => t.status === "in_progress");
   if (hasInProgress) return "in_progress";
   const hasBlocked = phase.tasks.some((t) => t.status === "blocked");
-  const allTerminal = phase.tasks.every((t) => t.status === "completed" || t.status === "blocked");
+  const allTerminal = phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
   if (allTerminal && hasBlocked) return "blocked";
   // 全 completed（无 blocked）→ 聚合应为 completed，但 phase completed 由 dgoal_check 显式触发，
   // 聚合这里保持 in_progress 以外的状态由 dgoal_check 接管。返回当前 status 不主动升 completed。
@@ -1809,7 +1811,7 @@ function enforcePhaseOrder(goal: LoopGoal, action: PlanAction, params: Record<st
   if (!goal.plan || goal.plan.phases.length <= 1) return null;
   if (action === "list" || action === "get") return null;
 
-  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => ph.status !== "completed");
+  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => ph.status !== "done");
   if (firstIncompleteIdx < 0) return null;
 
   let targetPhaseIdx = -1;
@@ -1893,7 +1895,7 @@ export function applyPlanMutation(
       if (params.status !== undefined) {
         const target = String(params.status) as PlanStatus;
         if (!isTaskTransitionValid(current.status, target)) {
-          return planError(goal, `illegal task transition ${current.status} → ${target}（completed 不回退）`);
+          return planError(goal, `illegal task transition ${current.status} → ${target}（done 不回退）`);
         }
         newStatus = target;
       }
@@ -1970,10 +1972,10 @@ export function setPhaseCompleted(goal: LoopGoal, phaseId: number): PlanApplyRes
   if (idx === -1) return planError(goal, `phase #${phaseId} not found`);
   const phase = goal.plan.phases[idx];
   // 只有 task 全终态才允许标 completed
-  const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "completed" || t.status === "blocked");
-  if (!allTerminal) return planError(goal, `phase #${phaseId} 的 task 未全部终态，不能标 completed`);
-  const phases = goal.plan.phases.map((ph, i) => (i === idx ? { ...ph, status: "completed" as PlanStatus } : ph));
-  return { goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() }, op: { kind: "update", taskId: -1, fromStatus: phase.status, toStatus: "completed" } };
+  const allTerminal = phase.tasks.length > 0 && phase.tasks.every((t) => t.status === "done" || t.status === "blocked");
+  if (!allTerminal) return planError(goal, `phase #${phaseId} 的 task 未全部终态，不能标 done`);
+  const phases = goal.plan.phases.map((ph, i) => (i === idx ? { ...ph, status: "done" as PlanStatus } : ph));
+  return { goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() }, op: { kind: "update", taskId: -1, fromStatus: phase.status, toStatus: "done" } };
 }
 
 // ============================================================================
@@ -1990,7 +1992,7 @@ const PLAN_OVERLAY_MAX_LINES = 12;
 const PHASE_ICON: Record<PlanStatus, string> = {
   pending: "○",
   in_progress: "◐",
-  completed: "✓",
+  done: "✓",
   blocked: "⚠",
 };
 
@@ -2004,15 +2006,22 @@ interface RenderPlanOptions {
 // 返回空数组表示应隐藏浮层（无 plan / 无可见 phase / goal 不活跃）。
 export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOptions): string[] {
   if (!goal || !goal.plan || goal.plan.phases.length === 0) return [];
-  // goal 非活跃态（done/paused）也可显示最后状态，但 pending 不显示
+  // pending 不显示；done 状态仍显示最终结果（供用户确认后消失）
   if (goal.status === "pending") return [];
 
-  const visiblePhases = goal.plan.phases.filter((ph) => !(ph.status === "completed" && opts.hiddenPhaseIds.has(ph.id)));
+  // done 状态：不隐藏任何 phase，展示完整最终状态
+  const isDone = goal.status === "done";
+  const visiblePhases = isDone
+    ? goal.plan.phases
+    : goal.plan.phases.filter((ph) => !(ph.status === "done" && opts.hiddenPhaseIds.has(ph.id)));
   if (visiblePhases.length === 0) return [];
 
   const total = goal.plan.phases.length;
-  const completed = goal.plan.phases.filter((ph) => ph.status === "completed").length;
-  const heading = `🎯 ${truncateLine(goal.objective, 40)} (${completed}/${total})`;
+  const doneCount = goal.plan.phases.filter((ph) => ph.status === "done").length;
+
+  // 计时器：显示已用时间
+  const elapsed = formatElapsed(Date.now() - goal.startedAt);
+  const heading = `🎯 ${truncateLine(goal.objective, 40)} (${doneCount}/${total}) ⏱ ${elapsed}`;
 
   const lines: string[] = [heading];
   for (const ph of visiblePhases) {
@@ -2031,7 +2040,7 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
   }
 
   // 溢出摘要
-  const hidden = total - visiblePhases.length - (total - goal.plan.phases.filter((p) => !(p.status === "completed" && opts.hiddenPhaseIds.has(p.id))).length);
+  const hidden = total - visiblePhases.length - (total - goal.plan.phases.filter((p) => !(p.status === "done" && opts.hiddenPhaseIds.has(p.id))).length);
   if (hidden > 0) {
     lines.push(`└─ +${hidden} more`);
   }
@@ -2042,13 +2051,32 @@ function truncateLine(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-// PlanOverlay：管理 completed 闪现状态 + 接入 setWidget。
-// 生命周期：session_start 构造，tool_execution_end/agent_end 刷新，agent_start 隐藏上一轮 completed。
+// 格式化毫秒为可读耗时（如 "2m 34s" 或 "45s"）
+function formatElapsed(ms: number): string {
+  if (ms < 0) ms = 0;
+  const totalSec = Math.floor(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.floor(totalSec / 60);
+  const sec = totalSec % 60;
+  if (min < 60) return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
+  const hr = Math.floor(min / 60);
+  const remMin = min % 60;
+  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+}
+
+// PlanOverlay：管理 done 闪现状态 + 接入 setWidget。
+// 生命周期：session_start 构造，tool_execution_end/agent_end 刷新，agent_start 隐藏上一轮 done。
+const DONE_HIDE_DELAY_MS = 10_000; // 全部完成后显示 10 秒再隐藏
+
 export class PlanOverlay {
   private ui: { setWidget: (key: string, content: string[] | undefined, options?: { placement?: string }) => void } | undefined;
-  private completedPhaseIdsPendingHide = new Set<number>();
+  private donePhaseIdsPendingHide = new Set<number>();
   private hiddenPhaseIds = new Set<number>();
   private expandTasks = false;
+  // 延迟隐藏：goal done 后保留最终状态展示的定时器
+  private doneHideTimer: ReturnType<typeof setTimeout> | undefined;
+  // 快照：goal done 前的最后状态（用于 done 后继续渲染）
+  private doneSnapshot: LoopGoal | undefined;
 
   setUI(ui: PlanOverlay["ui"]): void {
     this.ui = ui;
@@ -2061,9 +2089,11 @@ export class PlanOverlay {
   }
 
   // 渲染并推送 widget。无可见内容时注销 widget。
+  // 优先使用 doneSnapshot（goal done 后 currentGoal 已清空但需继续展示）。
   update(): void {
     if (!this.ui) return;
-    const lines = renderPlanLines(currentGoal, {
+    const goal = this.doneSnapshot ?? currentGoal;
+    const lines = renderPlanLines(goal, {
       hiddenPhaseIds: this.hiddenPhaseIds,
       expandTasks: this.expandTasks,
     });
@@ -2073,31 +2103,52 @@ export class PlanOverlay {
     }
     this.ui.setWidget(PLAN_WIDGET_KEY, lines, { placement: "aboveEditor" });
 
-    // 记录本轮新显示的 completed phase，供 hideCompletedFromPreviousTurn 搬运
-    if (currentGoal?.plan) {
-      for (const ph of currentGoal.plan.phases) {
-        if (ph.status === "completed" && !this.hiddenPhaseIds.has(ph.id)) {
-          this.completedPhaseIdsPendingHide.add(ph.id);
+    // 记录本轮新显示的 done phase，供 hideCompletedFromPreviousTurn 搬运
+    if (goal?.plan) {
+      for (const ph of goal.plan.phases) {
+        if (ph.status === "done" && !this.hiddenPhaseIds.has(ph.id)) {
+          this.donePhaseIdsPendingHide.add(ph.id);
         }
       }
     }
   }
 
-  // agent_start 时调用：把上一轮显示过的 completed 搬进 hidden（completed 闪现机制）
+  // agent_start 时调用：把上一轮显示过的 done 搬进 hidden（done 闪现机制）
   hideCompletedFromPreviousTurn(): void {
-    if (this.completedPhaseIdsPendingHide.size === 0) return;
-    for (const id of this.completedPhaseIdsPendingHide) this.hiddenPhaseIds.add(id);
-    this.completedPhaseIdsPendingHide.clear();
+    if (this.donePhaseIdsPendingHide.size === 0) return;
+    for (const id of this.donePhaseIdsPendingHide) this.hiddenPhaseIds.add(id);
+    this.donePhaseIdsPendingHide.clear();
     this.update();
+  }
+
+  // goal done 时调用：快照最终状态，展示全 ✓ + 计时器，延迟后自动隐藏。
+  showDoneThenHide(): void {
+    if (this.doneHideTimer) clearTimeout(this.doneHideTimer);
+    // 快照当前 goal（finalizeGoal 尚未清空 currentGoal）
+    this.doneSnapshot = currentGoal ? { ...currentGoal, status: "done" as LoopStatus } : undefined;
+    this.update();
+    // 延迟隐藏
+    this.doneHideTimer = setTimeout(() => {
+      this.dispose();
+    }, DONE_HIDE_DELAY_MS);
   }
 
   // goal 清除/重置时清理闪现状态
   reset(): void {
-    this.completedPhaseIdsPendingHide.clear();
+    if (this.doneHideTimer) {
+      clearTimeout(this.doneHideTimer);
+      this.doneHideTimer = undefined;
+    }
+    this.donePhaseIdsPendingHide.clear();
     this.hiddenPhaseIds.clear();
+    this.doneSnapshot = undefined;
   }
 
   dispose(): void {
+    if (this.doneHideTimer) {
+      clearTimeout(this.doneHideTimer);
+      this.doneHideTimer = undefined;
+    }
     this.ui?.setWidget(PLAN_WIDGET_KEY, undefined);
     this.ui = undefined;
     this.reset();
