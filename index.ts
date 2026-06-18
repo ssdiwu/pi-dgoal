@@ -2051,17 +2051,17 @@ function truncateLine(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
 
-// 格式化毫秒为可读耗时（如 "2m 34s" 或 "45s"）
+// 格式化毫秒为可读耗时（如 "2m 34s" 或 "1h 34m 5s"）。总是包含秒，方便看出实时跳动。
 function formatElapsed(ms: number): string {
   if (ms < 0) ms = 0;
   const totalSec = Math.floor(ms / 1000);
-  if (totalSec < 60) return `${totalSec}s`;
-  const min = Math.floor(totalSec / 60);
   const sec = totalSec % 60;
-  if (min < 60) return sec > 0 ? `${min}m ${sec}s` : `${min}m`;
-  const hr = Math.floor(min / 60);
-  const remMin = min % 60;
-  return remMin > 0 ? `${hr}h ${remMin}m` : `${hr}h`;
+  const totalMin = Math.floor(totalSec / 60);
+  const min = totalMin % 60;
+  const hr = Math.floor(totalMin / 60);
+  if (hr > 0) return `${hr}h ${min}m ${sec}s`;
+  if (totalMin > 0) return `${totalMin}m ${sec}s`;
+  return `${sec}s`;
 }
 
 // PlanOverlay：管理 done 闪现状态 + 接入 setWidget。
