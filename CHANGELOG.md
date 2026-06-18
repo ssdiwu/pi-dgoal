@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-18
+
 ### Fixed
 
 - **Task ID 编号**：`proposalToPlan()` 中 phase 和 task 各自从 1 编号（原共用计数器导致 phase 抢 ID=1，task 从 2 起步）
@@ -21,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **PlanStatus 终态命名统一为 `done`**：task/phase 的终态从 `completed` 统一改为 `done`（与 goal 层 `LoopStatus.done` 一致），涉及类型定义、TUI 图标、system prompt、工具描述、错误消息全链路
 - **启动闸门默认展示摘要**：确认 UI 默认展示 goal / verification / phases / task 数量，用户按需展开 task 明细，避免初始对话被细粒度 task 淹没
+- **verification 必填**：`dgoal_propose` 的 `verification` 从可选改为必填（工具 schema + `validateProposalInput` 工具层校验），没有可验收完成口的 goal 在工具层直接拒绝，不进入启动闸门确认；空话拦截靠 prompt 引导 + 终审兜底（ADR 0007）
 
 ### Added
 
