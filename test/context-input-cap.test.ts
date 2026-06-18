@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildAuditorTask,
+  buildCheckCliArgs,
   buildCompletionReplySignal,
   buildContextBlock,
   buildContextPreview,
   buildContextSummarizerTask,
+  buildPhaseCheckTask,
   buildStartPrompt,
   capPriorDiscussionText,
   isRetryableSubprocessError,
@@ -122,6 +125,51 @@ describe("summarizeCheckProgress", () => {
     const summarized = summarizeCheckProgress(long);
     expect(summarized.length).toBeLessThanOrEqual(4000);
     expect(summarized.endsWith("…")).toBe(true);
+  });
+});
+
+describe("acceptance check alignment", () => {
+  test("buildCheckCliArgs uses fresh acceptance subprocess settings", () => {
+    const args = buildCheckCliArgs({
+      modelId: "openai/gpt-5",
+      systemPrompt: "system",
+      task: "task",
+    });
+
+    expect(args).toEqual([
+      "--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills", "--tools", "read,grep,find,ls,bash",
+      "--model", "openai/gpt-5",
+      "--system-prompt", "system",
+      "task",
+    ]);
+  });
+
+  test("phase check task asks for GWT pass/fail/blocker plus doc consistency", () => {
+    const task = buildPhaseCheckTask(
+      { objective: "修复建检" } as any,
+      {
+        id: 1,
+        subject: "修复 phase check",
+        status: "in_progress",
+        tasks: [{ id: 1, subject: "跑测试", status: "done", evidence: "npm test" }],
+      } as any,
+    );
+
+    expect(task).toContain("## 验收条件（GWT + 测试）");
+    expect(task).toContain("✅ PASS");
+    expect(task).toContain("❌ FAIL");
+    expect(task).toContain("⚠️ BLOCKER");
+    expect(task).toContain("代码与文档一致性");
+    expect(task).toContain("最后一行必须只包含 <APPROVED> 或 <REJECTED>");
+  });
+
+  test("goal auditor task asks for acceptance-style report", () => {
+    const task = buildAuditorTask({ objective: "完成目标" } as any, "已完成", "跑测试 + 更新 README");
+
+    expect(task).toContain("## 验收条件（GWT + 测试）");
+    expect(task).toContain("## 代码与文档检查");
+    expect(task).toContain("最后一行必须只包含 <APPROVED>");
+    expect(task).toContain("README");
   });
 });
 

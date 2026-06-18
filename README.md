@@ -39,7 +39,7 @@ During the loop:
 
 - The agent updates task status via `dgoal_plan` (`pending → in_progress → completed | blocked`).
 - Each phase completion is independently audited via `dgoal_check` (isolated subprocess with limited verification tools, including `bash`).
-- A live overlay above the editor shows phase progress; tasks default-hidden, expand with `Ctrl+O`.
+- A live overlay above the editor shows phase progress; tasks default-hidden, and follow Pi's `app.tools.expand` action (default `Ctrl+O`) when expanded.
 
 Control the goal:
 
@@ -60,7 +60,7 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 |---|---|
 | `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before loop begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
-| `dgoal_check` | Phase completion gate (spawns isolated read-only subprocess). Also the final-audit mechanism when called on the last phase. |
+| `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Also the final-audit mechanism when called on the last phase. |
 | `dgoal_done` | Declare goal completion. Triggers final audit internally; the only way to close a goal. |
 
 ## Design Boundaries
@@ -69,7 +69,7 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 - Task Plan is mandatory: using `/dgoal` implies a compound goal that requires a plan. No empty-plan completion.
 - Goal layer is frozen at gate confirmation; phase/task layers are adjustable inside the loop.
 - Completed tasks don't roll back. A wrong step gets a follow-up task (`blockedBy` → original).
-- Independent audit: the verifier is a separate `pi` subprocess with no main-session context and only limited verification tools (`read`, `grep`, `find`, `ls`, `bash`). Completion is not self-reported.
+- Independent audit: the verifier is a separate `pi` subprocess with fresh context, no main-session history, no skills/extensions, and only limited verification tools (`read`, `grep`, `find`, `ls`, `bash`). Completion is not self-reported.
 - No Git auto-actions, no replacement of project-specific tests, no fixed workflow engine.
 
 ## Goal Lifecycle
@@ -88,16 +88,17 @@ See `doc/术语表.md` for state definitions, `doc/adr/0004` for the rejected/pa
 
 ## Completion Audit
 
-`dgoal_done` runs `dgoal_check` in final-audit mode: an isolated `pi` subprocess with limited verification tools (`read`, `grep`, `find`, `ls`, `bash`), zero main-session context.
+`dgoal_done` runs `dgoal_check` in final-audit mode: an isolated `pi` subprocess with fresh context and limited verification tools (`read`, `grep`, `find`, `ls`, `bash`).
 
 ```text
---no-session --mode json --tools read,grep,find,ls,bash
+--no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
 - Approved: goal closes, loop stops, model receives a completion signal for the final user-facing reply.
 - Rejected: goal enters `rejected`; the audit report is injected and pinned to each subsequent turn's prompt. Three consecutive rejections pause the goal; `/dgoal resume` clears the counter and retries.
 - Audit error / abort / idle-timeout / no clear decision: goal is safely paused; `/dgoal resume` continues.
 - Audit progress is streamed back through the tool call; if the check stops mid-way, partial output is still returned.
+- Audit reports use a stricter acceptance style: GWT-like PASS / FAIL / BLOCKER items plus a code-and-doc consistency section.
 - Escape hatch: `PI_DGOAL_NO_AUDIT=1` skips the audit (debugging only).
 
 ## Tests
