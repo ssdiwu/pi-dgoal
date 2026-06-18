@@ -2077,9 +2077,28 @@ export class PlanOverlay {
   private doneHideTimer: ReturnType<typeof setTimeout> | undefined;
   // 快照：goal done 前的最后状态（用于 done 后继续渲染）
   private doneSnapshot: LoopGoal | undefined;
+  // 实时计时器：每秒刷新 TUI 显示 ⏱ 时间
+  private tickTimer: ReturnType<typeof setInterval> | undefined;
 
   setUI(ui: PlanOverlay["ui"]): void {
     this.ui = ui;
+    this.startTick();
+  }
+
+  // 启动实时计时器（每秒刷新 TUI）
+  private startTick(): void {
+    if (this.tickTimer) return; // 已在运行
+    this.tickTimer = setInterval(() => {
+      this.update();
+    }, 1000);
+  }
+
+  // 停止实时计时器
+  private stopTick(): void {
+    if (this.tickTimer) {
+      clearInterval(this.tickTimer);
+      this.tickTimer = undefined;
+    }
   }
 
   // Ctrl+O 切换 task 展开（后续切片接入 keybinding；当前提供方法供测试/手动调用）
@@ -2139,6 +2158,7 @@ export class PlanOverlay {
       clearTimeout(this.doneHideTimer);
       this.doneHideTimer = undefined;
     }
+    this.stopTick();
     this.donePhaseIdsPendingHide.clear();
     this.hiddenPhaseIds.clear();
     this.doneSnapshot = undefined;
@@ -2149,6 +2169,7 @@ export class PlanOverlay {
       clearTimeout(this.doneHideTimer);
       this.doneHideTimer = undefined;
     }
+    this.stopTick();
     this.ui?.setWidget(PLAN_WIDGET_KEY, undefined);
     this.ui = undefined;
     this.reset();
