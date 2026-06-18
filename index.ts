@@ -324,6 +324,15 @@ const dgoalPlanTool = defineTool({
         details: { action: params.action, error: "no active goal" },
       };
     }
+    // 阶段顺序执行防护：不允许在当前 phase 未完成时操作后续 phase 的 task。
+    const phaseGuard = enforcePhaseOrder(goal, params.action as PlanAction, params as Record<string, unknown>);
+    if (phaseGuard) {
+      return {
+        content: [{ type: "text", text: phaseGuard }],
+        details: { action: params.action, error: "phase order violation" },
+      };
+    }
+
     const result = applyPlanMutation(goal, params.action as PlanAction, params as Record<string, unknown>);
     // 仅在非 error 且非纯读（list/get 不改状态）时 commit + persist
     if (result.op.kind !== "error" && (result.op.kind === "create" || result.op.kind === "update")) {
@@ -361,17 +370,33 @@ const MAX_PROPOSAL_RETRIES = 2;
 
 // 把 proposal 转成 TaskPlan（分配 id，建 phase + 初始 task）。
 export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  let nextId = 1;
+  let nextPhaseId = 1;
+  let nextTaskId = 1;
   const phases: Phase[] = proposal.phases.map((ph) => {
-    const phaseId = nextId++;
-    const tasks: Task[] = (ph.tasks ?? []).map((tt) => ({
-      id: nextId++,
-      subject: tt.subject,
-      status: "pending" as PlanStatus,
-      ...(tt.description ? { description: tt.description } : {}),
-      ...(tt.activeForm ? { activeForm: tt.activeForm } : {}),
-      ...(tt.blockedBy?.length ? { blockedBy: tt.blockedBy } : {}),
-    }));
+    const phaseId = nextPhaseId++;
+    // phase 和 task 各自从 1 编号；blockedBy 是 phase 内 1-based 索引，需映射到全局 task ID。
+    const rawTasks = (ph.tasks ?? []);
+    const taskGlobalIds: number[] = [];
+    for (let i = 0; i < rawTasks.length; i++) {
+      taskGlobalIds.push(nextTaskId++);
+    }
+    const tasks: Task[] = rawTasks.map((tt, idx) => {
+      const mappedBlockedBy = tt.blockedBy
+        ?.map((localOneBased) => {
+            const globalId = taskGlobalIds[localOneBased - 1];
+            if (globalId === undefined) return NaN;
+            return globalId;
+          })
+        .filter((id) => !Number.isNaN(id)) ?? [];
+      return {
+        id: taskGlobalIds[idx],
+        subject: tt.subject,
+        status: "pending" as PlanStatus,
+        ...(tt.description ? { description: tt.description } : {}),
+        ...(tt.activeForm ? { activeForm: tt.activeForm } : {}),
+        ...(mappedBlockedBy.length ? { blockedBy: mappedBlockedBy } : {}),
+      };
+    });
     return {
       id: phaseId,
       subject: ph.subject,
@@ -380,7 +405,7 @@ export function proposalToPlan(proposal: PlanProposal): TaskPlan {
       ...(ph.description ? { description: ph.description } : {}),
     };
   });
-  return { phases, nextId };
+  return { phases, nextId: nextTaskId };
 }
 
 const dgoalProposeTool = defineTool({
@@ -826,7 +851,7 @@ function buildSystemPrompt(goal: LoopGoal) {
   const rejectedBlock = goal.status === "rejected" && goal.rejectedCount
     ? `\n\n⚠️ 上次终审未通过（第 ${goal.rejectedCount}/3 次），必须先修正终审指出的问题再重新 dgoal_done。连续 3 次不过将暂停。`
     : "";
-  return `当前 /dgoal 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}${planBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 dgoal_done。`;
+  return `当前 /dgoal 目标：\n<loop_goal>\n${escapeXml(goal.objective)}\n</loop_goal>${buildContextBlock(goal)}${planBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验每项要求与已验证证据。\n- 仅在目标全部完成且验证通过后才调用 dgoal_done。\n- 阶段顺序执行（强制）：必须按 phase 顺序推进——把当前 phase 的所有 task 做完后，必须调用 dgoal_check 建检，通过后才能开始下一个 phase 的 task。严禁跳过未完成的 phase 直接做后续 phase。`;
 }
 
 // 切片7：把当前 plan（三层，AI 全可见）格式化注入 system prompt。
@@ -1775,6 +1800,36 @@ function recomputePhaseStatus(phase: Phase): PlanStatus {
   // 全 completed（无 blocked）→ 聚合应为 completed，但 phase completed 由 dgoal_check 显式触发，
   // 聚合这里保持 in_progress 以外的状态由 dgoal_check 接管。返回当前 status 不主动升 completed。
   return phase.status;
+}
+
+// 阶段顺序执行防护：返回错误字符串（阻断操作）或 null（放行）。
+// 规则：必须按 phase 顺序推进——当前 phase 未 completed 时，不允许 create/update 后续 phase 的 task。
+// list/get 是只读，不拦截。
+function enforcePhaseOrder(goal: LoopGoal, action: PlanAction, params: Record<string, unknown>): string | null {
+  if (!goal.plan || goal.plan.phases.length <= 1) return null;
+  if (action === "list" || action === "get") return null;
+
+  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => ph.status !== "completed");
+  if (firstIncompleteIdx < 0) return null;
+
+  let targetPhaseIdx = -1;
+  if (action === "create") {
+    const phaseId = Number(params.phaseId);
+    targetPhaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
+  } else if (action === "update") {
+    const taskId = Number(params.id);
+    for (let i = 0; i < goal.plan.phases.length; i++) {
+      if (goal.plan.phases[i].tasks.some((t) => t.id === taskId)) {
+        targetPhaseIdx = i;
+        break;
+      }
+    }
+  }
+  if (targetPhaseIdx < 0 || targetPhaseIdx === firstIncompleteIdx) return null;
+
+  const currentPh = goal.plan.phases[firstIncompleteIdx];
+  const targetPh = goal.plan.phases[targetPhaseIdx];
+  return `阶段顺序违规：phase #${currentPh.id}（${currentPh.subject}）尚未完成。必须先完成当前 phase 的所有 task 并调用 dgoal_check 建检通过后，才能操作 phase #${targetPh.id}（${targetPh.subject}）。`;
 }
 
 // 纯 reducer：(goal, action, params) → (goal, op)。不 mutate 入参 goal。
