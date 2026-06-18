@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **TUI 计时器**：浮层标题栏显示已用时间（如 `⏱ 2m 34s`）
+- **TUI 计时器**：浮层标题栏显示已用时间（如 `⏱️ 2m 34s`）
 - **TUI done 延迟消失**：goal 完成后浮层保留最终状态展示 10 秒后自动隐藏（agent 在当前 phase 未完成时直接开始后续 phase 的 task）
 - **子进程监督回归测试**：新增 `subprocess-supervision.test.ts`，复现父进程退出但孙进程继承 pipe 的收尸场景
 
