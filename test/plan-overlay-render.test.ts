@@ -193,15 +193,28 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
       __setI18nForTest(undefined);
     }
   });
+
+  test("展开后内容过多时仍保留隐藏 task 的 i18n hint", () => {
+    __setI18nForTest(undefined);
+    const g = goal([
+      p(1, "阶段A", [t(1, "task1"), t(2, "task2"), t(3, "task3")], "in_progress"),
+      p(2, "阶段B", [t(4, "task4"), t(5, "task5"), t(6, "task6")], "pending"),
+      p(3, "阶段C", [t(7, "task7"), t(8, "task8"), t(9, "task9")], "pending"),
+    ]);
+    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    expect(lines.length).toBeLessThanOrEqual(10);
+    expect(lines.at(-1)).toContain("Ctrl+O 隐藏 task");
+    expect(lines.at(-2)).toContain("more");
+  });
 });
 
-describe("切片3 · 12 行折叠", () => {
-  test("phase 超过上限截断（不超 12 行）", () => {
+describe("切片3 · 10 行折叠", () => {
+  test("phase 超过上限截断（不超 10 行）", () => {
     const phases = Array.from({ length: 20 }, (_, i) => p(i + 1, `阶段${i}`, [], "pending"));
     const g = goal(phases);
     const lines = renderPlanLines(g, noHide);
-    // heading(1) + 最多 11 个 phase 行 = 12 行上限
-    expect(lines.length).toBeLessThanOrEqual(12);
+    // heading + body + more + hint，不超过 10 行，避免触发 Pi core 的 widget truncated。
+    expect(lines.length).toBeLessThanOrEqual(10);
   });
 
   test("objective 过长被截断", () => {

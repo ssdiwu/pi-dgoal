@@ -169,6 +169,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
       "replaceConfirm.title": "替换当前 loop？",
       "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
+      "command.description": "持续推进目标直到完成：/dgoal <goal> | pause | resume | clear | status",
       "status.noLoop": "当前没有 loop。用法：/dgoal <goal>",
       "status.objective": "目标：{objective}",
       "status.state": "状态：{status}",
@@ -229,6 +230,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
       "replaceConfirm.title": "Replace current loop?",
       "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
+      "command.description": "Keep working on a goal until completion: /dgoal <goal> | pause | resume | clear | status",
       "status.noLoop": "No active loop. Usage: /dgoal <goal>",
       "status.objective": "Goal: {objective}",
       "status.state": "Status: {status}",
@@ -762,7 +764,7 @@ export default function dgoal(pi: ExtensionAPI) {
   pi.registerTool(dgoalCheckTool);
 
   pi.registerCommand("dgoal", {
-    description: "持续推进目标直到完成：/dgoal <goal> | pause | resume | clear | status",
+    description: t("command.description"),
     handler: (args, ctx) => handleLoopCommand(args, pi, ctx),
   });
 
@@ -2370,7 +2372,7 @@ export function setPhaseCompleted(goal: LoopGoal, phaseId: number): PlanApplyRes
 // ============================================================================
 
 const PLAN_WIDGET_KEY = "dgoal-plan";
-const PLAN_OVERLAY_MAX_LINES = 12;
+const PLAN_OVERLAY_MAX_LINES = 10;
 
 // phase 状态符号（unicode 自带视觉，无需 theme.fg）
 const PHASE_ICON: Record<PlanStatus, string> = {
