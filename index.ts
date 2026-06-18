@@ -122,12 +122,14 @@ const CONTEXT_SUMMARY_TIMEOUT_MS = 120_000;
 const CHECK_IDLE_TIMEOUT_MS = 120_000;
 const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
+const CONTINUATION_POLL_INTERVAL_MS = 250;
 
 let currentGoal: LoopGoal | undefined;
 // 连续模型错误计数：正常完成一轮后重置；累计到 MAX_ERROR_RETRIES 后暂停并清零。
 let consecutiveErrors = 0;
 let api: ExtensionAPI | undefined;
-let pendingContinuation: { goalId: string; marker: string } | undefined;
+let pendingContinuation: { goalId: string; marker: string; sent: boolean } | undefined;
+let continuationDeliveryTimer: ReturnType<typeof setTimeout> | undefined;
 const cancelledMarkers = new Set<string>();
 
 const dgoalDoneTool = defineTool({
@@ -654,7 +656,6 @@ export default function dgoal(pi: ExtensionAPI) {
     persistGoal(currentGoal);
     ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
 
-    if (hasPendingMessages(ctx)) return;
     await sendContinuation(pi, ctx, currentGoal);
   });
 }
@@ -1022,9 +1023,29 @@ function buildContinuePrompt(goal: LoopGoal, marker: string) {
 async function sendContinuation(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal) {
   if (pendingContinuation?.goalId === goal.id) return;
   const marker = `${goal.id}:${goal.iteration}`;
-  pendingContinuation = { goalId: goal.id, marker };
+  pendingContinuation = { goalId: goal.id, marker, sent: false };
+  await deliverContinuationWhenIdle(pi, ctx, goal, marker);
+}
+
+async function deliverContinuationWhenIdle(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal, marker: string) {
+  if (!pendingContinuation || pendingContinuation.marker !== marker) return;
+  if (!shouldDeliverContinuationNow(ctx)) {
+    scheduleContinuationDelivery(pi, ctx, goal, marker);
+    return;
+  }
+
+  clearContinuationDeliveryTimer();
+  if (!pendingContinuation || pendingContinuation.marker !== marker) return;
+  pendingContinuation = { ...pendingContinuation, sent: true };
   const sent = await sendPrompt(pi, ctx, buildContinuePrompt(goal, marker));
   if (!sent && pendingContinuation?.marker === marker) pendingContinuation = undefined;
+}
+
+function scheduleContinuationDelivery(pi: ExtensionAPI, ctx: LoopContext, goal: LoopGoal, marker: string) {
+  clearContinuationDeliveryTimer();
+  continuationDeliveryTimer = setTimeout(() => {
+    void deliverContinuationWhenIdle(pi, ctx, goal, marker);
+  }, CONTINUATION_POLL_INTERVAL_MS);
 }
 
 async function sendPrompt(pi: ExtensionAPI, ctx: LoopContext, prompt: string) {
@@ -1741,13 +1762,20 @@ const AUDITOR_SYSTEM_PROMPT = [
   "- 最后一行必须是唯一一个标记：通过：<APPROVED>；不通过：<REJECTED>。",
 ].join("\n");
 
+function clearContinuationDeliveryTimer() {
+  if (continuationDeliveryTimer) clearTimeout(continuationDeliveryTimer);
+  continuationDeliveryTimer = undefined;
+}
+
 function clearContinuation() {
+  clearContinuationDeliveryTimer();
   pendingContinuation = undefined;
   cancelledMarkers.clear();
 }
 
 function cancelPendingContinuation() {
-  if (pendingContinuation) cancelledMarkers.add(pendingContinuation.marker);
+  clearContinuationDeliveryTimer();
+  if (pendingContinuation?.sent) cancelledMarkers.add(pendingContinuation.marker);
   pendingContinuation = undefined;
 }
 
@@ -1764,6 +1792,10 @@ function markContinuationDelivered(prompt: string) {
 function extractMarker(prompt: string) {
   const pattern = new RegExp(`<!--\\s*${escapeRegExp(CONTINUATION_MARKER_PREFIX)}([^\\s>]+)\\s*-->`);
   return pattern.exec(prompt)?.[1];
+}
+
+export function shouldDeliverContinuationNow(ctx: Pick<LoopContext, "isIdle" | "hasPendingMessages">) {
+  return ctx.isIdle?.() !== false && !hasPendingMessages(ctx);
 }
 
 function hasPendingMessages(ctx: LoopContext) {

@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   buildPlanContextBlock,
+  shouldDeliverContinuationNow,
   type LoopGoal,
   type Phase,
   type Task,
@@ -78,6 +79,20 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     });
     const block = buildPlanContextBlock(g);
     expect(block).toContain("blocked: 缺 token");
+  });
+});
+
+describe("续跑发送时机", () => {
+  test("agent 仍忙时不应立刻递送 continuation", () => {
+    expect(shouldDeliverContinuationNow({ isIdle: () => false, hasPendingMessages: () => false })).toBe(false);
+  });
+
+  test("已有待处理消息时不应递送 continuation", () => {
+    expect(shouldDeliverContinuationNow({ isIdle: () => true, hasPendingMessages: () => true })).toBe(false);
+  });
+
+  test("idle 且无待处理消息时才递送 continuation", () => {
+    expect(shouldDeliverContinuationNow({ isIdle: () => true, hasPendingMessages: () => false })).toBe(true);
   });
 });
 
