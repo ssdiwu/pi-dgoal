@@ -2509,7 +2509,7 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
 
   // active/rejected 实时走表；paused/done 冻结在 updatedAt，避免暂停后计时继续跳。
   const elapsed = formatElapsed(getGoalElapsedMs(goal));
-  const heading = `🎯 ${truncateLine(goal.objective, 40)} (${doneCount}/${total}) ⏱ ${elapsed}`;
+  const heading = `🎯 ${truncateLine(goal.objective, 40)} (${doneCount}/${total}) ⏱️ ${elapsed}`;
 
   const bodyLines: string[] = [];
   for (const ph of visiblePhases) {

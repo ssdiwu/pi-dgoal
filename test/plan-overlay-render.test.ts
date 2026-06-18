@@ -68,7 +68,7 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     try {
       const g = goal([p(1, "阶段A", [], "in_progress")], { status: "paused", startedAt: 1_000, updatedAt: 4_000 });
       const lines = renderPlanLines(g, noHide);
-      expect(lines[0]).toContain("⏱ 3s");
+      expect(lines[0]).toContain("⏱️ 3s");
     } finally {
       Date.now = realNow;
     }
