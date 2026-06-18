@@ -10,8 +10,8 @@ import { Type } from "typebox";
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
 const APPROVED_MARKER = "<APPROVED>";
 const REJECTED_MARKER = "<REJECTED>";
-// 纯只读：auditor 只看 agent 已产出的证据（文件、测试结果），不自己跑命令，避免变成自证。
-const AUDITOR_ONLY_TOOLS = ["read", "grep", "find", "ls"];
+// 审核跑在隔离子进程里，可读文件也可执行验证命令；仍无主会话上下文。
+const AUDITOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
 
 type LoopStatus = "pending" | "active" | "rejected" | "paused" | "done";
 
@@ -119,6 +119,8 @@ const CONTEXT_INPUT_CAP_BYTES = 50 * 1024;
 const MAX_ERROR_RETRIES = 3;
 const MAX_CONTEXT_SUMMARY_ATTEMPTS = 3;
 const CONTEXT_SUMMARY_TIMEOUT_MS = 120_000;
+const CHECK_IDLE_TIMEOUT_MS = 120_000;
+const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
 
 let currentGoal: LoopGoal | undefined;
@@ -142,7 +144,7 @@ const dgoalDoneTool = defineTool({
     summary: Type.String({ description: "What was completed." }),
     verification: Type.String({ description: "Evidence that proves the goal is complete." }),
   }),
-  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+  async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const completedGoal = currentGoal;
     if (!completedGoal) {
       return {
@@ -176,6 +178,7 @@ const dgoalDoneTool = defineTool({
         goal: completedGoal,
         summary,
         verification,
+        onUpdate,
       });
     } catch (error) {
       // 审核器自身出错 → 安全暂停，不 fail-open，也不烧 token 死循环。
@@ -189,14 +192,15 @@ const dgoalDoneTool = defineTool({
       };
     }
 
-    // 审核被用户中断（Esc）或没给出明确结论 → 同样安全暂停。
+    // 审核被用户中断（Esc）、空闲超时或没给出明确结论 → 同样安全暂停。
     if (audit.aborted || (!audit.approved && !audit.output)) {
-      pauseOnAuditFailure(ctx, audit.aborted ? "审核被中断" : "审核无输出");
+      const reason = audit.error ?? (audit.aborted ? "审核被中断" : "审核无输出");
+      pauseOnAuditFailure(ctx, reason);
       return {
         content: [
-          { type: "text", text: `审核未产出结论，目标已暂停。${audit.output ? `\n报告：${audit.output}` : ""}` },
+          { type: "text", text: `审核未产出结论，目标已暂停（${reason}）。${audit.output ? `\n报告：${audit.output}` : ""}` },
         ],
-        details: { goal: completedGoal.objective, summary, verification, auditAborted: audit.aborted },
+        details: { goal: completedGoal.objective, summary, verification, auditAborted: audit.aborted, auditError: audit.error, auditOutput: audit.output },
         terminate: true,
       };
     }
@@ -487,7 +491,7 @@ const dgoalCheckTool = defineTool({
   parameters: Type.Object({
     phaseId: Type.Number({ description: "要建检的 phase id" }),
   }),
-  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+  async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const goal = currentGoal;
     if (!goal || !isLooping(goal.status) || !goal.plan) {
       return {
@@ -508,12 +512,17 @@ const dgoalCheckTool = defineTool({
 
     let result;
     try {
-      result = await runPhaseCheck({ ctx: ctx as ExtensionContext, goal, phase });
+      result = await runPhaseCheck({ ctx: ctx as ExtensionContext, goal, phase, onUpdate });
     } catch (error) {
       return { content: [{ type: "text", text: `建检子进程出错：${formatError(error)}` }], details: { error: formatError(error) } };
     }
     if (result.aborted || result.error) {
-      return { content: [{ type: "text", text: `建检未完成（${result.error ?? "aborted"}），phase 保持原状。` }], details: { error: result.error ?? "aborted" } };
+      const reason = result.error ?? "aborted";
+      const report = result.output ? `\n\n审核报告（部分/最终）：\n${result.output}` : "";
+      return {
+        content: [{ type: "text", text: `建检未完成（${reason}），phase 保持原状。${report}` }],
+        details: { error: reason, output: result.output, aborted: result.aborted },
+      };
     }
     if (result.approved) {
       const r = setPhaseCompleted(goal, phaseId);
@@ -822,6 +831,7 @@ function createGoal(objective: string): LoopGoal {
     objective,
     // pending：启动中、START prompt 尚未发出。避免 summarizeContext 慢子进程期间被 agent_end 当活跃 loop 推进。
     status: "pending",
+    // 计时从用户确认计划、goal 进入 active 时开始；pending 期间只是启动闸门，不算正式执行。
     startedAt: now,
     updatedAt: now,
     iteration: 0,
@@ -956,14 +966,17 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
       return;
     }
     if (decision === "confirmed") {
-      // 写入 plan + verification，转 active，发 START prompt 进 loop
+      // 写入 plan + verification，转 active，发 START prompt 进 loop。
+      // 计时从用户确认方案这一刻开始，而不是 pending 启动闸门阶段。
+      const activatedAt = Date.now();
       currentGoal = {
         ...goal,
         objective: proposal.objective,
         plan: proposalToPlan(proposal),
         ...(proposal.verification ? { verification: proposal.verification } : {}),
         status: "active",
-        updatedAt: Date.now(),
+        startedAt: activatedAt,
+        updatedAt: activatedAt,
       };
       persistGoal(currentGoal);
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -1403,15 +1416,20 @@ interface AuditorResult {
   error?: string;
 }
 
-// 切片 5：公共独立只读审计子进程（completion auditor 和 phase check 共用）。
-// spawn pi --no-session --mode json --tools read,grep,find,ls，零上下文，只读，用 APPROVED/REJECTED marker 判定。
+interface CheckRuntimeOptions {
+  idleTimeoutMs?: number;
+  progressUpdateThrottleMs?: number;
+  onUpdate?: ((update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void) | undefined;
+}
+
+// 切片 5：公共独立审计子进程（completion auditor 和 phase check 共用）。
+// spawn pi --no-session --mode json --tools read,grep,find,ls,bash，零上下文，用 APPROVED/REJECTED marker 判定。
 // 两个调用点：runCompletionAuditor（终审全 goal）、runPhaseCheck（阶段建检单 phase）——真接缝，抽出复用。
 async function runIsolatedCheck(args: {
   ctx: ExtensionContext;
   systemPrompt: string;
   task: string;
-  timeoutMs?: number;
-}): Promise<AuditorResult> {
+} & CheckRuntimeOptions): Promise<AuditorResult> {
   const { ctx, systemPrompt, task } = args;
   const model = ctx.model;
   const modelId = model ? `${model.provider}/${model.id}` : undefined;
@@ -1421,7 +1439,7 @@ async function runIsolatedCheck(args: {
   try {
     await fs.promises.writeFile(promptPath, systemPrompt, { encoding: "utf-8", mode: 0o600 });
 
-    const procArgs = ["--mode", "json", "-p", "--no-session", "--tools", AUDITOR_ONLY_TOOLS.join(",")];
+    const procArgs = ["--mode", "json", "-p", "--no-session", "--tools", AUDITOR_TOOLS.join(",")];
     if (modelId) procArgs.push("--model", modelId);
     procArgs.push("--append-system-prompt", promptPath);
     procArgs.push(task);
@@ -1435,29 +1453,72 @@ async function runIsolatedCheck(args: {
       });
 
       let finalReport = "";
+      let partialReport = "";
       let stderrText = "";
-      let aborted = false;
+      let abortReason: "user" | "idle_timeout" | undefined;
       let buffer = "";
-      let timeout: ReturnType<typeof setTimeout> | undefined;
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      let lastProgressUpdateAt = 0;
 
-      const finish = (result: AuditorResult) => {
-        if (timeout) clearTimeout(timeout);
-        proc.removeAllListeners();
-        proc.stdout?.removeAllListeners();
-        proc.stderr?.removeAllListeners();
-        resolve(result);
+      const clearIdleTimer = () => {
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = undefined;
+      };
+
+      const armIdleTimer = () => {
+        clearIdleTimer();
+        if (!args.idleTimeoutMs) return;
+        idleTimer = setTimeout(() => killProc("idle_timeout"), args.idleTimeoutMs);
+      };
+
+      const emitProgress = (force = false) => {
+        if (!args.onUpdate) return;
+        const now = Date.now();
+        const throttleMs = args.progressUpdateThrottleMs ?? CHECK_PROGRESS_UPDATE_THROTTLE_MS;
+        if (!force && now - lastProgressUpdateAt < throttleMs) return;
+        lastProgressUpdateAt = now;
+        args.onUpdate({
+          content: [{ type: "text", text: summarizeCheckProgress(finalReport || partialReport) }],
+          details: { partial: true },
+        });
       };
 
       const processLine = (line: string) => {
         if (!line.trim()) return;
-        let event: { type?: string; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+        armIdleTimer();
+        let event: { type?: string; assistantMessageEvent?: { type?: string; delta?: string }; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
         try { event = JSON.parse(line); } catch { return; }
+        if (event.type === "message_update" && event.assistantMessageEvent?.type === "text_delta") {
+          if (typeof event.assistantMessageEvent.delta === "string" && event.assistantMessageEvent.delta) {
+            partialReport += event.assistantMessageEvent.delta;
+            emitProgress();
+          }
+          return;
+        }
         if (event.type === "message_end" && event.message?.role === "assistant") {
           const text = (event.message.content ?? [])
             .filter((part) => part.type === "text" && typeof part.text === "string")
             .map((part) => part.text!).join("\n\n");
-          if (text.trim()) finalReport = text;
+          if (text.trim()) {
+            finalReport = text;
+            partialReport = text;
+            emitProgress(true);
+          }
         }
+      };
+
+      const finish = (result: AuditorResult) => {
+        clearIdleTimer();
+        proc.removeAllListeners();
+        proc.stdout?.removeAllListeners();
+        proc.stderr?.removeAllListeners();
+        if (args.onUpdate && (result.output || partialReport)) {
+          args.onUpdate({
+            content: [{ type: "text", text: summarizeCheckProgress(result.output || partialReport) }],
+            details: { partial: false, approved: result.approved, aborted: result.aborted, error: result.error },
+          });
+        }
+        resolve(result);
       };
 
       proc.stdout.on("data", (data) => {
@@ -1466,12 +1527,22 @@ async function runIsolatedCheck(args: {
         buffer = lines.pop() || "";
         for (const line of lines) processLine(line);
       });
-      proc.stderr.on("data", (data) => { stderrText += data.toString(); });
+      proc.stderr.on("data", (data) => {
+        stderrText += data.toString();
+        armIdleTimer();
+      });
 
       proc.on("close", (code) => {
         if (buffer.trim()) processLine(buffer);
-        const output = finalReport.trim();
-        if (aborted) { finish({ approved: false, aborted: true, output }); return; }
+        const output = (finalReport || partialReport).trim();
+        if (abortReason === "user") {
+          finish({ approved: false, aborted: true, output, error: output ? undefined : "审核被中断" });
+          return;
+        }
+        if (abortReason === "idle_timeout") {
+          finish({ approved: false, aborted: false, output, error: `审核空闲超时（${args.idleTimeoutMs}ms 无新反馈）` });
+          return;
+        }
         if (code !== 0 && !output) {
           finish({ approved: false, aborted: false, output: "", error: truncate(stderrText) || `pi 退出码 ${code}` });
           return;
@@ -1480,17 +1551,16 @@ async function runIsolatedCheck(args: {
       });
 
       proc.on("error", () => {
-        if (aborted) return;
+        if (abortReason) return;
         finish({ approved: false, aborted: false, output: "", error: "启动 pi 子进程失败" });
       });
 
-      const killProc = (reason: "user" | "timeout") => {
-        aborted = true;
+      const killProc = (reason: "user" | "idle_timeout") => {
+        abortReason = reason;
         proc.kill("SIGTERM");
         setTimeout(() => { if (proc.exitCode === null && proc.signalCode === null) proc.kill("SIGKILL"); }, 5000);
-        if (reason === "timeout") stderrText += `[timeout ${args.timeoutMs}ms]`;
       };
-      if (args.timeoutMs) timeout = setTimeout(() => killProc("timeout"), args.timeoutMs);
+      armIdleTimer();
       if (ctx.signal?.aborted) killProc("user");
       else ctx.signal?.addEventListener("abort", () => killProc("user"), { once: true });
     });
@@ -1505,11 +1575,15 @@ async function runCompletionAuditor(args: {
   goal: LoopGoal;
   summary: string;
   verification: string;
+  onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
   return runIsolatedCheck({
     ctx: args.ctx,
     systemPrompt: AUDITOR_SYSTEM_PROMPT,
     task: buildAuditorTask(args.goal, args.summary, args.verification),
+    idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
+    progressUpdateThrottleMs: CHECK_PROGRESS_UPDATE_THROTTLE_MS,
+    onUpdate: args.onUpdate,
   });
 }
 
@@ -1519,12 +1593,15 @@ async function runPhaseCheck(args: {
   ctx: ExtensionContext;
   goal: LoopGoal;
   phase: Phase;
+  onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
   return runIsolatedCheck({
     ctx: args.ctx,
     systemPrompt: PHASE_CHECK_SYSTEM_PROMPT,
     task: buildPhaseCheckTask(args.goal, args.phase),
-    timeoutMs: CONTEXT_SUMMARY_TIMEOUT_MS,
+    idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
+    progressUpdateThrottleMs: CHECK_PROGRESS_UPDATE_THROTTLE_MS,
+    onUpdate: args.onUpdate,
   });
 }
 
@@ -1549,7 +1626,7 @@ function buildPhaseCheckTask(goal: LoopGoal, phase: Phase) {
     "</phase>",
     "",
     "审核要求：",
-    "1. 用只读工具（read/grep/find/ls）核验 task 的 evidence 是否站得住（命令/文件/测试结果是否真实）。",
+    "1. 用工具（read/grep/find/ls/bash）核验 task 的 evidence 是否站得住（命令/文件/测试结果是否真实）。",
     "2. blocked 的 task：判断 blockedReason 是否真实（真外部 blocker 还是偷懒）。",
     "3. 只有 task 全终态（done/blocked）且 done 的成果经得起核验，才判通过。",
     "4. 不要偏袒，发现虚报/偷懒就拒绝。",
@@ -1559,10 +1636,10 @@ function buildPhaseCheckTask(goal: LoopGoal, phase: Phase) {
 }
 
 const PHASE_CHECK_SYSTEM_PROMPT = [
-  "你是 pi-dgoal 的阶段建检员，运行在隔离的零上下文会话里，只有只读工具。",
+  "你是 pi-dgoal 的阶段建检员，运行在隔离的零上下文会话里，只能使用有限工具核验证据。",
   "你的职责：独立核验一个 phase 的成果是否站得住，不偏袒 agent。",
   "原则：",
-  "- 只看事实：用 read/grep/find/ls 核验 evidence 是否真实可复现。",
+  "- 只看事实：用 read/grep/find/ls/bash 核验 evidence 是否真实可复现。",
   "- 不让学生判卷：agent 自述不算证据，必须独立复验。",
   "- 主动 FAIL：发现虚报、evidence 不可复现、blocked 理由不实，就 <REJECTED>。",
   "- 只在 task 全终态且成果经得起核验时才 <APPROVED>。",
@@ -1590,6 +1667,12 @@ function parseAuditorDecision(output: string): boolean {
   return approved && !rejected;
 }
 
+export function summarizeCheckProgress(output: string): string {
+  const trimmed = output.trim();
+  if (!trimmed) return "(审核进行中，尚无文本输出)";
+  return trimmed.length > 4000 ? `${trimmed.slice(0, 3999)}…` : trimmed;
+}
+
 function buildAuditorTask(goal: LoopGoal, summary: string, verification: string) {
   return [
     "判定下面的 /dgoal 目标是否真的完成。",
@@ -1606,7 +1689,7 @@ function buildAuditorTask(goal: LoopGoal, summary: string, verification: string)
     "",
     "审核检查清单：",
     "1. 从目标里抽出真实的成功标准（含质量 / 用户可感知结果，不只是“代码存在”）。",
-    "2. 用 read/grep/find/ls 实地检查能证明或证伪这些标准的工件或输出。",
+    "2. 用 read/grep/find/ls/bash 实地检查能证明或证伪这些标准的工件或输出。",
     "3. agent 声称跑过测试 / 搜索过引用时，用真实的文件证据复核——声明不是证明。",
     "4. 解释任何缺失或弱的证据，特别是“脚手架 vs 最终交付”的质量落差。",
     "5. 结论行只能是 <APPROVED>（目标真正达成）或 <REJECTED>（否则）。",
@@ -1619,7 +1702,7 @@ const AUDITOR_SYSTEM_PROMPT = [
   "",
   "原则：",
   "- 基于代码事实和文件证据判定，不基于 agent 的自述或感觉。",
-  "- 逐条对照目标里的可验证要求，用 read/grep/find/ls 实地核验。",
+  "- 逐条对照目标里的可验证要求，用 read/grep/find/ls/bash 实地核验。",
   "- 若证据是“生成了脚手架 / 占位代码 / 仅 build 通过 / proxy 指标”，且用户目标未被真实满足，判 REJECTED。",
   "- 若有任何要求缺失、弱验证、矛盾、无法用证据检验，判 REJECTED。",
   "- 你只有只读工具，不能也不会修改任何文件。",

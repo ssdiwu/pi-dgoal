@@ -18,5 +18,5 @@ npm run test:rpc       # python3 test/test-extension-rpc.py
 
 ## 边界
 
-- 自动化测试覆盖背景固化逻辑和命令注册。
-- 完整自动续跑和审核行为（含 auditor 子进程）仍需在 Pi TUI 中用真实模型做人工 smoke test。
+- 自动化测试覆盖背景固化逻辑、命令注册，以及部分建检辅助逻辑（如审核进度摘要）。
+- 完整自动续跑和审核行为（含 auditor 子进程、流式审核输出、真实测试命令执行）仍需在 Pi TUI 中用真实模型做人工 smoke test。

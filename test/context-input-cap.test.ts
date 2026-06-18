@@ -8,6 +8,7 @@ import {
   buildStartPrompt,
   capPriorDiscussionText,
   isRetryableSubprocessError,
+  summarizeCheckProgress,
 } from "../index.ts";
 
 describe("capPriorDiscussionText", () => {
@@ -107,6 +108,20 @@ describe("isRetryableSubprocessError", () => {
   test("does not retry ordinary command setup failures", () => {
     expect(isRetryableSubprocessError("启动 pi 子进程失败")).toBe(false);
     expect(isRetryableSubprocessError(undefined)).toBe(false);
+  });
+});
+
+describe("summarizeCheckProgress", () => {
+  test("returns a visible placeholder when no audit text exists", () => {
+    expect(summarizeCheckProgress("")).toBe("(审核进行中，尚无文本输出)");
+  });
+
+  test("keeps short audit text untouched and truncates very long text", () => {
+    expect(summarizeCheckProgress("<APPROVED> ok")).toBe("<APPROVED> ok");
+    const long = "甲".repeat(5000);
+    const summarized = summarizeCheckProgress(long);
+    expect(summarized.length).toBeLessThanOrEqual(4000);
+    expect(summarized.endsWith("…")).toBe(true);
   });
 });
 

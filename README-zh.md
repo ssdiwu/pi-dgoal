@@ -34,7 +34,7 @@ pi install npm:pi-dgoal
 loop 中：
 
 - agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → completed | blocked`）
-- 每个 phase 完成都通过 `dgoal_check`（独立只读子进程）独立审核
+- 每个 phase 完成都通过 `dgoal_check`（独立子进程，带受限核验工具，含 `bash`）独立审核
 - editor 上方实时浮层显示 phase 进度；task 默认隐藏，`Ctrl+O` 展开
 
 控制目标：
@@ -65,7 +65,7 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，lo
 - Task Plan 必选：`/dgoal` 即复合目标，不允许空 plan 完成
 - Goal 层确认后冻结；phase/task 层 loop 内可调
 - completed task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
-- 独立审核：审核员是独立 `pi` 子进程，无主会话上下文，只读工具，完成不自证
+- 独立审核：审核员是独立 `pi` 子进程，无主会话上下文，只带受限核验工具（`read`、`grep`、`find`、`ls`、`bash`），完成不自证
 - 不自动 Git 操作，不替代项目测试，不做固定 workflow engine
 
 ## Goal 生命周期
@@ -84,15 +84,16 @@ pending ──→ active ──→ done                # 正常路径
 
 ## 完成审核
 
-`dgoal_done` 走 `dgoal_check` 终审模式：独立 `pi` 子进程，零主会话上下文，只读工具（`read`、`grep`、`find`、`ls`）。
+`dgoal_done` 走 `dgoal_check` 终审模式：独立 `pi` 子进程，零主会话上下文，受限核验工具（`read`、`grep`、`find`、`ls`、`bash`）。
 
 ```text
---no-session --mode json --tools read,grep,find,ls
+--no-session --mode json --tools read,grep,find,ls,bash
 ```
 
 - 通过：goal 关闭，loop 停止，模型收到完成信号用于最终用户回复
 - 拒绝：goal 进 `rejected`，审核报告注入对话，每轮 prompt 钉着未过问题；连续 3 次拒绝 → 暂停，`/dgoal resume` 清零重试
-- 审核出错 / 中断 / 无结论：goal 安全暂停，`/dgoal resume` 继续
+- 审核出错 / 中断 / 空闲超时 / 无结论：goal 安全暂停，`/dgoal resume` 继续
+- 审核过程会通过工具增量更新回传；即使中途停下，也会尽量返回部分审核输出
 - 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核（仅调试）
 
 ## 测试
