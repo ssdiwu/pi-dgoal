@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-06-19
+
+### Fixed
+
+- **goal 终结对 TUI 渲染异常容错**：`dgoal_done` 成功后 `finalizeGoal` 调用主程序 TUI（完成浮层、状态栏清空）现用 try/catch 包裹，主程序 TUI 渲染异常（如 `Spacer is not defined`）不再阻断 goal 状态清空——UI 展示失败时 goal 仍正确落 `done` 并清空，避免 goal 卡死无法关闭。
+
 ## [0.4.0] - 2026-06-19
 
 ### Added

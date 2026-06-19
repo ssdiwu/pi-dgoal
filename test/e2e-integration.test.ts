@@ -11,8 +11,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 process.env.PI_DGOAL_NO_AUDIT = "1";
 
 import {
+  __finalizeGoalForTest,
   __resetGoalForTest,
   __setApiForTest,
+  __setGoalForTest,
+  __setPlanOverlayForTest,
   renderPlanLines,
   type LoopGoal,
   type Phase,
@@ -300,5 +303,76 @@ describe("端到端集成 · 涌现分解：blockedBy DAG", () => {
       makeTask(2, "b", "completed"),
     ];
     expect(detectPlanCycle(tasks2, 2, [1])).toBe(true);
+  });
+});
+
+// 复现：dgoal_done 成功路径上，主程序 TUI 渲染层抛 ReferenceError(Spacer is not defined)
+// 时，finalizeGoal 必须仍正确落盘 done 并清空 goal——UI 边界异常不得阻断状态机。
+// 根因在 pi 主程序 TUI 渲染层（本扩展接触不到 Spacer 组件），但 finalizeGoal 不应
+// 假设 ctx.ui.* / planOverlay.* 永不抛错；这是本扩展能且应当防御的失败模式。
+describe("端到端集成 · finalizeGoal UI 边界容错（Spacer is not defined）", () => {
+  beforeEach(() => {
+    __resetGoalForTest();
+    __setPlanOverlayForTest(undefined);
+  });
+
+  function makeActiveGoal(): LoopGoal {
+    return {
+      id: "resil-1",
+      objective: "容错测试目标",
+      status: "active",
+      startedAt: 1_000,
+      updatedAt: 1_000,
+      iteration: 1,
+      plan: {
+        phases: [makePhase(1, "阶段A", [makeTask(1, "task1", "completed")], "completed")],
+        nextId: 2,
+      },
+      verification: "全量测试通过",
+    };
+  }
+
+  test("planOverlay.showDoneThenHide 抛 ReferenceError 时，goal 仍落盘 done 并清空", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest(makeActiveGoal());
+    // 复现真实路径：session 跑过 → planOverlay 存在 → showDoneThenHide 触发主程序渲染崩溃
+    __setPlanOverlayForTest({
+      showDoneThenHide() {
+        throw new ReferenceError("Spacer is not defined");
+      },
+    } as never);
+
+    const ctx = {
+      cwd: "/tmp",
+      ui: { confirm: async () => true, notify() {}, setStatus() {} },
+    } as never;
+
+    // 修复前：showDoneThenHide 抛错穿透 finalizeGoal，persistGoal(null) 不会执行
+    expect(() => __finalizeGoalForTest(ctx)).not.toThrow();
+    expect(writes.some((w) => w.data.goal?.status === "done")).toBe(true);
+    expect(writes.at(-1)?.data.goal).toBeNull();
+  });
+
+  test("ctx.ui.setStatus 抛 ReferenceError 时，goal 仍落盘 done 并清空", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest(makeActiveGoal());
+    __setPlanOverlayForTest(undefined);
+
+    const ctx = {
+      cwd: "/tmp",
+      ui: {
+        confirm: async () => true,
+        notify() {},
+        setStatus() {
+          throw new ReferenceError("Spacer is not defined");
+        },
+      },
+    } as never;
+
+    expect(() => __finalizeGoalForTest(ctx)).not.toThrow();
+    expect(writes.some((w) => w.data.goal?.status === "done")).toBe(true);
+    expect(writes.at(-1)?.data.goal).toBeNull();
   });
 });

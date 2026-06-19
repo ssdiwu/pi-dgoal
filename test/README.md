@@ -7,12 +7,20 @@ pi-dgoal 的测试。两类：背景固化逻辑测试（bun test）和扩展加
 ```bash
 npm run test:context   # bun test test/context-input-cap.test.ts
 npm run test:rpc       # python3 test/test-extension-rpc.py
+npm test               # bun test（全量，跑所有 *.test.ts）
 ```
 
 ## 文件
 
 | 文件 | 验证什么 |
 |---|---|
+| `task-plan-data-model.test.ts` | 切片1：Task Plan 数据模型 + `persistGoal`/`loadGoal` 往返 + 向后兼容（0.1.x 旧 goal 无 plan 字段）。 |
+| `dgoal-plan-reducer.test.ts` | 切片2：`dgoal_plan` reducer（纯函数）—— `applyPlanMutation` 四态状态机、`setPhaseCompleted`（task 聚合）、`detectPlanCycle`（blockedBy 环检测）。 |
+| `plan-overlay-render.test.ts` | 切片3：计划浮层渲染纯函数 `renderPlanLines` + `PlanOverlay` 类（reload 恢复、展开折叠、完成闪现）。 |
+| `startup-gate.test.ts` | 切片4：启动闸门纯函数—— `validateProposalInput`、`formatProposalForConfirm`、`buildProposalConfirmationOptions`、确认 UI 摘要/明细切换。 |
+| `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
+| `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
+| `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done，`finalizeGoal` UI 边界容错，blockedBy DAG。 |
 | `command-aliases.test.ts` | `/dgoal` 子命令解析：全拼 / 单字母 `s/p/r/c`，以及移除 `stop` 别名后的行为。 |
 | `context-input-cap.test.ts` | 启动背景固化的文本截断 / 摘要逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、`buildContextSummarizerTask`、`isRetryableSubprocessError`。纯逻辑测试，不依赖 Pi。 |
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |

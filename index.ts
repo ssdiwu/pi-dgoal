@@ -1686,11 +1686,21 @@ function finalizeGoal(ctx: LoopContext) {
     persistGoal(currentGoal);
   }
   cancelPendingContinuation();
-  // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失
-  planOverlay?.showDoneThenHide();
+  // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失。
+  // UI 边界容错：planOverlay / ctx.ui 由主程序实现，TUI 渲染异常（如主程序 0.79.4 的
+  // Spacer is not defined）不得阻断 goal 状态清空——状态机一致性优先于最终 UI 展示。
+  try {
+    planOverlay?.showDoneThenHide();
+  } catch {
+    // 最终 UI 展示失败不阻断 goal 终结。
+  }
   currentGoal = undefined;
   persistGoal(null);
-  ctx.ui.setStatus(STATUS_KEY, undefined);
+  try {
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+  } catch {
+    // 状态栏更新失败不阻断 goal 终结。
+  }
 }
 
 // 审核器出错 / 被中断 / 无结论：安全暂停，避免 fail-open 或烧 token 死循环。
@@ -2196,6 +2206,17 @@ export function __parseCommandForTest(args: string) {
 // 测试专用：覆盖启动闸门确认 UI 的摘要/明细切换与确认分支。
 export function __handleProposalConfirmationForTest(ctx: LoopContext, goal: LoopGoal, proposal: PlanProposal) {
   return handleProposalConfirmation(ctx, goal, proposal);
+}
+
+// 测试专用：暴露 finalizeGoal，覆盖 UI 边界异常（主程序 TUI 渲染崩溃，如 Spacer is not defined）
+// 下状态机仍正确落盘 done 并清空 currentGoal 的不变量。
+export function __finalizeGoalForTest(ctx: LoopContext) {
+  finalizeGoal(ctx);
+}
+
+// 测试专用：注入模块级 planOverlay，复现真实 session 中 overlay 存在时的 UI 崩溃路径。
+export function __setPlanOverlayForTest(overlay: PlanOverlay | undefined) {
+  planOverlay = overlay;
 }
 
 // ============================================================================
