@@ -67,7 +67,7 @@ describe("PlanStatusDialog.render", () => {
     // 期望：上边框(1) + heading(1) + body(1) + hint(1) + 下边框(1) = 5 行
     expect(lines.length).toBe(5);
     // 第一行 = 上边框 + 标题（mockTheme 包装为 <border>...<accent>...<bold>title</bold>...</accent>...</border>）
-    expect(lines[0]).toContain("Dgoal Plan Status — Top overlay");
+    expect(lines[0]).toContain("Dgoal 计划状态 — 顶部浮层");
     expect(lines[0]).toContain("╭─"); // 上边框起手
     expect(lines[0]).toContain("─╮"); // 上边框收尾
     // 第二行 = heading（钉顶，含 🎯）
@@ -77,6 +77,21 @@ describe("PlanStatusDialog.render", () => {
     // 最后一行 = 下边框
     expect(lines[lines.length - 1]).toContain("╰─");
     expect(lines[lines.length - 1]).toContain("─╯");
+  });
+
+  test("标题走 i18n override，而不是硬编码英文", () => {
+    __setI18nForTest({
+      t: (key: string) => key.endsWith(".status.dialogTitle") ? "本地化状态弹窗" : key,
+    } as any);
+    try {
+      const g = goal([p(1, "p1", [], "in_progress")]);
+      const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+      const lines = dlg.render(80);
+      expect(lines[0]).toContain("本地化状态弹窗");
+      expect(lines[0]).not.toContain("Dgoal Plan Status — Top overlay");
+    } finally {
+      beforeAllSetI18n();
+    }
   });
 
   test("heading 钉顶：scroll 到第二页 heading 仍在第 2 行", () => {

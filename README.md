@@ -37,7 +37,7 @@ The startup gate dialog shows a phase-level summary by default (goal + verificat
 
 During the loop:
 
-- The agent updates task status via `dgoal_plan` (`pending → in_progress → completed | blocked`).
+- The agent updates task status via `dgoal_plan` (`pending → in_progress → done | blocked`).
 - Each phase completion is independently audited via `dgoal_check` (isolated subprocess with limited verification tools, including `bash`).
 - A live overlay above the editor shows phase progress; tasks default-hidden, follow Pi's `app.tools.expand` action (default `Ctrl+O`) when expanded, and show a single bottom line with the shortcut plus common command descriptions.
 - User-facing overlay, status, notification, and startup-gate text can follow `pi-di18n` when that extension is installed; model-facing prompts and tool schemas stay unchanged.

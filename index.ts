@@ -186,6 +186,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noContextPreview": "启动背景预览：无",
       "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
       "status.dialogEmpty": "(无 plan/无 phase可显示)",
+      "status.dialogTitle": "Dgoal 计划状态 — 顶部浮层",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
       "notify.auditRejected": "终审未通过（第 {count}/3 次），进 rejected，请修正后重新 dgoal_done。",
@@ -251,6 +252,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noContextPreview": "Startup context preview: none",
       "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
       "status.dialogEmpty": "(no plan / no phases to display)",
+      "status.dialogTitle": "Dgoal Plan Status — Top overlay",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
       "notify.auditRejected": "Final audit failed ({count}/3); moved to rejected. Fix the issues, then call dgoal_done again.",
@@ -3007,7 +3009,7 @@ export class PlanStatusDialog implements Component, Focusable {
     const lines: string[] = [];
 
     // 顶部边框（圆角）+ accent 标题
-    const title = " Dgoal Plan Status — Top overlay ";
+    const title = ` ${t("status.dialogTitle")} `;
     const padLen = Math.max(0, innerW - visibleWidth(title) - 2);
     const padLeft = Math.floor(padLen / 2);
     const padRight = padLen - padLeft;

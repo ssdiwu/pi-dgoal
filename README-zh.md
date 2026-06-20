@@ -33,7 +33,7 @@ pi install npm:pi-dgoal
 
 loop 中：
 
-- agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → completed | blocked`）
+- agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → done | blocked`）
 - 每个 phase 完成都通过 `dgoal_check`（独立子进程，带受限核验工具，含 `bash`）独立审核
 - editor 上方实时浮层显示 phase 进度；task 默认隐藏，跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`）展开，底部同一行提示快捷键与常用命令说明
 - 安装 `pi-di18n` 时，浮层、状态栏、通知和启动闸门等用户可见文案可跟随 locale；模型侧 prompt 和工具 schema 保持不变
@@ -65,7 +65,7 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，lo
 - 会话内单 goal，不做多目标池
 - Task Plan 必选：`/dgoal` 即复合目标，不允许空 plan 完成
 - Goal 层确认后冻结；phase/task 层 loop 内可调
-- completed task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
+- done task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
 - 独立审核：审核员是独立 `pi` 子进程，fresh 上下文、无主会话历史、禁 skills/extensions，只带受限核验工具（`read`、`grep`、`find`、`ls`、`bash`），完成不自证
 - 不自动 Git 操作，不替代项目测试，不做固定 workflow engine
 

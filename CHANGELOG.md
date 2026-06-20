@@ -22,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **elapsed 不再吞掉 pause 边界**：goal 暂停后会记录 `pauseStartedAt`，恢复时累计进 `pausedTotalMs`；overlay/modal/heading 的 `⏱️ elapsed` 现在会排除暂停窗口，不再把 `/dgoal pause` 到 `/dgoal resume` 之间的时间算进总时长。
+- **modal 标题走 i18n**：`/dgoal s` 弹窗标题不再硬编码英文，会随 `pi-di18n` 的 locale 或本地 fallback 渲染。
+- **文档状态契约统一为 `done`**：README 与权威数据模型文档不再暴露旧 `completed` 作为当前 task/phase 状态。
 
 ### Removed
 
