@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/dgoal s` 空状态一致性**：没有 active goal 时，TUI 模式也显示 top-center modal 空状态；非 TUI 仍降级为 notify，用户可见文案统一使用 dgoal 而不是 loop，并补回 `ESC/Ctrl+C` 关闭提示。
+- **`/dgoal s` 快捷键提示动态化**：plan 内容未超过 modal 可见高度时，只提示 `ESC/Ctrl+C`；只有内容可滚动时才显示 `j/k`、方向键和翻页键。
 
 ## [0.4.2] - 2026-06-20
 

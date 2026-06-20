@@ -94,6 +94,15 @@ describe("PlanStatusDialog.render", () => {
     }
   });
 
+  test("短 plan 不显示滚动键，只显示关闭提示", () => {
+    const dlg = new PlanStatusDialog(goal([p(1, "p1", [], "in_progress")]), mockTheme() as any, () => {});
+    const lines = dlg.render(80);
+    const hint = lines[lines.length - 2];
+    expect(hint).toContain("ESC/Ctrl+C 关闭");
+    expect(hint).not.toContain("↓/j");
+    expect(hint).not.toContain("PgDn/PgUp");
+  });
+
   test("heading 钉顶：scroll 到第二页 heading 仍在第 2 行", () => {
     // 制造 30+ phase 让 scroll 生效
     const phases: Phase[] = [];

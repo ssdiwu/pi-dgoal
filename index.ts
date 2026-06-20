@@ -3058,10 +3058,11 @@ export class PlanStatusDialog implements Component, Focusable {
       lines.push(truncateToWidth(" " + colorize(rl, th), width));
     }
 
-    // 底部 hint：offset 指示 + 键位（中英走 i18n）
+    // 只有内容超过可见高度时才提示滚动键；短内容只提示关闭键，避免误导。
     const total = body.length;
+    const isScrollable = total > this.maxVisible;
     const shown = `${start + 1}-${end} / ${total}`;
-    const hint = t("status.dialogHint", { shown });
+    const hint = isScrollable ? t("status.dialogHint", { shown }) : t("status.dialogCloseHint");
     lines.push(truncateToWidth(th.fg("dim", " " + hint), width));
 
     // 底部边框
