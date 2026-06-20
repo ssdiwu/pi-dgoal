@@ -78,9 +78,9 @@ describe("showStatus 回归", () => {
     expect(component).toBeInstanceOf(PlanStatusDialog);
   });
 
-  test("ctx.ui.custom 同步 throw：showStatus 自己吞掉，仅 console.error", () => {
+  test("ctx.ui.custom 同步 throw：showStatus 自己吞掉并回退 notify", () => {
     __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
-    const { ctx } = makeCtx();
+    const { ctx, calls } = makeCtx();
     ctx.ui.custom = () => {
       throw new Error("sync boom");
     };
@@ -95,14 +95,17 @@ describe("showStatus 回归", () => {
       expect(errors).toHaveLength(1);
       expect(String(errors[0][0])).toContain("[dgoal] /dgoal s modal failed:");
       expect(String(errors[0][1])).toContain("sync boom");
+      expect(calls.notify).toHaveLength(1);
+      expect(calls.notify[0][0]).toContain("目标：实施 v0.4.2");
+      expect(calls.notify[0][1]).toBe("info");
     } finally {
       console.error = realError;
     }
   });
 
-  test("ctx.ui.custom Promise reject：showStatus 不向上抛，只 console.error", async () => {
+  test("ctx.ui.custom Promise reject：showStatus 不向上抛并回退 notify", async () => {
     __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
-    const { ctx } = makeCtx();
+    const { ctx, calls } = makeCtx();
     ctx.ui.custom = () => Promise.reject(new Error("async boom"));
 
     const errors: unknown[][] = [];
@@ -117,6 +120,9 @@ describe("showStatus 回归", () => {
       expect(errors).toHaveLength(1);
       expect(String(errors[0][0])).toContain("[dgoal] /dgoal s modal failed:");
       expect(String(errors[0][1])).toContain("async boom");
+      expect(calls.notify).toHaveLength(1);
+      expect(calls.notify[0][0]).toContain("目标：实施 v0.4.2");
+      expect(calls.notify[0][1]).toBe("info");
     } finally {
       console.error = realError;
     }

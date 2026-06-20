@@ -1110,22 +1110,25 @@ function showStatus(ctx: LoopContext) {
     ctx.ui.notify(t("status.noLoop"), "info");
     return;
   }
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  const goal = currentGoal;
+  const fallbackToNotify = () => ctx.ui.notify(buildStatusNotifyMessage(goal), "info");
+
+  ctx.ui.setStatus(STATUS_KEY, formatStatus(goal));
 
   const ui = ctx.ui as CustomStatusUI;
   const mode = (ctx as LoopContext & { mode?: string }).mode;
   if (mode !== "tui" || typeof ui.custom !== "function") {
-    ctx.ui.notify(buildStatusNotifyMessage(currentGoal), "info");
+    fallbackToNotify();
     return;
   }
 
   // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 top-center overlay modal（Variant A 形态）。
   // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
-  // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject。
+  // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject；两者都降级回旧 notify。
   try {
     void Promise.resolve(
       ui.custom<void>(
-        (_tui, theme, _kb, done) => new PlanStatusDialog(currentGoal, theme, () => done()),
+        (_tui, theme, _kb, done) => new PlanStatusDialog(goal, theme, () => done()),
         {
           overlay: true,
           overlayOptions: {
@@ -1138,9 +1141,11 @@ function showStatus(ctx: LoopContext) {
       ),
     ).catch((err) => {
       console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+      fallbackToNotify();
     });
   } catch (err) {
     console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+    fallbackToNotify();
   }
 }
 
