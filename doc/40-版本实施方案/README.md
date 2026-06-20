@@ -6,7 +6,7 @@
 
 ## 当前方案
 
-- [v0.4.2 `/dgoal s` Modal 实施方案](./42-v0.4.2-dgoal-s-modal-实施方案.md) — **实施中**。把 `/dgoal s` 从 notify 升级为 top-center overlay modal（Variant A 形态）。6 个垂直切片。决策见 ADR 0008。
+- [v0.4.2 `/dgoal s` Modal 实施方案](./42-v0.4.2-dgoal-s-modal-实施方案.md) — **已完成**。把 `/dgoal s` 从 notify 升级为 top-center overlay modal（Variant A 形态）。6 个垂直切片。决策见 ADR 0008。
 
 ## 已归档方案
 
