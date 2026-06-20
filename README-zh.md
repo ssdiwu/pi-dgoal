@@ -126,12 +126,16 @@ pi-dgoal/
 │   ├── 90-归档/                   ← 历史归档
 │   └── adr/                       ← 架构决策记录
 ├── package.json
-├── index.ts                       ← 单文件扩展（约 2100 行）
+├── index.ts                       ← 单文件扩展（约 3040 行）
 └── test/
+    ├── command-aliases.test.ts
     ├── context-input-cap.test.ts
     ├── task-plan-data-model.test.ts
     ├── dgoal-plan-reducer.test.ts
     ├── plan-overlay-render.test.ts
+    ├── plan-status-pure.test.ts
+    ├── plan-status-dialog.test.ts
+    ├── show-status.test.ts
     ├── startup-gate.test.ts
     ├── state-machine-and-prompt.test.ts
     ├── e2e-integration.test.ts

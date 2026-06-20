@@ -48,7 +48,7 @@ overlay 配置：`anchor: "top-center"`, `width: "100%"`, `maxHeight: "85%"`, `m
    | 层级 | completed | in_progress | pending | blocked |
    |---|---|---|---|---|
    | phase | ✅ green | 🔄 cyan+bold | ⬜ muted | 🚧 yellow |
-   | task | ✓ dim | ◐ cyan+bold | ○ text | ⚠ yellow |
+   | task | ✓ dim | ◐ cyan+bold | ○ muted | ⚠ yellow |
 
 ## 副作用
 

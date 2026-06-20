@@ -130,12 +130,16 @@ pi-dgoal/
 │   ├── 90-归档/                   ← historical
 │   └── adr/                       ← architecture decision records
 ├── package.json
-├── index.ts                       ← single-file extension (~2100 lines)
+├── index.ts                       ← single-file extension (~3040 lines)
 └── test/
+    ├── command-aliases.test.ts
     ├── context-input-cap.test.ts
     ├── task-plan-data-model.test.ts
     ├── dgoal-plan-reducer.test.ts
     ├── plan-overlay-render.test.ts
+    ├── plan-status-pure.test.ts
+    ├── plan-status-dialog.test.ts
+    ├── show-status.test.ts
     ├── startup-gate.test.ts
     ├── state-machine-and-prompt.test.ts
     ├── e2e-integration.test.ts
