@@ -188,6 +188,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogEmpty": "(无 plan/无 phase可显示)",
       "status.dialogNoGoal": "当前没有进行中的 dgoal",
       "status.dialogStartCommand": "开始一个新目标：/dgoal <goal>",
+      "status.dialogCloseHint": "ESC/Ctrl+C 关闭",
       "status.dialogTitle": "Dgoal 计划状态 — 顶部浮层",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
@@ -256,6 +257,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogEmpty": "(no plan / no phases to display)",
       "status.dialogNoGoal": "No active dgoal",
       "status.dialogStartCommand": "Start a new goal: /dgoal <goal>",
+      "status.dialogCloseHint": "ESC/Ctrl+C close",
       "status.dialogTitle": "Dgoal Plan Status — Top overlay",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
@@ -3025,6 +3027,7 @@ export class PlanStatusDialog implements Component, Focusable {
     if (!this.goal) {
       lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogNoGoal")), width));
       lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogStartCommand")), width));
+      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogCloseHint")), width));
       lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"));
       this.cachedWidth = width;
       this.cachedElapsedSec = elapsedSec;
@@ -3034,6 +3037,7 @@ export class PlanStatusDialog implements Component, Focusable {
 
     if (!this.goal.plan || this.goal.plan.phases.length === 0) {
       lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogEmpty")), width));
+      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogCloseHint")), width));
       lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"));
       this.cachedWidth = width;
       this.cachedElapsedSec = elapsedSec;

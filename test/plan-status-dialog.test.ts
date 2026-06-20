@@ -117,6 +117,7 @@ describe("PlanStatusDialog.render", () => {
     expect(lines[0]).toContain("╭─");
     expect(lines.join("\n")).toContain("当前没有进行中的 dgoal");
     expect(lines.join("\n")).toContain("/dgoal <goal>");
+    expect(lines.join("\n")).toContain("ESC/Ctrl+C 关闭");
     expect(lines.at(-1)).toContain("╰─");
   });
 
@@ -125,6 +126,7 @@ describe("PlanStatusDialog.render", () => {
     const lines = dlg.render(80);
     expect(lines[0]).toContain("╭─");
     expect(lines.join("\n")).toContain("无 plan");
+    expect(lines.join("\n")).toContain("ESC/Ctrl+C 关闭");
     expect(lines.at(-1)).toContain("╰─");
   });
 
