@@ -41,7 +41,7 @@ loop 中：
 控制目标：
 
 ```text
-/dgoal status | s   # 当前 goal + 迭代 + 状态栏
+/dgoal status | s   # top-center modal 查看完整 plan 状态 + 状态栏指示
 /dgoal pause  | p   # 停止自动续跑（保留 goal）
 /dgoal resume | r   # 恢复暂停的 goal
 /dgoal clear  | c   # 清除当前 session 的 goal

@@ -6,7 +6,7 @@
 
 ## 当前方案
 
-无活跃方案——`30-路线图/` 标的 0.2.0 已实施。
+- [v0.4.2 `/dgoal s` Modal 实施方案](./42-v0.4.2-dgoal-s-modal-实施方案.md) — **实施中**。把 `/dgoal s` 从 notify 升级为 top-center overlay modal（Variant A 形态）。6 个垂直切片。决策见 ADR 0008。
 
 ## 已归档方案
 

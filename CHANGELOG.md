@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-06-20
+
+### Added
+
+- **`/dgoal s` top-center overlay modal**：`showStatus()` 现优先在 TUI 模式用 `ctx.ui.custom()` 弹出可滚动的 top-center overlay modal，展示完整 goal / phase / task 状态；heading 钉顶，支持 `j/k`、方向键、`PgDn/PgUp`、`End/G`、`Home/g`、`ESC`。
+- **状态渲染纯函数与组件测试**：新增 `RenderLine`、`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`、`PlanStatusDialog`，并补 `plan-status-pure.test.ts`、`plan-status-dialog.test.ts`、`show-status.test.ts` 回归覆盖。
+
+### Changed
+
+- **`/dgoal s` 查询形态升级**：从 5 行 `notify` 升级为 top-center overlay modal（Variant A，见 `doc/adr/0008-dgoal-s-modal-形态选型.md`）；非 TUI / 无 `ctx.ui.custom()` 时回退旧 notify，兼容 RPC / print / json 模式。
+- **用户中断暂停通知颜色**：`Dgoal 已暂停（用户中断…）` 现在走 `error`（红色）而不是 `warning`（黄色），提升深色主题下的可见性。
+
+### Fixed
+
+- **elapsed 不再吞掉 pause 边界**：goal 暂停后会记录 `pauseStartedAt`，恢复时累计进 `pausedTotalMs`；overlay/modal/heading 的 `⏱️ elapsed` 现在会排除暂停窗口，不再把 `/dgoal pause` 到 `/dgoal resume` 之间的时间算进总时长。
+
+### Removed
+
+- **删除 throwaway prototype**：移除 `prototype/dgoal-status-modal.prototype.ts` 与 `prototype/dgoal-status-modal.preview.ts`。
+
+### Reminder
+
+- **升级后请 `/reload`**：本版本新增 overlay modal，需要在 Pi 中 `/reload` 扩展后再体验 `/dgoal s` 新形态。
+
 ## [0.4.1] - 2026-06-19
 
 ### Fixed

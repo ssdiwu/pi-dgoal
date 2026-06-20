@@ -13,6 +13,7 @@ process.env.PI_DGOAL_NO_AUDIT = "1";
 import {
   __finalizeGoalForTest,
   __resetGoalForTest,
+  __resumeGoalForTest,
   __setApiForTest,
   __setGoalForTest,
   __setPlanOverlayForTest,
@@ -214,6 +215,48 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const g2: LoopGoal = { id: "2", objective: "o", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 };
     const clear2 = g2.pauseReason === "audit_failed_3x";
     expect(clear2).toBe(false);
+  });
+
+  test("resume 会把 pause 窗口累计进 pausedTotalMs，而不是把暂停时间算进 elapsed", async () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+
+    const realNow = Date.now;
+    Date.now = () => 10_000;
+    try {
+      __setGoalForTest({
+        id: "resume-1",
+        objective: "恢复计时",
+        status: "paused",
+        pauseReason: "user_abort",
+        startedAt: 1_000,
+        updatedAt: 4_000,
+        pauseStartedAt: 4_000,
+        pausedTotalMs: 500,
+        iteration: 0,
+      });
+
+      const sent: string[] = [];
+      const pi = { sendUserMessage: async (msg: string) => void sent.push(msg) } as any;
+      const ctx = {
+        isIdle: () => true,
+        ui: {
+          setStatus: () => {},
+          notify: () => {},
+        },
+      } as any;
+
+      await __resumeGoalForTest(pi, ctx);
+
+      const persisted = writes.at(-1)?.data.goal as LoopGoal;
+      expect(persisted.status).toBe("active");
+      expect(persisted.pauseStartedAt).toBeUndefined();
+      // 旧累计 500ms + 本次 pause 6s = 6500ms
+      expect(persisted.pausedTotalMs).toBe(6_500);
+      expect(sent.length).toBe(1);
+    } finally {
+      Date.now = realNow;
+    }
   });
 });
 

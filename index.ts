@@ -3,8 +3,10 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
+import type { Component, Focusable } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
@@ -77,6 +79,10 @@ interface LoopGoal {
   verification?: string;
   // 暂停原因，resume 时按此决定是否清零 rejectedCount（audit_failed_3x 清零，其他不清）。
   pauseReason?: PauseReason;
+  // 累计暂停时长（毫秒）。elapsed = now - startedAt - pausedTotalMs；旧 goal 缺失时视为 0。
+  pausedTotalMs?: number;
+  // 当前 pause 窗口的开始时间。paused 时冻结 elapsed；resume 时累计进 pausedTotalMs 后清空。
+  pauseStartedAt?: number;
   // 终审连续不过计数，×3 转 paused(audit_failed_3x)。
   rejectedCount?: number;
 }
@@ -179,6 +185,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.contextPreview": "启动背景预览：\n{preview}",
       "status.noContextPreview": "启动背景预览：无",
       "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
+      "status.dialogEmpty": "(无 plan/无 phase可显示)",
+      "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
       "notify.auditRejected": "终审未通过（第 {count}/3 次），进 rejected，请修正后重新 dgoal_done。",
       "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
@@ -242,6 +250,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.contextPreview": "Startup context preview:\n{preview}",
       "status.noContextPreview": "Startup context preview: none",
       "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
+      "status.dialogEmpty": "(no plan / no phases to display)",
+      "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
       "notify.auditRejected": "Final audit failed ({count}/3); moved to rejected. Fix the issues, then call dgoal_done again.",
       "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
@@ -434,7 +444,10 @@ const dgoalDoneTool = defineTool({
       // rejectedCount ×3 → 转 paused(audit_failed_3x)，停止续跑（不烧 token），resume 清零重试。
       const newCount = (completedGoal.rejectedCount ?? 0) + 1;
       if (newCount >= 3) {
-        currentGoal = { ...completedGoal, status: "paused", pauseReason: "audit_failed_3x", rejectedCount: newCount, updatedAt: Date.now() };
+        currentGoal = markGoalPaused(completedGoal, Date.now(), {
+          pauseReason: "audit_failed_3x",
+          rejectedCount: newCount,
+        });
         persistGoal(currentGoal);
         clearContinuation();
         ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -853,12 +866,12 @@ export default function dgoal(pi: ExtensionAPI) {
     // 用户主动中断：不重试，直接暂停。
     if (finalAssistant?.stopReason === "aborted") {
       consecutiveErrors = 0;
-      currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+      currentGoal = markGoalPaused(currentGoal);
       persistGoal(currentGoal);
       clearContinuation();
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
       planOverlay?.update();
-      ctx.ui.notify(t("notify.abortedPaused", { detail: errorDetail }), "warning");
+      ctx.ui.notify(t("notify.abortedPaused", { detail: errorDetail }), "error");
       return;
     }
 
@@ -876,7 +889,7 @@ export default function dgoal(pi: ExtensionAPI) {
         return;
       }
       consecutiveErrors = 0;
-      currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+      currentGoal = markGoalPaused(currentGoal);
       persistGoal(currentGoal);
       clearContinuation();
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -1010,10 +1023,32 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   await sendPrompt(pi, ctx, buildProposePrompt(currentGoal));
 }
 
+function markGoalPaused(goal: LoopGoal, pausedAt = Date.now(), extra: Partial<LoopGoal> = {}): LoopGoal {
+  return {
+    ...goal,
+    ...extra,
+    status: "paused",
+    updatedAt: pausedAt,
+    pauseStartedAt: goal.pauseStartedAt ?? pausedAt,
+  };
+}
+
+function markGoalResumed(goal: LoopGoal, resumedAt = Date.now(), extra: Partial<LoopGoal> = {}): LoopGoal {
+  const pausedFor = goal.pauseStartedAt ? Math.max(0, resumedAt - goal.pauseStartedAt) : 0;
+  return {
+    ...goal,
+    ...extra,
+    status: "active",
+    updatedAt: resumedAt,
+    pausedTotalMs: (goal.pausedTotalMs ?? 0) + pausedFor,
+    pauseStartedAt: undefined,
+  };
+}
+
 function pauseGoal(ctx: LoopContext) {
   if (!currentGoal || currentGoal.status !== "active") return;
   cancelPendingContinuation();
-  currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+  currentGoal = markGoalPaused(currentGoal);
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
   planOverlay?.update();
@@ -1025,12 +1060,7 @@ async function resumeGoal(pi: ExtensionAPI, ctx: LoopContext) {
   // 切片6：resume 按 pauseReason 决定是否清零 rejectedCount（ADR 0004）。
   // audit_failed_3x：能力到顶，resume 清零给 agent 新机会；其他：瞬时故障，不清零。
   const clearRejected = currentGoal.pauseReason === "audit_failed_3x";
-  currentGoal = {
-    ...currentGoal,
-    status: "active",
-    updatedAt: Date.now(),
-    ...(clearRejected ? { rejectedCount: 0 } : {}),
-  };
+  currentGoal = markGoalResumed(currentGoal, Date.now(), clearRejected ? { rejectedCount: 0 } : {});
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
   planOverlay?.update();
@@ -1048,6 +1078,32 @@ function clearGoal(ctx: LoopContext) {
   if (hadGoal) ctx.ui.notify(t("notify.cleared"), "info");
 }
 
+type CustomStatusUI = LoopContext["ui"] & {
+  custom?: <T = void>(
+    factory: (_tui: unknown, theme: Theme, _kb: unknown, done: (value?: T) => void) => Component,
+    options?: {
+      overlay?: boolean;
+      overlayOptions?: {
+        anchor?: string;
+        width?: string;
+        maxHeight?: string;
+        margin?: number;
+      };
+    },
+  ) => Promise<T | undefined> | undefined;
+};
+
+function buildStatusNotifyMessage(goal: LoopGoal) {
+  const contextPreview = buildContextPreview(goal, 5);
+  return [
+    t("status.objective", { objective: goal.objective }),
+    t("status.state", { status: goal.status }),
+    t("status.iteration", { iteration: goal.iteration }),
+    contextPreview ? t("status.contextPreview", { preview: contextPreview }) : t("status.noContextPreview"),
+    t("status.commands"),
+  ].join("\n");
+}
+
 function showStatus(ctx: LoopContext) {
   if (!currentGoal) {
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -1055,17 +1111,37 @@ function showStatus(ctx: LoopContext) {
     return;
   }
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  const contextPreview = buildContextPreview(currentGoal, 5);
-  ctx.ui.notify(
-    [
-      t("status.objective", { objective: currentGoal.objective }),
-      t("status.state", { status: currentGoal.status }),
-      t("status.iteration", { iteration: currentGoal.iteration }),
-      contextPreview ? t("status.contextPreview", { preview: contextPreview }) : t("status.noContextPreview"),
-      t("status.commands"),
-    ].join("\n"),
-    "info",
-  );
+
+  const ui = ctx.ui as CustomStatusUI;
+  const mode = (ctx as LoopContext & { mode?: string }).mode;
+  if (mode !== "tui" || typeof ui.custom !== "function") {
+    ctx.ui.notify(buildStatusNotifyMessage(currentGoal), "info");
+    return;
+  }
+
+  // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 top-center overlay modal（Variant A 形态）。
+  // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
+  // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject。
+  try {
+    void Promise.resolve(
+      ui.custom<void>(
+        (_tui, theme, _kb, done) => new PlanStatusDialog(currentGoal, theme, () => done()),
+        {
+          overlay: true,
+          overlayOptions: {
+            anchor: "top-center",
+            width: "100%",
+            maxHeight: "85%",
+            margin: 1,
+          },
+        },
+      ),
+    ).catch((err) => {
+      console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+    });
+  } catch (err) {
+    console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+  }
 }
 
 function createGoal(objective: string): LoopGoal {
@@ -1079,6 +1155,7 @@ function createGoal(objective: string): LoopGoal {
     startedAt: now,
     updatedAt: now,
     iteration: 0,
+    pausedTotalMs: 0,
   };
 }
 
@@ -1257,6 +1334,8 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
         status: "active",
         startedAt: activatedAt,
         updatedAt: activatedAt,
+        pausedTotalMs: 0,
+        pauseStartedAt: undefined,
       };
       persistGoal(currentGoal);
       ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -1706,7 +1785,7 @@ function finalizeGoal(ctx: LoopContext) {
 // 审核器出错 / 被中断 / 无结论：安全暂停，避免 fail-open 或烧 token 死循环。
 function pauseOnAuditFailure(ctx: LoopContext, reason: string) {
   if (!currentGoal) return;
-  currentGoal = { ...currentGoal, status: "paused", updatedAt: Date.now() };
+  currentGoal = markGoalPaused(currentGoal);
   persistGoal(currentGoal);
   clearContinuation();
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -2133,7 +2212,7 @@ export function shouldDeliverContinuationNow(ctx: Pick<LoopContext, "isIdle" | "
   return ctx.isIdle?.() !== false && !hasPendingMessages(ctx);
 }
 
-function hasPendingMessages(ctx: LoopContext) {
+function hasPendingMessages(ctx: Pick<LoopContext, "hasPendingMessages">) {
   return ctx.hasPendingMessages?.() ?? false;
 }
 
@@ -2212,6 +2291,16 @@ export function __handleProposalConfirmationForTest(ctx: LoopContext, goal: Loop
 // 下状态机仍正确落盘 done 并清空 currentGoal 的不变量。
 export function __finalizeGoalForTest(ctx: LoopContext) {
   finalizeGoal(ctx);
+}
+
+// 测试专用：暴露 /dgoal s 的 UI 路径，覆盖 noLoop / overlay 参数 / 同步 throw / async reject。
+export function __showStatusForTest(ctx: LoopContext) {
+  showStatus(ctx);
+}
+
+// 测试专用：直接走 resumeGoal，覆盖 pause 时钟累计与 rejectedCount 清零语义。
+export function __resumeGoalForTest(pi: ExtensionAPI, ctx: LoopContext) {
+  return resumeGoal(pi, ctx);
 }
 
 // 测试专用：注入模块级 planOverlay，复现真实 session 中 overlay 存在时的 UI 崩溃路径。
@@ -2566,6 +2655,109 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
   return [heading, ...visibleBodyLines, t("overlay.more", { count: hidden }), hintLine];
 }
 
+// =============================================================================
+// 切片 4 准备：PlanStatusDialog 用 RenderLine 数据结构 + 三个 build 纯函数。
+// 与上面 renderPlanLines（widget 浮层用 string[]）并存；不修改其签名/行为。
+// 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 1。
+// =============================================================================
+
+// Phase emoji（比 ✓/◐ 更鲜明，让 goal/phase/task 视觉层级清晰）；task 保留紧凑字符。
+const PHASE_EMOJI: Record<PlanStatus, string> = {
+  pending: "⬜",
+  in_progress: "🔄",
+  done: "✅",
+  completed: "✅",
+  blocked: "🚧",
+};
+const TASK_EMOJI: Record<PlanStatus, string> = {
+  pending: "○",
+  in_progress: "◐",
+  done: "✓",
+  completed: "✓",
+  blocked: "⚠",
+};
+
+// RenderLine 是 modal 渲染的统一结构：type + 可选 status + text。render 阶段按 type/status 决定染色。
+export type RenderLineType = "heading" | "spacer" | "phase" | "task";
+export interface RenderLine {
+  type: RenderLineType;
+  status?: PlanStatus;
+  text: string;
+}
+
+/** Build full body as RenderLine[]（heading + spacer + phases + tasks）。供 modal scroll 用。 */
+export function buildBodyLines(goal: LoopGoal | undefined): RenderLine[] {
+  if (!goal || !goal.plan || goal.plan.phases.length === 0) return [];
+  if (goal.status === "pending") return [];
+
+  const lines: RenderLine[] = [];
+  lines.push({ type: "heading", text: buildHeadingLine(goal) });
+  lines.push({ type: "spacer", text: "" });
+
+  for (const ph of goal.plan.phases) {
+    const emoji = PHASE_EMOJI[ph.status] ?? "○";
+    const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
+    lines.push({ type: "phase", status: ph.status, text: `├─ ${emoji} ${truncateLine(ph.subject, 80)}${blk}` });
+    for (const t of ph.tasks) {
+      const ti = TASK_EMOJI[t.status] ?? "○";
+      const active = t.status === "in_progress" && t.activeForm ? ` (${truncateLine(t.activeForm, 30)})` : "";
+      lines.push({ type: "task", status: t.status, text: `│    ${ti} ${truncateLine(t.subject, 78)}${active}` });
+    }
+  }
+  return lines;
+}
+
+/** Build body without heading — for scrollable modal where heading stays pinned. */
+export function buildBodyLinesNoHeading(goal: LoopGoal | undefined): RenderLine[] {
+  return buildBodyLines(goal).slice(2); // drop heading + spacer
+}
+
+/** Build heading only — for pinned top of scrollable modal. 量化到秒避免 elapsed 跳变导致每行失效。 */
+export function buildHeadingLine(goal: Pick<LoopGoal, "objective" | "plan" | "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt">): string {
+  const doneCount = goal.plan.phases.filter((ph) => isDonePlanStatus(ph.status)).length;
+  const total = goal.plan.phases.length;
+  const elapsed = formatElapsed(getGoalElapsedMs(goal));
+  return `🎯 ${goal.objective} (${doneCount}/${total}) ⏱️ ${elapsed}`;
+}
+
+/** Colorize a RenderLine based on its type + status. Returns ANSI-wrapped string.
+ *  纯函数：无副作用，不读模块状态；仅依输入 (line, theme)。 */
+export function colorize(line: RenderLine, theme: Theme): string {
+  if (line.type === "heading") return theme.fg("accent", theme.bold(line.text));
+  if (line.type === "spacer") return line.text;
+  // phase / task 按 status 染色；phase 用更显眼的 success/dim 区分完成态
+  const isPhase = line.type === "phase";
+  const color: ThemeColor =
+    line.status === "in_progress" ? "accent"
+    : line.status === "done" || line.status === "completed" ? (isPhase ? "success" : "dim")
+    : line.status === "blocked" ? "warning"
+    : "muted";
+  const colored = theme.fg(color, line.text);
+  return line.status === "in_progress" ? theme.bold(colored) : colored;
+}
+
+/** Scroll key handling — returns new offset, "exit", or null if key not recognized.
+ *  纯函数：调用方拿到返回值后再赋给 this.scrollOffset（不在函数内修改 caller state，避开 v2 bug）。
+ *  注：Pi 的 matchesKey 对单字符只匹配单字符 keyId（不别名 down/up），所以 vim 风格 j/k 直接用 ===data 比较。
+ */
+export function computeScrollOffset(
+  data: string,
+  currentOffset: number,
+  totalLines: number,
+  maxVisible: number,
+): number | "exit" | null {
+  const maxOffset = Math.max(0, totalLines - maxVisible);
+  const PAGE = 10;
+  if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) return "exit";
+  if (matchesKey(data, "down") || data === "j") return Math.min(currentOffset + 1, maxOffset);
+  if (matchesKey(data, "up") || data === "k") return Math.max(currentOffset - 1, 0);
+  if (matchesKey(data, "pageDown") || matchesKey(data, "ctrl+d")) return Math.min(currentOffset + PAGE, maxOffset);
+  if (matchesKey(data, "pageUp") || matchesKey(data, "ctrl+u")) return Math.max(currentOffset - PAGE, 0);
+  if (matchesKey(data, "end") || data === "G") return maxOffset;
+  if (matchesKey(data, "home") || data === "g") return 0;
+  return null;
+}
+
 function truncateLine(s: string, max: number): string {
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
 }
@@ -2574,9 +2766,14 @@ function ansiStrikethrough(s: string): string {
   return `\u001b[9m${s}\u001b[29m`;
 }
 
-function getGoalElapsedMs(goal: Pick<LoopGoal, "status" | "startedAt" | "updatedAt">): number {
-  if (goal.status === "paused" || goal.status === "done") return goal.updatedAt - goal.startedAt;
-  return Date.now() - goal.startedAt;
+function getGoalElapsedMs(goal: Pick<LoopGoal, "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt">): number {
+  const pausedTotalMs = goal.pausedTotalMs ?? 0;
+  if (goal.status === "paused") {
+    const frozenAt = goal.pauseStartedAt ?? goal.updatedAt;
+    return Math.max(0, frozenAt - goal.startedAt - pausedTotalMs);
+  }
+  if (goal.status === "done") return Math.max(0, goal.updatedAt - goal.startedAt - pausedTotalMs);
+  return Math.max(0, Date.now() - goal.startedAt - pausedTotalMs);
 }
 
 // 格式化毫秒为可读耗时（如 "2m 34s" 或 "1h 34m 5s"）。总是包含秒，方便看出实时跳动。
@@ -2741,3 +2938,105 @@ function formatError(error: unknown) {
 function truncate(value: string, max = 160) {
   return value.length > max ? `${value.slice(0, Math.max(0, max - 3))}...` : value;
 }
+
+// =============================================================================
+// 切片 4：PlanStatusDialog Component（顶部 overlay modal + heading 钉顶 + scroll）。
+// 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 4。
+// =============================================================================
+
+/** /dgoal s 唤起 top-center overlay modal。用 Component + Focusable 接口，
+ *  focus 由 Pi 的 overlay 系统设到 true，handleInput 只接收键事件。
+ *  使用 ctx.ui.custom 调，render 输出会被 Pi 渲染到 overlay 容器内。
+ */
+export class PlanStatusDialog implements Component, Focusable {
+  focused = false;
+  private cachedWidth?: number;
+  private cachedLines?: string[];
+  /** 量化到秒的 elapsed；同一秒内 elapsed 相同 → cache 命中，避免每秒全量重渲。 */
+  private cachedElapsedSec?: number;
+  private scrollOffset = 0;
+  private readonly maxVisible = 20;
+
+  constructor(
+    private readonly goal: LoopGoal | undefined,
+    private readonly theme: Theme,
+    private readonly done: () => void,
+  ) {}
+
+  handleInput(data: string): void {
+    if (!this.goal || !this.goal.plan) {
+      // 无 goal/plan 时不做任何事，只响应退出（ESC/Ctrl+C）
+      if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.done();
+      return;
+    }
+    const body = buildBodyLinesNoHeading(this.goal);
+    const result = computeScrollOffset(data, this.scrollOffset, body.length, this.maxVisible);
+    if (result === "exit") {
+      this.done();
+      return;
+    }
+    if (result !== null && result !== this.scrollOffset) {
+      this.scrollOffset = result;
+      this.invalidate();
+    }
+  }
+
+  invalidate(): void {
+    this.cachedWidth = undefined;
+    this.cachedLines = undefined;
+    this.cachedElapsedSec = undefined;
+  }
+
+  render(width: number): string[] {
+    if (!this.goal || !this.goal.plan || this.goal.plan.phases.length === 0) {
+      return [this.theme.fg("muted", t("status.dialogEmpty"))];
+    }
+    const elapsedSec = Math.floor(getGoalElapsedMs(this.goal) / 1000);
+    if (this.cachedLines && this.cachedWidth === width && this.cachedElapsedSec === elapsedSec) {
+      return this.cachedLines;
+    }
+
+    const th = this.theme;
+    const innerW = Math.max(20, width);
+    const lines: string[] = [];
+
+    // 顶部边框（圆角）+ accent 标题
+    const title = " Dgoal Plan Status — Top overlay ";
+    const padLen = Math.max(0, innerW - visibleWidth(title) - 2);
+    const padLeft = Math.floor(padLen / 2);
+    const padRight = padLen - padLeft;
+    lines.push(
+      th.fg("border", "╭" + "─".repeat(padLeft)) +
+        th.fg("accent", th.bold(title)) +
+        th.fg("border", "─".repeat(padRight) + "╮"),
+    );
+
+    // heading 钉顶（accent + bold + 🎯）
+    const heading = " " + th.fg("accent", th.bold(buildHeadingLine(this.goal)));
+    lines.push(truncateToWidth(heading, width));
+
+    // body 可滚动切片
+    const body = buildBodyLinesNoHeading(this.goal);
+    const start = this.scrollOffset;
+    const end = Math.min(start + this.maxVisible, body.length);
+    const visibleBody = body.slice(start, end);
+    for (const rl of visibleBody) {
+      lines.push(truncateToWidth(" " + colorize(rl, th), width));
+    }
+
+    // 底部 hint：offset 指示 + 键位（中英走 i18n）
+    const total = body.length;
+    const shown = `${start + 1}-${end} / ${total}`;
+    const hint = t("status.dialogHint", { shown });
+    lines.push(truncateToWidth(th.fg("dim", " " + hint), width));
+
+    // 底部边框
+    lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"));
+
+    this.cachedWidth = width;
+    this.cachedElapsedSec = elapsedSec;
+    this.cachedLines = lines;
+    return lines;
+  }
+}
+

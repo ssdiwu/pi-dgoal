@@ -1,6 +1,6 @@
 {
   "name": "pi-dgoal",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "Pi extension for durable goal loops with explicit Task Plan + build-check loop (建检循环) + auditor verification.",
   "type": "module",
   "keywords": [
@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "^0.79.8",
     "typebox": "*"
   },
   "files": [

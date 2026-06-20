@@ -45,7 +45,7 @@ During the loop:
 Control the goal:
 
 ```text
-/dgoal status | s   # current goal + iteration + status bar
+/dgoal status | s   # top-center modal for full plan status + status bar indicator
 /dgoal pause  | p   # stop auto-continuation (keep goal)
 /dgoal resume | r   # resume paused goal
 /dgoal clear  | c   # remove goal from session

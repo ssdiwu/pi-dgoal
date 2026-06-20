@@ -43,6 +43,13 @@ pi-dgoal/
 - **审核员默认复用主模型**：不做独立模型配置。
 - 不硬编码密钥、token、私有路径。
 
+## TUI 边界防护
+
+- dgoal 的状态机、持久化和审计结果不能依赖 TUI 渲染成功；UI 只是展示层。
+- `finalizeGoal`、`dgoal_done`、`dgoal_check`、overlay/status 更新等路径必须防御 Pi 主程序 TUI 抛错（典型症状：`Spacer is not defined`）。
+- 终审通过后的 `persistGoal(null)`、失败报告注入、phase/task 状态推进必须先于或独立于 UI 展示；UI 抛错只能降级提示，不能阻断 goal 闭环。
+- 改动完成、审核、overlay、status、notification 相关代码时，必须补“UI 抛错仍保持状态正确”的红绿回归测试。
+
 ## 验证
 
 改动后至少执行：
@@ -53,6 +60,17 @@ npm run test:context  # 启动背景固化逻辑（bun test）
 ```
 
 完整自动续跑和审核行为仍需在 Pi TUI 中用真实模型做人工 smoke test。
+
+## 发版流程
+
+发布 npm 版本前必须走同一条链路：
+
+1. 同步版本号：`package.json` + `package-lock.json`（如存在 lock 版本字段）。
+2. 更新 `CHANGELOG.md`：把 `Unreleased` 内容落到 `## [x.y.z] - YYYY-MM-DD`，并保留新的空 `Unreleased` 段。
+3. 确认 `package.json` 版本、`CHANGELOG.md` 版本段、`git tag v<x.y.z>` 三者一致。
+4. 运行验证：至少 `npm test`，并按改动面补 `npm run test:rpc` / `npm run test:context` 或真实 Pi TUI smoke test。
+5. 提交单一主题 commit，再 `git tag v<x.y.z>`。
+6. 发布：`npm publish`；发布后 `git push && git push --tags`。
 
 ## Git 规范
 
