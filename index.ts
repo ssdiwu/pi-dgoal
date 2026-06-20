@@ -175,10 +175,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.viewTasks": "展开 task",
       "proposal.backToSummary": "收起 task",
       "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
-      "replaceConfirm.title": "替换当前 loop？",
+      "replaceConfirm.title": "替换当前 dgoal？",
       "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
       "command.description": "持续推进目标直到完成：/dgoal <goal> | status(s) | pause(p) | resume(r) | clear(c)",
-      "status.noLoop": "当前没有 loop。用法：/dgoal <goal>",
+      "status.noDgoal": "当前没有进行中的 dgoal。用法：/dgoal <goal>",
       "status.objective": "目标：{objective}",
       "status.state": "状态：{status}",
       "status.iteration": "轮次：{iteration}",
@@ -186,6 +186,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noContextPreview": "启动背景预览：无",
       "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
       "status.dialogEmpty": "(无 plan/无 phase可显示)",
+      "status.dialogNoGoal": "当前没有进行中的 dgoal",
+      "status.dialogStartCommand": "开始一个新目标：/dgoal <goal>",
       "status.dialogTitle": "Dgoal 计划状态 — 顶部浮层",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
@@ -193,14 +195,14 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
       "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，Dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
-      "notify.pendingGoal": "上一个 loop 正在启动中，请稍后再试。",
+      "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
       "notify.summarizingContext": "正在从前文讨论固化启动背景…",
-      "notify.startInterrupted": "启动被中断，已放弃本次 loop。",
-      "notify.contextAborted": "背景固化被中断，已放弃本次 loop。",
+      "notify.startInterrupted": "启动被中断，已放弃本次 dgoal。",
+      "notify.contextAborted": "背景固化被中断，已放弃本次 dgoal。",
       "notify.contextFailed": "背景固化失败（已降级为不带背景启动）：{error}",
       "notify.cleared": "Dgoal 已清除；若当前仍在执行，会同步触发一次中断。",
       "notify.proposalRejected": "已拒绝计划，目标放弃。",
-      "notify.proposalConfirmed": "计划已确认，进入 loop。",
+      "notify.proposalConfirmed": "计划已确认，开始执行 dgoal。",
       "notify.feedbackSent": "已反馈，agent 将重新整理计划。",
       "notify.emptyFeedback": "未提供反馈，目标放弃。",
       "notify.proposalRetry": "未收到计划提案，降级引导重试（{count}/{max}）",
@@ -241,10 +243,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.viewTasks": "Show tasks",
       "proposal.backToSummary": "Hide tasks",
       "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
-      "replaceConfirm.title": "Replace current loop?",
+      "replaceConfirm.title": "Replace current dgoal?",
       "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
       "command.description": "Keep working on a goal until completion: /dgoal <goal> | [s]tatus | [p]ause | [r]esume | [c]lear",
-      "status.noLoop": "No active loop. Usage: /dgoal <goal>",
+      "status.noDgoal": "No active dgoal. Usage: /dgoal <goal>",
       "status.objective": "Goal: {objective}",
       "status.state": "Status: {status}",
       "status.iteration": "Iteration: {iteration}",
@@ -252,6 +254,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noContextPreview": "Startup context preview: none",
       "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
       "status.dialogEmpty": "(no plan / no phases to display)",
+      "status.dialogNoGoal": "No active dgoal",
+      "status.dialogStartCommand": "Start a new goal: /dgoal <goal>",
       "status.dialogTitle": "Dgoal Plan Status — Top overlay",
       "status.dialogHint": "dgoal · top overlay · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
@@ -259,14 +263,14 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
       "notify.modelPaused": "Model error persisted after {max} retries; Dgoal paused{detail}. Run /dgoal resume to continue.",
-      "notify.pendingGoal": "A previous loop is still starting. Try again shortly.",
+      "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
       "notify.summarizingContext": "Persisting startup context from prior discussion…",
-      "notify.startInterrupted": "Startup was interrupted; this loop was abandoned.",
-      "notify.contextAborted": "Startup context persistence was interrupted; this loop was abandoned.",
+      "notify.startInterrupted": "Startup was interrupted; this dgoal was abandoned.",
+      "notify.contextAborted": "Startup context persistence was interrupted; this dgoal was abandoned.",
       "notify.contextFailed": "Startup context persistence failed; continuing without it: {error}",
       "notify.cleared": "Dgoal cleared; if a turn is still running, it will also be interrupted once.",
       "notify.proposalRejected": "Plan rejected; goal abandoned.",
-      "notify.proposalConfirmed": "Plan confirmed; entering loop.",
+      "notify.proposalConfirmed": "Plan confirmed; starting dgoal.",
       "notify.feedbackSent": "Feedback sent; the agent will revise the plan.",
       "notify.emptyFeedback": "No feedback provided; goal abandoned.",
       "notify.proposalRetry": "No plan proposal received; retrying startup guidance ({count}/{max}).",
@@ -340,7 +344,7 @@ function setupI18n(pi: ExtensionAPI): void {
 }
 
 const STATUS_KEY = "dgoal";
-// active/rejected 都算 loop 推进中（rejected 是终审不过的回环态，需继续修正）。
+// active/rejected 都算 dgoal 推进中（rejected 是终审不过的回环态，需继续修正）。
 function isLooping(status: LoopStatus | undefined): boolean {
   return status === "active" || status === "rejected";
 }
@@ -669,7 +673,7 @@ const dgoalProposeTool = defineTool({
   name: DGOAL_PROPOSE_TOOL_NAME,
   label: "Dgoal Propose",
   description:
-    "启动闸门：提交 /dgoal 目标的计划提案（objective + phases + 可选初始 task）。主代理读完代码、整理出「这件事怎么做」后调用。调用后用户会看到确认 UI（确认/拒绝/输入反馈）。确认后计划写入 goal 并进 loop。",
+    "启动闸门：提交 /dgoal 目标的计划提案（objective + phases + 可选初始 task）。主代理读完代码、整理出「这件事怎么做」后调用。调用后用户会看到确认 UI（确认/拒绝/输入反馈）。确认后计划写入 goal 并开始执行 dgoal。",
   promptSnippet: "提交 /dgoal 目标的结构化计划供用户确认",
   promptGuidelines: [
     "/dgoal 启动后，先读相关代码，整理出 goal 该怎么做的计划，用本工具提交。",
@@ -877,7 +881,7 @@ export default function dgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // 模型错误：先自动重试 MAX_ERROR_RETRIES 次，仍失败再暂停，避免瞬时错误直接打断 loop。
+    // 模型错误：先自动重试 MAX_ERROR_RETRIES 次，仍失败再暂停，避免瞬时错误直接打断 dgoal。
     // 不要 clearContinuation + sendContinuation——前一个 followUp 还未消费时重发会堆 N 条。
     // sendContinuation 本身的 guard（pendingContinuation?.goalId === goal.id）会去重。
     if (finalAssistant?.stopReason === "error") {
@@ -961,7 +965,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   }
 
   if (currentGoal && currentGoal.status !== "done") {
-    // pending：上一个 loop 还在 summarizeContext 启动中，不应重叠启动新 loop。
+    // pending：上一个 dgoal 还在 summarizeContext 启动中，不应重叠启动新 dgoal。
     if (currentGoal.status === "pending") {
       ctx.ui.notify(t("notify.pendingGoal"), "warning");
       return;
@@ -976,13 +980,13 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
   consecutiveErrors = 0;
   clearContinuation();
   // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
-  // 否则 before_agent_start / agent_end 会提前把它当活跃 loop 推进，甚至打出孤儿 START prompt。
+  // 否则 before_agent_start / agent_end 会提前把它当活跃 dgoal 推进，甚至打出孤儿 START prompt。
   const pendingGoal = createGoal(objective.trim());
   currentGoal = pendingGoal;
   persistGoal(currentGoal);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
 
-  // 启动前固化前文背景：防止 loop 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
+  // 启动前固化前文背景：防止 dgoal 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
   // 摘要失败不阻断启动——objective 本身仍在，摘要只是补充，挂了降级为空继续。
   const priorDiscussion = extractPriorDiscussion(ctx);
   if (priorDiscussion) {
@@ -1018,7 +1022,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: LoopContext) 
     return;
   }
   // 切片4：启动闸门——保持 pending，发"请用 dgoal_propose 提交计划"指令让主代理整理 plan。
-  // 不直接转 active：要等主代理调 dgoal_propose + 用户确认后才激活 loop。
+  // 不直接转 active：要等主代理调 dgoal_propose + 用户确认后才激活 dgoal。
   // proposalRetryCount 由 agent_end 消费做兜底（拷问25：重试2次失败中止）。
   proposalRetryCount = 0;
   ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -1107,48 +1111,50 @@ function buildStatusNotifyMessage(goal: LoopGoal) {
 }
 
 function showStatus(ctx: LoopContext) {
-  if (!currentGoal) {
-    ctx.ui.setStatus(STATUS_KEY, undefined);
-    ctx.ui.notify(t("status.noLoop"), "info");
-    return;
-  }
-  const goal = currentGoal;
-  const fallbackToNotify = () => ctx.ui.notify(buildStatusNotifyMessage(goal), "info");
-
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(goal));
-
   const ui = ctx.ui as CustomStatusUI;
   const mode = (ctx as LoopContext & { mode?: string }).mode;
-  if (mode !== "tui" || typeof ui.custom !== "function") {
-    fallbackToNotify();
+  const openStatusDialog = (goal: LoopGoal | undefined, fallbackToNotify: () => void) => {
+    if (mode !== "tui" || typeof ui.custom !== "function") {
+      fallbackToNotify();
+      return;
+    }
+
+    // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 top-center overlay modal（Variant A 形态）。
+    // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
+    // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject；两者都降级回旧 notify。
+    try {
+      void Promise.resolve(
+        ui.custom<void>(
+          (_tui, theme, _kb, done) => new PlanStatusDialog(goal, theme, () => done()),
+          {
+            overlay: true,
+            overlayOptions: {
+              anchor: "top-center",
+              width: "100%",
+              maxHeight: "85%",
+              margin: 1,
+            },
+          },
+        ),
+      ).catch((err) => {
+        console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+        fallbackToNotify();
+      });
+    } catch (err) {
+      console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
+      fallbackToNotify();
+    }
+  };
+
+  if (!currentGoal) {
+    ctx.ui.setStatus(STATUS_KEY, undefined);
+    openStatusDialog(undefined, () => ctx.ui.notify(t("status.noDgoal"), "info"));
     return;
   }
 
-  // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 top-center overlay modal（Variant A 形态）。
-  // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
-  // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject；两者都降级回旧 notify。
-  try {
-    void Promise.resolve(
-      ui.custom<void>(
-        (_tui, theme, _kb, done) => new PlanStatusDialog(goal, theme, () => done()),
-        {
-          overlay: true,
-          overlayOptions: {
-            anchor: "top-center",
-            width: "100%",
-            maxHeight: "85%",
-            margin: 1,
-          },
-        },
-      ),
-    ).catch((err) => {
-      console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
-      fallbackToNotify();
-    });
-  } catch (err) {
-    console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
-    fallbackToNotify();
-  }
+  const goal = currentGoal;
+  ctx.ui.setStatus(STATUS_KEY, formatStatus(goal));
+  openStatusDialog(goal, () => ctx.ui.notify(buildStatusNotifyMessage(goal), "info"));
 }
 
 function createGoal(objective: string): LoopGoal {
@@ -1156,7 +1162,7 @@ function createGoal(objective: string): LoopGoal {
   return {
     id: randomUUID(),
     objective,
-    // pending：启动中、START prompt 尚未发出。避免 summarizeContext 慢子进程期间被 agent_end 当活跃 loop 推进。
+    // pending：启动中、START prompt 尚未发出。避免 summarizeContext 慢子进程期间被 agent_end 当活跃 dgoal 推进。
     status: "pending",
     // 计时从用户确认计划、goal 进入 active 时开始；pending 期间只是启动闸门，不算正式执行。
     startedAt: now,
@@ -1330,7 +1336,7 @@ async function handleStartupGate(pi: ExtensionAPI, ctx: LoopContext, goal: LoopG
       return;
     }
     if (decision === "confirmed") {
-      // 写入 plan + verification，转 active，发 START prompt 进 loop。
+      // 写入 plan + verification，转 active，发 START prompt 开始执行 dgoal。
       // 计时从用户确认方案这一刻开始，而不是 pending 启动闸门阶段。
       const activatedAt = Date.now();
       currentGoal = {
@@ -1725,7 +1731,7 @@ export function buildContextSummarizerTask(objective: string, priorDiscussion: s
 
 const CONTEXT_SUMMARIZER_SYSTEM_PROMPT = [
   "你是 pi-dgoal 的会话背景固化员，运行在隔离的零上下文会话里。",
-  "你的唯一职责：从启动者提供的“目标”和“前文讨论”中，提炼出后续每轮 loop 都需要记住的结构化背景。",
+  "你的唯一职责：从启动者提供的“目标”和“前文讨论”中，提炼出 dgoal 后续每轮都需要记住的结构化背景。",
     "",
   "原则：",
   "- 只记录事实性的隐含信息（讨论中确认的范围边界、设计决策、验收标准、不做什么）。",
@@ -1764,7 +1770,7 @@ function clearActiveGoal(ctx: LoopContext) {
   planOverlay?.update();
 }
 
-// 完成并退出 loop。
+// 完成并退出 dgoal。
 function finalizeGoal(ctx: LoopContext) {
   const goal = currentGoal;
   if (goal) {
@@ -2300,7 +2306,7 @@ export function __finalizeGoalForTest(ctx: LoopContext) {
   finalizeGoal(ctx);
 }
 
-// 测试专用：暴露 /dgoal s 的 UI 路径，覆盖 noLoop / overlay 参数 / 同步 throw / async reject。
+// 测试专用：暴露 /dgoal s 的 UI 路径，覆盖空状态 / overlay 参数 / 同步 throw / async reject。
 export function __showStatusForTest(ctx: LoopContext) {
   showStatus(ctx);
 }
@@ -2996,10 +3002,7 @@ export class PlanStatusDialog implements Component, Focusable {
   }
 
   render(width: number): string[] {
-    if (!this.goal || !this.goal.plan || this.goal.plan.phases.length === 0) {
-      return [this.theme.fg("muted", t("status.dialogEmpty"))];
-    }
-    const elapsedSec = Math.floor(getGoalElapsedMs(this.goal) / 1000);
+    const elapsedSec = this.goal ? Math.floor(getGoalElapsedMs(this.goal) / 1000) : 0;
     if (this.cachedLines && this.cachedWidth === width && this.cachedElapsedSec === elapsedSec) {
       return this.cachedLines;
     }
@@ -3018,6 +3021,25 @@ export class PlanStatusDialog implements Component, Focusable {
         th.fg("accent", th.bold(title)) +
         th.fg("border", "─".repeat(padRight) + "╮"),
     );
+
+    if (!this.goal) {
+      lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogNoGoal")), width));
+      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogStartCommand")), width));
+      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"));
+      this.cachedWidth = width;
+      this.cachedElapsedSec = elapsedSec;
+      this.cachedLines = lines;
+      return lines;
+    }
+
+    if (!this.goal.plan || this.goal.plan.phases.length === 0) {
+      lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogEmpty")), width));
+      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, innerW - 2)) + "╯"));
+      this.cachedWidth = width;
+      this.cachedElapsedSec = elapsedSec;
+      this.cachedLines = lines;
+      return lines;
+    }
 
     // heading 钉顶（accent + bold + 🎯）
     const heading = " " + th.fg("accent", th.bold(buildHeadingLine(this.goal)));

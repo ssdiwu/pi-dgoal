@@ -240,7 +240,7 @@ describe("切片4 · formatProposalForConfirm", () => {
           "dgoal.proposal.taskCount": " ({count} tasks)",
           "dgoal.proposal.taskLine": "     - task {index}: {subject}",
           "dgoal.proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
-          "dgoal.replaceConfirm.title": "Replace current loop?",
+          "dgoal.replaceConfirm.title": "Replace current dgoal?",
           "dgoal.replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
         };
         return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));

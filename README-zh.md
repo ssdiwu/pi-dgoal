@@ -29,9 +29,9 @@ pi install npm:pi-dgoal
 /dgoal 修复当前项目里的 failing tests，并运行测试验证
 ```
 
-启动闸门对话框默认只展示阶段级摘要（goal + verification + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再进入 loop。
+启动闸门对话框默认只展示阶段级摘要（goal + verification + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。
 
-loop 中：
+dgoal 执行中：
 
 - agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → done | blocked`）
 - 每个 phase 完成都通过 `dgoal_check`（独立子进程，带受限核验工具，含 `bash`）独立审核
@@ -41,7 +41,7 @@ loop 中：
 控制目标：
 
 ```text
-/dgoal status | s   # top-center modal 查看完整 plan 状态 + 状态栏指示
+/dgoal status | s   # top-center modal 查看完整 plan 状态；没有 active goal 时显示空 dgoal 状态
 /dgoal pause  | p   # 停止自动续跑（保留 goal）
 /dgoal resume | r   # 恢复暂停的 goal
 /dgoal clear  | c   # 清除当前 session 的 goal
@@ -49,13 +49,13 @@ loop 中：
 
 声明完成（触发终审）：
 
-agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，loop 停止。
+agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，dgoal 执行停止。
 
 ## 工具
 
 | 工具 | 用途 |
 |---|---|
-| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks，用户确认后才进 loop |
+| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks，用户确认后才开始执行 dgoal |
 | `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
 | `dgoal_check` | phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具），最后 phase 调用即终审 |
 | `dgoal_done` | 声明 goal 完成，内部触发终审，是关闭 goal 的唯一方式 |
@@ -64,7 +64,7 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，lo
 
 - 会话内单 goal，不做多目标池
 - Task Plan 必选：`/dgoal` 即复合目标，不允许空 plan 完成
-- Goal 层确认后冻结；phase/task 层 loop 内可调
+- Goal 层确认后冻结；phase/task 层在 dgoal 执行中可调
 - done task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
 - 独立审核：审核员是独立 `pi` 子进程，fresh 上下文、无主会话历史、禁 skills/extensions，只带受限核验工具（`read`、`grep`、`find`、`ls`、`bash`），完成不自证
 - 不自动 Git 操作，不替代项目测试，不做固定 workflow engine
@@ -74,7 +74,7 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，lo
 ```text
 pending ──→ active ──→ done                # 正常路径
               │  ↑
-              ↓  │ rejected                # 终审不过，loop 继续（每轮 prompt 钉审核问题）
+              ↓  │ rejected                # 终审不过，dgoal 继续（每轮 prompt 钉审核问题）
               │  │  ×3 终审不过
               ↓  ↓
             paused (audit_failed_3x) ──/dgoal resume──→ active
@@ -91,7 +91,7 @@ pending ──→ active ──→ done                # 正常路径
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
-- 通过：goal 关闭，loop 停止，模型收到完成信号用于最终用户回复
+- 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
 - 拒绝：goal 进 `rejected`，审核报告注入对话，每轮 prompt 钉着未过问题；连续 3 次拒绝 → 暂停，`/dgoal resume` 清零重试
 - 审核出错 / 中断 / 空闲超时 / 无结论：goal 安全暂停，`/dgoal resume` 继续
 - 审核过程会通过工具增量更新回传；即使中途停下，也会尽量返回部分审核输出

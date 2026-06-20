@@ -33,9 +33,9 @@ Start a goal with a Task Plan:
 /dgoal Fix the failing tests in this project and verify the result
 ```
 
-The startup gate dialog shows a phase-level summary by default (goal + verification + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before the loop begins.
+The startup gate dialog shows a phase-level summary by default (goal + verification + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before dgoal execution begins.
 
-During the loop:
+During dgoal execution:
 
 - The agent updates task status via `dgoal_plan` (`pending → in_progress → done | blocked`).
 - Each phase completion is independently audited via `dgoal_check` (isolated subprocess with limited verification tools, including `bash`).
@@ -45,7 +45,7 @@ During the loop:
 Control the goal:
 
 ```text
-/dgoal status | s   # top-center modal for full plan status + status bar indicator
+/dgoal status | s   # top-center modal for full plan status, or an empty dgoal state when none is active
 /dgoal pause  | p   # stop auto-continuation (keep goal)
 /dgoal resume | r   # resume paused goal
 /dgoal clear  | c   # remove goal from session
@@ -53,13 +53,13 @@ Control the goal:
 
 Declare completion (triggers final audit):
 
-The agent calls `dgoal_done(summary, verification)`. If the final audit passes, the goal closes and the loop stops.
+The agent calls `dgoal_done(summary, verification)`. If the final audit passes, the goal closes and dgoal execution stops.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before loop begins. |
+| `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before dgoal execution begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
 | `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Also the final-audit mechanism when called on the last phase. |
 | `dgoal_done` | Declare goal completion. Triggers final audit internally; the only way to close a goal. |
@@ -68,7 +68,7 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 
 - Session-scoped: one active goal per Pi session. No global goal pool.
 - Task Plan is mandatory: using `/dgoal` implies a compound goal that requires a plan. No empty-plan completion.
-- Goal layer is frozen at gate confirmation; phase/task layers are adjustable inside the loop.
+- Goal layer is frozen at gate confirmation; phase/task layers are adjustable during dgoal execution.
 - Completed tasks don't roll back. A wrong step gets a follow-up task (`blockedBy` → original).
 - Independent audit: the verifier is a separate `pi` subprocess with fresh context, no main-session history, no skills/extensions, and only limited verification tools (`read`, `grep`, `find`, `ls`, `bash`). Completion is not self-reported.
 - No Git auto-actions, no replacement of project-specific tests, no fixed workflow engine.
@@ -78,7 +78,7 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 ```text
 pending ──→ active ──→ done                # happy path
               │  ↑
-              ↓  │ rejected                # final audit failed; loop continues with audit report pinned
+              ↓  │ rejected                # final audit failed; dgoal continues with audit report pinned
               │  │  ×3 final-audit failures
               ↓  ↓
             paused (audit_failed_3x) ──/dgoal resume──→ active
@@ -95,7 +95,7 @@ See `doc/术语表.md` for state definitions, `doc/adr/0004` for the rejected/pa
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
-- Approved: goal closes, loop stops, model receives a completion signal for the final user-facing reply.
+- Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
 - Rejected: goal enters `rejected`; the audit report is injected and pinned to each subsequent turn's prompt. Three consecutive rejections pause the goal; `/dgoal resume` clears the counter and retries.
 - Audit error / abort / idle-timeout / no clear decision: goal is safely paused; `/dgoal resume` continues.
 - Audit progress is streamed back through the tool call; if the check stops mid-way, partial output is still returned.
@@ -111,7 +111,7 @@ npm run test:rpc # python: RPC loading + command registration
 
 Test files cover data model + persistence, plan reducer (state machine + cycle detection), overlay rendering, startup gate, state machine + prompt, end-to-end integration, tool execute real-path integration, context hardening, and subprocess supervision for detached process-group cleanup.
 
-**TUI interaction behavior** (startup gate confirm UI, real `dgoal_check` subprocess audit content, terminal rejected re-loop, aboveEditor widget rendering) still requires a manual smoke test in the Pi TUI with a real model.
+**TUI interaction behavior** (startup gate confirm UI, real `dgoal_check` subprocess audit content, terminal rejected retry path, aboveEditor widget rendering) still requires a manual smoke test in the Pi TUI with a real model.
 
 ## Project Layout
 

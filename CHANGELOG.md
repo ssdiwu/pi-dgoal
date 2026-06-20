@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`/dgoal s` 空状态一致性**：没有 active goal 时，TUI 模式也显示 top-center modal 空状态；非 TUI 仍降级为 notify，用户可见文案统一使用 dgoal 而不是 loop。
+
 ## [0.4.2] - 2026-06-20
 
 ### Added

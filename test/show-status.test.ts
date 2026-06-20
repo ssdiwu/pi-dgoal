@@ -22,14 +22,14 @@ function goal(phases: Phase[] = []): LoopGoal {
   };
 }
 
-function makeCtx() {
+function makeCtx(mode = "tui") {
   const calls = {
     setStatus: [] as Array<[string, string | undefined]>,
     notify: [] as Array<[string, string]>,
     custom: [] as Array<unknown[]>,
   };
   const ctx = {
-    mode: "tui",
+    mode,
     ui: {
       setStatus: (key: string, value: string | undefined) => calls.setStatus.push([key, value]),
       notify: (message: string, level: string) => calls.notify.push([message, level]),
@@ -43,17 +43,35 @@ function makeCtx() {
 }
 
 describe("showStatus 回归", () => {
-  test("无 currentGoal：清空状态栏并 notify noLoop", () => {
+  test("无 currentGoal：TUI 模式清空状态栏并展示空状态 modal", async () => {
     __resetGoalForTest();
     const { ctx, calls } = makeCtx();
 
     __showStatusForTest(ctx);
+    await Promise.resolve();
 
     expect(calls.setStatus).toEqual([["dgoal", undefined]]);
-    expect(calls.notify).toHaveLength(1);
-    expect(calls.notify[0][0]).toContain("当前没有 loop");
-    expect(calls.notify[0][1]).toBe("info");
+    expect(calls.notify).toHaveLength(0);
+    expect(calls.custom).toHaveLength(1);
+    const [factory, options] = calls.custom[0] as [(...args: unknown[]) => PlanStatusDialog, any];
+    expect(options.overlayOptions.anchor).toBe("top-center");
+    const component = factory({}, { fg: (_c: string, s: string) => s, bold: (s: string) => s }, {}, () => {});
+    const lines = component.render(80);
+    expect(lines.join("\n")).toContain("当前没有进行中的 dgoal");
+    expect(lines.join("\n")).toContain("/dgoal <goal>");
+  });
+
+  test("无 currentGoal：非 TUI 模式降级 notify no dgoal", () => {
+    __resetGoalForTest();
+    const { ctx, calls } = makeCtx("json");
+
+    __showStatusForTest(ctx);
+
+    expect(calls.setStatus).toEqual([["dgoal", undefined]]);
     expect(calls.custom).toHaveLength(0);
+    expect(calls.notify).toHaveLength(1);
+    expect(calls.notify[0][0]).toContain("当前没有进行中的 dgoal");
+    expect(calls.notify[0][1]).toBe("info");
   });
 
   test("有 currentGoal：TUI 模式走 ctx.ui.custom + top-center overlay 配置", async () => {

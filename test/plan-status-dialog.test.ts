@@ -111,14 +111,21 @@ describe("PlanStatusDialog.render", () => {
     expect(second[1]).toContain("<accent>"); // 仍是 accent+bold
   });
 
-  test("empty goal / empty plan → fallback 行", () => {
+  test("empty goal → 带边框的空 dgoal 状态", () => {
     const dlg = new PlanStatusDialog(undefined, mockTheme() as any, () => {});
-    expect(dlg.render(80)).toEqual([expect.stringContaining("无 plan")]);
+    const lines = dlg.render(80);
+    expect(lines[0]).toContain("╭─");
+    expect(lines.join("\n")).toContain("当前没有进行中的 dgoal");
+    expect(lines.join("\n")).toContain("/dgoal <goal>");
+    expect(lines.at(-1)).toContain("╰─");
   });
 
-  test("empty phases → fallback 行", () => {
+  test("empty phases → 带边框的 fallback 状态", () => {
     const dlg = new PlanStatusDialog(goal([]), mockTheme() as any, () => {});
-    expect(dlg.render(80)).toEqual([expect.stringContaining("无 plan")]);
+    const lines = dlg.render(80);
+    expect(lines[0]).toContain("╭─");
+    expect(lines.join("\n")).toContain("无 plan");
+    expect(lines.at(-1)).toContain("╰─");
   });
 
   test("render 缓存命中：相同 (width, elapsedSec) 第二次返回 cached", () => {

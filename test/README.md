@@ -19,7 +19,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-overlay-render.test.ts` | 切片3：计划浮层渲染纯函数 `renderPlanLines` + `PlanOverlay` 类（reload 恢复、展开折叠、完成闪现）。 |
 | `plan-status-pure.test.ts` | v0.4.2 `/dgoal s` modal 的纯函数测试：`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`。 |
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
-| `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的 noLoop 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
+| `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
 | `startup-gate.test.ts` | 切片4：启动闸门纯函数—— `validateProposalInput`、`formatProposalForConfirm`、`buildProposalConfirmationOptions`、确认 UI 摘要/明细切换。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
