@@ -2717,7 +2717,8 @@ export function buildHeadingLine(goal: Pick<LoopGoal, "objective" | "plan" | "st
   const doneCount = goal.plan.phases.filter((ph) => isDonePlanStatus(ph.status)).length;
   const total = goal.plan.phases.length;
   const elapsed = formatElapsed(getGoalElapsedMs(goal));
-  return `🎯 ${goal.objective} (${doneCount}/${total}) ⏱️ ${elapsed}`;
+  const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
+  return `🎯 ${objectiveFirstLine} (${doneCount}/${total}) ⏱️ ${elapsed}`;
 }
 
 /** Colorize a RenderLine based on its type + status. Returns ANSI-wrapped string.

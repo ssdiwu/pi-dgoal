@@ -155,6 +155,15 @@ describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
     }
   });
 
+  test("objective 多行时 heading 只显示首行", () => {
+    const g = goal([p(1, "p1", [], "done")], {
+      objective: "第一行目标\n第二行说明",
+    });
+    const line = buildHeadingLine(g);
+    expect(line).toContain("第一行目标");
+    expect(line).not.toContain("第二行说明");
+  });
+
   test("paused elapsed 冻结在 pauseStartedAt，且不把当前 pause 窗口算进去", () => {
     const realNow = Date.now;
     Date.now = () => 99_000;

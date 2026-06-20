@@ -16,7 +16,7 @@
 
 `/dgoal s` 重写为：调 `ctx.ui.custom()` 弹一个 **top-center overlay modal**（Variant A 形态），组件有：
 
-1. **heading 钉顶**：`🎯 <objective> (X/Y) ⏱️ <elapsed>`，accent 色 + bold
+1. **heading 钉顶**：`🎯 <objective 首行> (X/Y) ⏱️ <elapsed>`，accent 色 + bold
 2. **body 可滚动**：每 phase 一行（前缀 emoji `✅/🔄/⬜/🚧` + status 色 + subject），phase 下 task 缩进（`│    ✓/◐/○/⚠` + dim/accent/warning/muted 色）
 3. **底部 hint**：当前 offset 指示 + 键位（`↓/j · ↑/k · PgDn/PgUp · Home/End · ESC`）
 4. **滚动行为**：scrollOffset state 由 Component 维护，纯函数 `computeScrollOffset(data, currentOffset, total, maxVisible)` 计算新 offset；vim 风格 j 下、k 上（G 大写跳底、g 小写跳顶）
