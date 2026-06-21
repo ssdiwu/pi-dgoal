@@ -7,10 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **TUI 视觉编码重构：层级靠颜色，状态靠字符（ADR 0009）**：`/dgoal s` modal 不再按 status 整行染色，改为按内容层级分配基色——`goal = accent + bold`、`phase = text`、`task = dim`；`phase`/`task` 统一用同一套状态字符 `○ / ◐ / ✓ / ⚠`（删掉 modal 的 `PHASE_EMOJI`/`TASK_EMOJI` 双轨，与持续浮层 `PHASE_ICON` 对齐），`goal` 保留 `🎯`。`in_progress` 不再加 bold，状态只靠字符表达。颜色选择以跨主题可见性为前提，禁用 `yellow` 等在白底易丢的色相。
+
+### Added
+
+- **`done` 删除线扩展到 phase**：modal 和持续浮层的 done `phase`/`task` 标题文本现在都带删除线（ANSI 9/29），只划标题文本，不划状态字符 `○/◐/✓/⚠` 和树形符号 `├─ / │`；行内后缀说明（`activeForm`、`blockedReason`）作为辅助信息弱化显示、不参与删除线。
+- **新术语与决策**：`doc/术语表.md` 新增"层级基色"、"状态字符"；新增 `doc/adr/0009-tui-visual-encoding-layer-over-status.md`（覆盖 ADR 0008 的 emoji+status 色方案）。
+
 ### Fixed
 
+- **状态栏 `zh-CN` 真正中文化**：`🔁 active #N / paused / starting / rejected / done` 等状态栏文案在中文 locale 下原本沿用了英文状态词，现真正本地化为两字：`🔁 进行 / 暂停 / 启动 / 未过 / 完成`。
 - **`/dgoal s` 空状态一致性**：没有 active goal 时，TUI 模式也显示 top-center modal 空状态；非 TUI 仍降级为 notify，用户可见文案统一使用 dgoal 而不是 loop，并补回 `ESC/Ctrl+C` 关闭提示。
 - **`/dgoal s` 快捷键提示动态化**：plan 内容未超过 modal 可见高度时，只提示 `ESC/Ctrl+C`；只有内容可滚动时才显示 `j/k`、方向键和翻页键。
+
+### Reminders
+
+- **持续浮层彩色化延后**：本次只统一 modal 视觉编码；持续浮层（`aboveEditor widget`）的 theme-aware 彩色化延后到下一版本（见 `doc/30-路线图/30-项目路线图.md`），避免引入新 TUI 渲染 bug 面。
 
 ## [0.4.2] - 2026-06-20
 
