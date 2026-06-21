@@ -85,7 +85,7 @@ pending ──→ active ──→ done                # happy path
             paused (user_abort / model_error / audit_error) ──/dgoal resume──→ active
 ```
 
-See `doc/术语表.md` for state definitions, `doc/adr/0004` for the rejected/paused contract, and `doc/10-架构与运行/` for the current implementation.
+See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the rejected/paused contract, and `doc/10-架构与运行/` for the current implementation.
 
 ## Completion Audit
 
@@ -150,7 +150,7 @@ pi-dgoal/
 
 ## Documentation
 
-Start at `doc/README.md` for the reading order. The build-check loop and three-layer content model are the basic principle; see `doc/adr/0006` for the foundational decision.
+Start at `doc/README.md` for the reading order. The build-check loop and three-layer content model are the basic principle; see `doc/决策档案/0006` for the foundational decision.
 
 ## License
 

@@ -81,7 +81,7 @@ pending ──→ active ──→ done                # 正常路径
             paused (user_abort / model_error / audit_error) ──/dgoal resume──→ active
 ```
 
-状态定义见 `doc/术语表.md`，rejected/paused 契约见 `doc/adr/0004`，当前实现见 `doc/10-架构与运行/`。
+状态定义见 `doc/术语表.md`，rejected/paused 契约见 `doc/决策档案/0004`，当前实现见 `doc/10-架构与运行/`。
 
 ## 完成审核
 
@@ -146,7 +146,7 @@ pi-dgoal/
 
 ## 文档
 
-入口 `doc/README.md`。建检循环 + 三层内容模型是基本盘，决策见 `doc/adr/0006`。
+入口 `doc/README.md`。建检循环 + 三层内容模型是基本盘，决策见 `doc/决策档案/0006`。
 
 ## 协议
 

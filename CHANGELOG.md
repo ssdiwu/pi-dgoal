@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`done` 删除线扩展到 phase**：modal 和持续浮层的 done `phase`/`task` 标题文本现在都带删除线（ANSI 9/29），只划标题文本，不划状态字符 `○/◐/✓/⚠` 和树形符号 `├─ / │`；行内后缀说明（`activeForm`、`blockedReason`）作为辅助信息弱化显示、不参与删除线。
-- **新术语与决策**：`doc/术语表.md` 新增"层级基色"、"状态字符"；新增 `doc/adr/0009-tui-visual-encoding-layer-over-status.md`（覆盖 ADR 0008 的 emoji+status 色方案）。
+- **新术语与决策**：`doc/术语表.md` 新增"层级基色"、"状态字符"；新增 `doc/决策档案/0009-tui-visual-encoding-layer-over-status.md`（覆盖 ADR 0008 的 emoji+status 色方案）。
 
 ### Fixed
 
@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`/dgoal s` 查询形态升级**：从 5 行 `notify` 升级为 top-center overlay modal（Variant A，见 `doc/adr/0008-dgoal-s-modal-形态选型.md`）；非 TUI / 无 `ctx.ui.custom()` 时回退旧 notify，兼容 RPC / print / json 模式。
+- **`/dgoal s` 查询形态升级**：从 5 行 `notify` 升级为 top-center overlay modal（Variant A，见 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`）；非 TUI / 无 `ctx.ui.custom()` 时回退旧 notify，兼容 RPC / print / json 模式。
 - **用户中断暂停通知颜色**：`Dgoal 已暂停（用户中断…）` 现在走 `error`（红色）而不是 `warning`（黄色），提升深色主题下的可见性。
 
 ### Fixed

@@ -203,7 +203,7 @@ class PlanStatusList {
 
 ## 5. 决策记录
 
-不够格进 `doc/adr/`——这是"实现参考"不是"难逆转决策"。等 `/dgoal s` 实际重写时，决策会落成 ADR：
+不够格进 `doc/决策档案/`——这是"实现参考"不是"难逆转决策"。等 `/dgoal s` 实际重写时，决策会落成 ADR：
 - 选 full-screen 还是 overlay？→ 决定 ADR
 - 加滚动还是固定展开？→ 决定 ADR
 - 是否复用 `renderPlanLines` 还是新写？→ 决定 ADR

@@ -1,6 +1,6 @@
 # 25 - `/dgoal s` Modal 变体探索参考
 
-> 探索 `/dgoal s`（`status` 命令）重新设计为 modal 的全过程。决策权威在 `doc/adr/0008-dgoal-s-modal-形态选型.md`，本文是研究过程 + 三个变体的具体取舍 + 迭代 bug 复盘。
+> 探索 `/dgoal s`（`status` 命令）重新设计为 modal 的全过程。决策权威在 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`，本文是研究过程 + 三个变体的具体取舍 + 迭代 bug 复盘。
 
 ## 1. 总体判断
 
