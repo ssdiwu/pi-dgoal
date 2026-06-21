@@ -82,13 +82,13 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     expect(lines[1].text).toBe("");
     expect(lines[2].type).toBe("phase");
     expect(lines[2].status).toBe("in_progress");
-    expect(lines[2].text).toContain("🔄 phaseA");
+    expect(lines[2].text).toContain("◐ phaseA");
     expect(lines[3].type).toBe("task");
     expect(lines[3].status).toBe("in_progress");
     expect(lines[3].text).toContain("◐ taskA1");
     expect(lines[4].type).toBe("phase");
     expect(lines[4].status).toBe("pending");
-    expect(lines[4].text).toContain("⬜ phaseB");
+    expect(lines[4].text).toContain("○ phaseB");
   });
 
   test("blocked phase 带 blockedReason 后缀", () => {
@@ -96,18 +96,33 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     const lines = buildBodyLines(g);
     const phaseLine = lines.find((l) => l.type === "phase");
     expect(phaseLine?.text).toContain("[等 X 完成]");
-    expect(phaseLine?.text).toContain("🚧");
+    expect(phaseLine?.text).toContain("⚠");
   });
 
-  test("completed/done phase 用 ✅", () => {
+  test("completed/done phase 用 ✓", () => {
     const g = goal([p(1, "p", [], "done")]);
-    expect(buildBodyLines(g)[2].text).toContain("✅");
+    expect(buildBodyLines(g)[2].text).toContain("✓");
     const g2 = goal([p(1, "p", [], "completed")]);
-    expect(buildBodyLines(g2)[2].text).toContain("✅");
+    expect(buildBodyLines(g2)[2].text).toContain("✓");
   });
 
   test("done 状态的 goal 不被过滤（用户确认后消失由 dgoal 流程处理）", () => {
     expect(buildBodyLines(goal([p(1, "p", [], "done")], { status: "done" })).length).toBeGreaterThan(0);
+  });
+
+  test("done phase/task 标题文本带删除线，状态字符和树形符号不带（ADR 0009）", () => {
+    const g = goal([p(1, "phaseA", [t(1, "taskA1", "done")], "done")]);
+    const lines = buildBodyLines(g);
+    const phaseLine = lines.find((l) => l.type === "phase" && l.status === "done")!;
+    const taskLine = lines.find((l) => l.type === "task" && l.status === "done")!;
+    // 标题文本被删除线 ANSI 包裹
+    expect(phaseLine.text).toContain("\u001b[9mphaseA\u001b[29m");
+    expect(taskLine.text).toContain("\u001b[9mtaskA1\u001b[29m");
+    // 状态字符 ✓ 和树形符号 ├─ / │ 不被删除线包裹
+    expect(phaseLine.text).not.toContain("\u001b[9m├─");
+    expect(phaseLine.text).not.toContain("\u001b[9m✓");
+    expect(taskLine.text).not.toContain("\u001b[9m│");
+    expect(taskLine.text).not.toContain("\u001b[9m✓");
   });
 });
 
@@ -184,10 +199,10 @@ describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
 });
 
 // =============================================================================
-// colorize：9 种 status × type 映射
+// colorize：层级基色映射（ADR 0009，状态不再靠颜色或粗体表达）
 // =============================================================================
 
-describe("切片 1 · colorize 按 status × type 染色", () => {
+describe("切片 1 · colorize 按 line.type 分配层级基色", () => {
   const th = mockTheme();
 
   function lineOf(type: RenderLine["type"], status?: PlanStatus, text = "X"): RenderLine {
@@ -205,50 +220,38 @@ describe("切片 1 · colorize 按 status × type 染色", () => {
     expect(colorize(lineOf("spacer", undefined, ""), th)).toBe("");
   });
 
-  test("phase in_progress → accent + bold（最显眼）", () => {
-    const out = colorize(lineOf("phase", "in_progress", "├─ 🔄 p"), th);
-    expect(out).toContain("<accent>");
-    expect(out).toContain("<bold>");
+  test("phase → text（层级基色，与状态无关）", () => {
+    // 四种 status 都应该走 text，不再走 success/warning/muted
+    for (const status of ["pending", "in_progress", "done", "completed", "blocked"] as const) {
+      const out = colorize(lineOf("phase", status, "├─ p"), th);
+      expect(out).toContain("<text>");
+    }
   });
 
-  test("phase done → success（绿）", () => {
-    const out = colorize(lineOf("phase", "done", "├─ ✅ p"), th);
-    expect(out).toContain("<success>");
+  test("phase in_progress 不再加 bold（状态只靠字符）", () => {
+    const out = colorize(lineOf("phase", "in_progress", "├─ ◐ p"), th);
     expect(out).not.toContain("<bold>");
   });
 
-  test("phase completed → success（兼容老命名）", () => {
-    expect(colorize(lineOf("phase", "completed", "p"), th)).toContain("<success>");
+  test("task → dim（层级基色，与状态无关）", () => {
+    for (const status of ["pending", "in_progress", "done", "completed", "blocked"] as const) {
+      const out = colorize(lineOf("task", status, "│ ○ p"), th);
+      expect(out).toContain("<dim>");
+    }
   });
 
-  test("phase blocked → warning（黄）", () => {
-    const out = colorize(lineOf("phase", "blocked", "├─ 🚧 p"), th);
-    expect(out).toContain("<warning>");
-  });
-
-  test("phase pending → muted（灰）", () => {
-    const out = colorize(lineOf("phase", "pending", "├─ ⬜ p"), th);
-    expect(out).toContain("<muted>");
-  });
-
-  test("task done → dim（淡灰，不抢 phase）", () => {
-    const out = colorize(lineOf("task", "done", "✓"), th);
-    expect(out).toContain("<dim>");
-    expect(out).not.toContain("<success>");
-  });
-
-  test("task in_progress → accent + bold", () => {
+  test("task in_progress 不再加 bold（状态只靠字符）", () => {
     const out = colorize(lineOf("task", "in_progress", "◐"), th);
-    expect(out).toContain("<accent>");
-    expect(out).toContain("<bold>");
+    expect(out).not.toContain("<bold>");
   });
 
-  test("task blocked → warning", () => {
-    expect(colorize(lineOf("task", "blocked", "⚠"), th)).toContain("<warning>");
-  });
-
-  test("task pending → muted（默认）", () => {
-    expect(colorize(lineOf("task", "pending", "○"), th)).toContain("<muted>");
+  test("层级区分：phase 是 text，task 是 dim，不混淆", () => {
+    const phaseOut = colorize(lineOf("phase", "in_progress", "├─ ◐ p"), th);
+    const taskOut = colorize(lineOf("task", "in_progress", "│ ◐ t"), th);
+    expect(phaseOut).toContain("<text>");
+    expect(phaseOut).not.toContain("<dim>");
+    expect(taskOut).toContain("<dim>");
+    expect(taskOut).not.toContain("<text>");
   });
 });
 

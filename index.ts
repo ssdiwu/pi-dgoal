@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme, ThemeColor } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
@@ -2676,15 +2676,9 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
 // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 1。
 // =============================================================================
 
-// Phase emoji（比 ✓/◐ 更鲜明，让 goal/phase/task 视觉层级清晰）；task 保留紧凑字符。
-const PHASE_EMOJI: Record<PlanStatus, string> = {
-  pending: "⬜",
-  in_progress: "🔄",
-  done: "✅",
-  completed: "✅",
-  blocked: "🚧",
-};
-const TASK_EMOJI: Record<PlanStatus, string> = {
+// 状态字符（Status Glyph，ADR 0009）：phase/task 统一用同一套 ○/◐/✓/⚠，只靠缩进和层级基色区分。
+// goal 继续保留 🎯 作为标题锚点。
+const STATUS_GLYPH: Record<PlanStatus, string> = {
   pending: "○",
   in_progress: "◐",
   done: "✓",
@@ -2692,7 +2686,8 @@ const TASK_EMOJI: Record<PlanStatus, string> = {
   blocked: "⚠",
 };
 
-// RenderLine 是 modal 渲染的统一结构：type + 可选 status + text。render 阶段按 type/status 决定染色。
+// RenderLine 是 modal 渲染的统一结构：type + 可选 status + text。
+// colorize 按 line.type 分配层级基色（ADR 0009），不再按 status 染色。
 export type RenderLineType = "heading" | "spacer" | "phase" | "task";
 export interface RenderLine {
   type: RenderLineType;
@@ -2710,13 +2705,17 @@ export function buildBodyLines(goal: LoopGoal | undefined): RenderLine[] {
   lines.push({ type: "spacer", text: "" });
 
   for (const ph of goal.plan.phases) {
-    const emoji = PHASE_EMOJI[ph.status] ?? "○";
+    const glyph = STATUS_GLYPH[ph.status] ?? "○";
+    const subject = truncateLine(ph.subject, 80);
+    const renderedSubject = isDonePlanStatus(ph.status) ? ansiStrikethrough(subject) : subject;
     const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
-    lines.push({ type: "phase", status: ph.status, text: `├─ ${emoji} ${truncateLine(ph.subject, 80)}${blk}` });
+    lines.push({ type: "phase", status: ph.status, text: `├─ ${glyph} ${renderedSubject}${blk}` });
     for (const t of ph.tasks) {
-      const ti = TASK_EMOJI[t.status] ?? "○";
+      const ti = STATUS_GLYPH[t.status] ?? "○";
+      const tSubject = truncateLine(t.subject, 78);
+      const renderedTSubject = isDonePlanStatus(t.status) ? ansiStrikethrough(tSubject) : tSubject;
       const active = t.status === "in_progress" && t.activeForm ? ` (${truncateLine(t.activeForm, 30)})` : "";
-      lines.push({ type: "task", status: t.status, text: `│    ${ti} ${truncateLine(t.subject, 78)}${active}` });
+      lines.push({ type: "task", status: t.status, text: `│    ${ti} ${renderedTSubject}${active}` });
     }
   }
   return lines;
@@ -2736,20 +2735,15 @@ export function buildHeadingLine(goal: Pick<LoopGoal, "objective" | "plan" | "st
   return `🎯 ${objectiveFirstLine} (${doneCount}/${total}) ⏱️ ${elapsed}`;
 }
 
-/** Colorize a RenderLine based on its type + status. Returns ANSI-wrapped string.
+/** Colorize a RenderLine based on its type only (layer base color, ADR 0009).
+ *  层级靠颜色：heading→accent+bold / phase→text / task→dim / spacer→原样。
+ *  状态只靠 STATUS_GLYPH 字符表达，颜色和粗体都不再承担状态语义。
  *  纯函数：无副作用，不读模块状态；仅依输入 (line, theme)。 */
 export function colorize(line: RenderLine, theme: Theme): string {
   if (line.type === "heading") return theme.fg("accent", theme.bold(line.text));
   if (line.type === "spacer") return line.text;
-  // phase / task 按 status 染色；phase 用更显眼的 success/dim 区分完成态
-  const isPhase = line.type === "phase";
-  const color: ThemeColor =
-    line.status === "in_progress" ? "accent"
-    : line.status === "done" || line.status === "completed" ? (isPhase ? "success" : "dim")
-    : line.status === "blocked" ? "warning"
-    : "muted";
-  const colored = theme.fg(color, line.text);
-  return line.status === "in_progress" ? theme.bold(colored) : colored;
+  if (line.type === "phase") return theme.fg("text", line.text);
+  return theme.fg("dim", line.text); // task
 }
 
 /** Scroll key handling — returns new offset, "exit", or null if key not recognized.
