@@ -37,6 +37,15 @@ overlay 配置：`anchor: "top-center"`, `width: "100%"`, `maxHeight: "85%"`, `m
 
 详细对比 + Pi TUI 约束分析见 25-dgoal-s-modal变体探索参考.md。
 
+## 追加决策：anchor 从 top-center 切 center（v0.5+）
+
+实际使用后用户反馈 top-center 视觉上“挂”在顶部不够聚焦。复评后切到 **center**（原 Variant C 形态），理由：
+- `/dgoal s` 是按需查询弹窗，用户主动唤起、查完即关，挡 chat history 的时间窗口短；用户此刻注意力在“看 plan 状态”上，不在读历史，当初否决 center 的核心理由偏弱。
+- maxHeight 85% + scroll 已解决“内容看不全”（当初否决 C 的第二条理由已不成立）。
+- 短 plan 在 top-center 下突兀，center 更稳。
+
+overlay 配置改为 `anchor: "center"`（其余 `width: "100%"` / `maxHeight: "85%"` / `margin: 1` 不变）。不推翻本 ADR 的形态选型，是激活原备选 Variant C。
+
 ## 实施要点
 
 1. **数据结构 `RenderLine[]`**：`{ type: "heading" | "spacer" | "phase" | "task", status?: PlanStatus, text: string }`。让 render 阶段根据 type + status 染色。

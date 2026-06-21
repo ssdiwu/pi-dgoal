@@ -1121,7 +1121,8 @@ function showStatus(ctx: LoopContext) {
       return;
     }
 
-    // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 top-center overlay modal（Variant A 形态）。
+    // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 overlay modal（原 Variant A top-center，
+    // 后按 ADR 0008 追加决策切 center，见 doc/决策档案/0008）。
     // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
     // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject；两者都降级回旧 notify。
     try {
@@ -1131,7 +1132,7 @@ function showStatus(ctx: LoopContext) {
           {
             overlay: true,
             overlayOptions: {
-              anchor: "top-center",
+              anchor: "center",
               width: "100%",
               maxHeight: "85%",
               margin: 1,
@@ -2956,7 +2957,7 @@ function truncate(value: string, max = 160) {
 // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 4。
 // =============================================================================
 
-/** /dgoal s 唤起 top-center overlay modal。用 Component + Focusable 接口，
+/** /dgoal s 唤起 center overlay modal。用 Component + Focusable 接口，
  *  focus 由 Pi 的 overlay 系统设到 true，handleInput 只接收键事件。
  *  使用 ctx.ui.custom 调，render 输出会被 Pi 渲染到 overlay 容器内。
  */

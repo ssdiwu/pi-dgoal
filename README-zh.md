@@ -41,7 +41,7 @@ dgoal 执行中：
 控制目标：
 
 ```text
-/dgoal status | s   # top-center modal 查看完整 plan 状态；没有 active goal 时显示空 dgoal 状态
+/dgoal status | s   # center modal 查看完整 plan 状态；没有 active goal 时显示空 dgoal 状态
 /dgoal pause  | p   # 停止自动续跑（保留 goal）
 /dgoal resume | r   # 恢复暂停的 goal
 /dgoal clear  | c   # 清除当前 session 的 goal

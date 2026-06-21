@@ -54,7 +54,7 @@ describe("showStatus 回归", () => {
     expect(calls.notify).toHaveLength(0);
     expect(calls.custom).toHaveLength(1);
     const [factory, options] = calls.custom[0] as [(...args: unknown[]) => PlanStatusDialog, any];
-    expect(options.overlayOptions.anchor).toBe("top-center");
+    expect(options.overlayOptions.anchor).toBe("center");
     const component = factory({}, { fg: (_c: string, s: string) => s, bold: (s: string) => s }, {}, () => {});
     const lines = component.render(80);
     expect(lines.join("\n")).toContain("当前没有进行中的 dgoal");
@@ -74,7 +74,7 @@ describe("showStatus 回归", () => {
     expect(calls.notify[0][1]).toBe("info");
   });
 
-  test("有 currentGoal：TUI 模式走 ctx.ui.custom + top-center overlay 配置", async () => {
+  test("有 currentGoal：TUI 模式走 ctx.ui.custom + center overlay 配置", async () => {
     __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
     const { ctx, calls } = makeCtx();
 
@@ -86,7 +86,7 @@ describe("showStatus 回归", () => {
     expect(options).toEqual({
       overlay: true,
       overlayOptions: {
-        anchor: "top-center",
+        anchor: "center",
         width: "100%",
         maxHeight: "85%",
         margin: 1,

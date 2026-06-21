@@ -45,7 +45,7 @@ During dgoal execution:
 Control the goal:
 
 ```text
-/dgoal status | s   # top-center modal for full plan status, or an empty dgoal state when none is active
+/dgoal status | s   # center modal for full plan status, or an empty dgoal state when none is active
 /dgoal pause  | p   # stop auto-continuation (keep goal)
 /dgoal resume | r   # resume paused goal
 /dgoal clear  | c   # remove goal from session

@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`/dgoal s` modal anchor 从 top-center 切 center（ADR 0008 追加决策）**：实际使用后 top-center 视觉上“挂”在顶部不够聚焦；`/dgoal s` 是按需查询弹窗，用户主动唤起查完即关，挡 chat history 的时间窗口短，当初否决 center 的核心理由偏弱；maxHeight 85% + scroll 已解决内容看不全。overlay 配置改为 `anchor: "center"`，激活原备选 Variant C。
 - **TUI 视觉编码重构：层级靠颜色，状态靠字符（ADR 0009）**：`/dgoal s` modal 不再按 status 整行染色，改为按内容层级分配基色——`goal = accent + bold`、`phase = text`、`task = dim`；`phase`/`task` 统一用同一套状态字符 `○ / ◐ / ✓ / ⚠`（删掉 modal 的 `PHASE_EMOJI`/`TASK_EMOJI` 双轨，与持续浮层 `PHASE_ICON` 对齐），`goal` 保留 `🎯`。`in_progress` 不再加 bold，状态只靠字符表达。颜色选择以跨主题可见性为前提，禁用 `yellow` 等在白底易丢的色相。
 
 ### Added
@@ -19,7 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **状态栏 `zh-CN` 真正中文化**：`🔁 active #N / paused / starting / rejected / done` 等状态栏文案在中文 locale 下原本沿用了英文状态词，现真正本地化为两字：`🔁 进行 / 暂停 / 启动 / 未过 / 完成`。
-- **`/dgoal s` 空状态一致性**：没有 active goal 时，TUI 模式也显示 top-center modal 空状态；非 TUI 仍降级为 notify，用户可见文案统一使用 dgoal 而不是 loop，并补回 `ESC/Ctrl+C` 关闭提示。
+- **`/dgoal s` 空状态一致性**：没有 active goal 时，TUI 模式也显示 center modal 空状态；非 TUI 仍降级为 notify，用户可见文案统一使用 dgoal 而不是 loop，并补回 `ESC/Ctrl+C` 关闭提示。
 - **`/dgoal s` 快捷键提示动态化**：plan 内容未超过 modal 可见高度时，只提示 `ESC/Ctrl+C`；只有内容可滚动时才显示 `j/k`、方向键和翻页键。
 
 ### Reminders
