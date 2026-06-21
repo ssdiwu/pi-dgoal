@@ -2645,8 +2645,10 @@ export function renderPlanLines(goal: LoopGoal | undefined, opts: RenderPlanOpti
   const bodyLines: string[] = [];
   for (const ph of visiblePhases) {
     const icon = PHASE_ICON[ph.status] ?? "○";
+    const phSubject = truncateLine(ph.subject, 50);
+    const renderedPhSubject = isDonePlanStatus(ph.status) ? ansiStrikethrough(phSubject) : phSubject;
     const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
-    bodyLines.push(`├─ ${icon} ${truncateLine(ph.subject, 50)}${blk}`);
+    bodyLines.push(`├─ ${icon} ${renderedPhSubject}${blk}`);
     if (opts.expandTasks) {
       for (const t of ph.tasks) {
         const ti = PHASE_ICON[t.status] ?? "○";

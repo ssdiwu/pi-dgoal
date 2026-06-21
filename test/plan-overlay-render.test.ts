@@ -86,9 +86,26 @@ describe("切片3 · 状态符号", () => {
     const lines = renderPlanLines(g, noHide);
     expect(lines[1]).toContain("○ p1");
     expect(lines[2]).toContain("◐ p2");
-    expect(lines[3]).toContain("✓ p3");
+    expect(lines[3]).toContain("✓"); // done 状态字符（p3 被删除线包裹，不再与 ✓ 连续）
+    expect(lines[3]).toContain("p3"); // 标题文本仍在（带 ANSI 包裹）
     expect(lines[4]).toContain("⚠ p4");
     expect(lines[4]).toContain("[卡住]");
+  });
+
+  test("done phase 标题文本带删除线，状态字符和树形符号不带（ADR 0009）", () => {
+    const g = goal([p(1, "phaseDone", [], "done")]);
+    const lines = renderPlanLines(g, noHide);
+    const phaseLine = lines[1];
+    // 标题文本被删除线 ANSI 包裹
+    expect(phaseLine).toContain("\u001b[9mphaseDone\u001b[29m");
+    // 状态字符 ✓ 和树形符号 ├─ 不被包裹
+    expect(phaseLine).not.toContain("\u001b[9m├─");
+    expect(phaseLine).not.toContain("\u001b[9m✓");
+    // blocked 的 blockedReason 后缀也不参与删除线
+    const g2 = goal([p(1, "blk", [], "blocked", { blockedReason: "原因" })]);
+    const blkLine = renderPlanLines(g2, noHide)[1];
+    expect(blkLine).toContain("[原因]");
+    expect(blkLine).not.toContain("\u001b[9m");
   });
 });
 
@@ -106,8 +123,9 @@ describe("切片3 · completed phase 持久显示", () => {
   test("全 completed 也保持完整显示", () => {
     const g = goal([p(1, "A", [], "done"), p(2, "B", [], "done")]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set([1, 2]), expandTasks: false });
-    expect(lines.some((l) => l.includes("✓ A"))).toBe(true);
-    expect(lines.some((l) => l.includes("✓ B"))).toBe(true);
+    // done 标题被删除线包裹，✓ 和 A/B 不再连续，分开断言
+    expect(lines.some((l) => l.includes("✓") && l.includes("A"))).toBe(true);
+    expect(lines.some((l) => l.includes("✓") && l.includes("B"))).toBe(true);
   });
 });
 
