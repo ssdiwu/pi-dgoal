@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-22
+
 ### Changed
 
 - **`/dgoal s` modal anchor 从 top-center 切 center（ADR 0008 追加决策）**：实际使用后 top-center 视觉上“挂”在顶部不够聚焦；`/dgoal s` 是按需查询弹窗，用户主动唤起查完即关，挡 chat history 的时间窗口短，当初否决 center 的核心理由偏弱；maxHeight 85% + scroll 已解决内容看不全。overlay 配置改为 `anchor: "center"`，激活原备选 Variant C。
