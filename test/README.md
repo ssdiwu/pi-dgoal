@@ -7,6 +7,7 @@ pi-dgoal 的测试。两类：背景固化逻辑测试（bun test）和扩展加
 ```bash
 npm run test:context   # bun test test/context-input-cap.test.ts
 npm run test:rpc       # python3 test/test-extension-rpc.py
+npm run test:smoke     # python3 test/test-ai-smoke.py（AI 驱动 smoke，消耗真实 token）
 npm test               # bun test（全量，跑所有 *.test.ts）
 ```
 
@@ -24,12 +25,15 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
 | `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done，`finalizeGoal` UI 边界容错，blockedBy DAG。 |
+| `soft-forgetting-e2e-smoke.test.ts` | ADR 0010 软遗忘端到端 smoke：走完整真实状态机路径（`proposalToPlan`→`applyPlanMutation`→`setPhaseCompleted`→`buildPlanContextBlock`），验证 phase done 后注入里只剩标题行、当前 phase 内 done task 仍注入。 |
 | `command-aliases.test.ts` | `/dgoal` 子命令解析：全拼 / 单字母 `s/p/r/c`，以及移除 `stop` 别名后的行为。 |
 | `context-input-cap.test.ts` | 启动背景固化的文本截断 / 摘要逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、`buildContextSummarizerTask`、`isRetryableSubprocessError`。纯逻辑测试，不依赖 Pi。 |
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
+| `test-ai-smoke.py` | AI 驱动 smoke：`pi -ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |
 
 ## 边界
 
 - 自动化测试覆盖背景固化逻辑、命令注册、子进程收尸监督，以及部分建检辅助逻辑（如审核进度摘要）。
-- 完整自动续跑和审核行为（含真实 auditor 子进程内容、流式审核输出、真实测试命令执行）仍需在 Pi TUI 中用真实模型做人工 smoke test。
+- **AI 驱动 smoke**（`test-ai-smoke.py`）覆盖真实模型下的全工具链（propose/plan/check/done）与启动闸门 RPC 驱动，是介于离线 RPC 测试与人工 TUI smoke 之间的一档。
+- 完整 TUI 交互行为（含真实 auditor 子进程内容、浮层/overlay/modal 渲染、终审 rejected 回环、aboveEditor 浮层显示）仍需在 Pi TUI 中用真实模型做人工 smoke test。

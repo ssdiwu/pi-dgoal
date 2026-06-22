@@ -1206,8 +1206,13 @@ function buildSystemPrompt(goal: LoopGoal) {
 export function buildPlanContextBlock(goal: LoopGoal): string {
   if (!goal.plan || goal.plan.phases.length === 0) return "";
   const lines: string[] = ["", "<loop_plan>"];
+  // 软遗忘（ADR 0010 / R-SWA 类比）：done phase（建检通过）只保留标题行，
+  // 其下 task 的 subject 与 evidence 全部软遗忘。权威来源是持久化的 goal.plan，
+  // 建检子进程读持久化全量不读注入；agent 需回查时靠 done phase 标题行线索 + 建检报告。
+  // 当前/未来 phase 全量注入；当前 phase 内已完成的 task 仍保留（软遗忘时机是 phase 整体 done）。
   for (const ph of goal.plan.phases) {
     lines.push(`  [${ph.status}] phase #${ph.id}: ${ph.subject}`);
+    if (isDonePlanStatus(ph.status)) continue;
     for (const t of ph.tasks) {
       const ev = t.evidence ? ` | ev: ${t.evidence}` : "";
       const blk = t.status === "blocked" && t.blockedReason ? ` | blocked: ${t.blockedReason}` : "";

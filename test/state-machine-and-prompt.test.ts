@@ -52,23 +52,113 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     expect(buildPlanContextBlock(g)).toBe("");
   });
 
-  test("正常输出三层：phase + task，含状态和 evidence", () => {
+  // 软遗忘（ADR 0010）：completed phase（建检通过）只保留标题行，其下 task 的 subject
+  // 与 evidence 全部软遗忘；in_progress phase 全量注入（含 done task）。
+  test("混合 plan：done phase 只留标题行，in_progress phase 全量注入（含 done task）", () => {
     const g = goal({
       plan: {
         phases: [
           p(1, "修复auth", [t(1, "登录", "completed", { evidence: "npm test ok" })], "completed"),
-          p(2, "加回归", [t(2, "CI钩子", "in_progress", { activeForm: "正在加" })], "in_progress"),
+          p(2, "加回归", [
+            t(2, "CI钩子", "completed", { evidence: "加了 .github/workflows" }),
+            t(3, "跑一次", "in_progress", { activeForm: "正在跑" }),
+          ], "in_progress"),
         ],
-        nextId: 3,
+        nextId: 4,
       } as TaskPlan,
     });
     const block = buildPlanContextBlock(g);
     expect(block).toContain("<loop_plan>");
     expect(block).toContain("</loop_plan>");
+    // done phase：保留标题行
     expect(block).toContain("[completed] phase #1: 修复auth");
-    expect(block).toContain("[completed] task #1: 登录 | ev: npm test ok");
+    // done phase：软遗忘其下 task 的 subject 与 evidence
+    expect(block).not.toContain("登录");
+    expect(block).not.toContain("npm test ok");
+    expect(block).not.toContain("task #1");
+    // in_progress phase：全量注入，含已完成 task 的 subject 与 evidence（软遗忘时机是 phase 整体 done）
     expect(block).toContain("[in_progress] phase #2: 加回归");
-    expect(block).toContain("[in_progress] task #2: CI钩子");
+    expect(block).toContain("[completed] task #2: CI钩子 | ev: 加了 .github/workflows");
+    expect(block).toContain("[in_progress] task #3: 跑一次");
+  });
+
+  test("软遗忘四态之一：done phase 不注入其 task 但保留自身标题行", () => {
+    const g = goal({
+      plan: {
+        phases: [
+          p(1, "阶段一", [
+            t(1, "任务甲", "completed", { evidence: "ev-甲" }),
+            t(2, "任务乙", "done", { evidence: "ev-乙" }),
+          ], "done"),
+        ],
+        nextId: 3,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    expect(block).toContain("[done] phase #1: 阶段一");
+    expect(block).not.toContain("任务甲");
+    expect(block).not.toContain("任务乙");
+    expect(block).not.toContain("ev-甲");
+    expect(block).not.toContain("ev-乙");
+    expect(block).not.toContain("task #1");
+    expect(block).not.toContain("task #2");
+  });
+
+  test("软遗忘四态之二：in_progress phase 全量注入（含 done task 的 subject 和 evidence）", () => {
+    const g = goal({
+      plan: {
+        phases: [p(1, "进行中", [
+          t(1, "已完成", "done", { evidence: "ev-done" }),
+          t(2, "进行中", "in_progress"),
+          t(3, "待办", "pending"),
+        ], "in_progress")],
+        nextId: 4,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    expect(block).toContain("[in_progress] phase #1: 进行中");
+    expect(block).toContain("[done] task #1: 已完成 | ev: ev-done");
+    expect(block).toContain("[in_progress] task #2: 进行中");
+    expect(block).toContain("[pending] task #3: 待办");
+  });
+
+  test("软遗忘四态之三：done phase 与 in_progress phase 混合，只后者展开 task", () => {
+    const g = goal({
+      plan: {
+        phases: [
+          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "completed"),
+          p(2, "当前阶段", [t(2, "新任务", "pending")], "in_progress"),
+          p(3, "未来阶段", [t(3, "未启动", "pending")], "pending"),
+        ],
+        nextId: 4,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    // done phase 只留标题行
+    expect(block).toContain("[completed] phase #1: 已完成阶段");
+    expect(block).not.toContain("旧任务");
+    expect(block).not.toContain("旧证据");
+    // in_progress / pending phase 展开 task
+    expect(block).toContain("[in_progress] phase #2: 当前阶段");
+    expect(block).toContain("[pending] task #2: 新任务");
+    expect(block).toContain("[pending] phase #3: 未来阶段");
+    expect(block).toContain("[pending] task #3: 未启动");
+  });
+
+  test("软遗忘四态之四：done phase 的标题行本身不被软遗忘", () => {
+    // 防止过度软遗忘：phase 标题行必须保留，作为 phase 间认知连续性锚点
+    const g = goal({
+      plan: {
+        phases: [
+          p(1, "第一阶段", [t(1, "x", "done")], "done"),
+          p(2, "第二阶段", [t(2, "y", "pending")], "in_progress"),
+        ],
+        nextId: 3,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    expect(block).toContain("[done] phase #1: 第一阶段");
+    expect(block).toContain("[in_progress] phase #2: 第二阶段");
   });
 
   test("blocked task 带 blockedReason", () => {
