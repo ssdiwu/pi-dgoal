@@ -263,3 +263,136 @@ describe("PlanStatusDialog 契约", () => {
     expect("focused" in dlg).toBe(true);
   });
 });
+
+// =============================================================================
+// 换行行为（ADR 0008/0009 modal）
+// =============================================================================
+
+describe("PlanStatusDialog.render 换行", () => {
+  // mockTheme 把颜色包成可见标签，会显著增加 visibleWidth；用 width 80 保证短内容不换行，
+  // 只让故意加长内容触发换行。
+
+  test("长 heading objective 超出宽度时自动换行", () => {
+    const longObjective = "o".repeat(120);
+    const g = goal([p(1, "p1", [], "in_progress")], { objective: longObjective });
+    const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+    const lines = dlg.render(80);
+    const headingLines = lines.slice(1, lines.length - 3); // 上边框之后到底边框之前的前段
+    // 找第一个 phase 行作为 body 起点；heading 区块在其前
+    const firstPhaseIdx = lines.findIndex((l) => l.includes("├─"));
+    expect(firstPhaseIdx).toBeGreaterThan(1);
+    expect(lines.slice(1, firstPhaseIdx).length).toBeGreaterThan(1);
+    // 所有 o 字符都应出现
+    const oCount = lines.join("").split("o").length - 1;
+    expect(oCount).toBeGreaterThanOrEqual(longObjective.length);
+  });
+
+  test("长 phase subject 超出宽度时自动换行，续行与内容对齐", () => {
+    const longSubject = "a".repeat(100);
+    const g = goal([p(1, longSubject, [], "in_progress")]);
+    const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+    const lines = dlg.render(80);
+    const body = lines.slice(2, -2);
+    expect(body.length).toBeGreaterThan(1);
+    // 首行含树形前缀 + 状态字符；mock theme 标签可能在前
+    expect(body[0]).toContain("├─ ◐");
+    // 续行缩进 6 列（1 左内边距 + ├─ ○  共 5 列）
+    for (let i = 1; i < body.length; i++) {
+      expect(body[i]).toMatch(/^ {6}\S/);
+    }
+    // 所有 a 字符都应出现在 body 里
+    const aCount = body.join("").split("a").length - 1;
+    expect(aCount).toBe(longSubject.length);
+  });
+
+  test("长 task subject 超出宽度时自动换行，续行与内容对齐", () => {
+    const longSubject = "b".repeat(100);
+    const g = goal([p(1, "p1", [t(1, longSubject, "in_progress")], "in_progress")]);
+    const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+    const lines = dlg.render(80);
+    const body = lines.slice(2, -2);
+    const taskStart = body.findIndex((l) => l.includes("│"));
+    // task 块 = 首行 + 后续 8 空格缩进的续行/结束标签
+    let taskEnd = taskStart + 1;
+    while (taskEnd < body.length && body[taskEnd].startsWith("        ")) {
+      taskEnd++;
+    }
+    const taskLines = body.slice(taskStart, taskEnd);
+    expect(taskLines.length).toBeGreaterThan(1);
+    // 首行含 task 树形前缀 + 状态字符
+    expect(taskLines[0]).toContain("│    ◐");
+    // 续行缩进 8 列（1 左内边距 + │    ○  共 7 列）
+    for (let i = 1; i < taskLines.length; i++) {
+      expect(taskLines[i]).toMatch(/^ {8}\S/);
+    }
+    // 所有 b 字符都应出现在 task 行里
+    const bCount = taskLines.join("").split("b").length - 1;
+    expect(bCount).toBe(longSubject.length);
+  });
+
+  test("done task 删除线 ANSI 跨换行保留", () => {
+    const longSubject = "c".repeat(80);
+    const g = goal([p(1, "p1", [t(1, longSubject, "done")], "done")]);
+    const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+    const lines = dlg.render(80);
+    const body = lines.slice(2, -2);
+    const taskStart = body.findIndex((l) => l.includes("│"));
+    let taskEnd = taskStart + 1;
+    while (taskEnd < body.length && body[taskEnd].startsWith("        ")) {
+      taskEnd++;
+    }
+    const taskLines = body.slice(taskStart, taskEnd);
+    const joined = taskLines.join("\n");
+    expect(joined).toContain("\u001b[9m");
+    expect(joined).toContain("\u001b[29m");
+    // 所有 c 字符都应出现在 task 行里（避免 mock theme <accent> 里的 c 干扰）
+    const cCount = joined.split("c").length - 1;
+    expect(cCount).toBe(longSubject.length);
+  });
+
+  test("换行后按物理行滚动：j 下移到同一 task 的续行", () => {
+    const longSubject = "x".repeat(100);
+    const phases: Phase[] = [];
+    for (let i = 1; i <= 10; i++) {
+      phases.push(p(i, `p${i}`, [t(i, longSubject, "pending")], "pending"));
+    }
+    const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
+    const first = dlg.render(80);
+    const firstBody = first.slice(2, -2);
+    expect(firstBody.length).toBeGreaterThan(1);
+    // 内容超过 20 行，应显示滚动提示
+    expect(first[first.length - 2]).toContain("dgoal");
+
+    dlg.handleInput("j");
+    const second = dlg.render(80);
+    const secondBody = second.slice(2, -2);
+
+    // 按物理行滚动后，第二屏首行应是第一屏的第二行
+    expect(secondBody[0]).toBe(firstBody[1]);
+  });
+
+  test("elapsed 每秒更新时 heading 变、body 不变", () => {
+    const realNow = Date.now;
+    const baseTime = realNow();
+    Date.now = () => baseTime;
+    try {
+      const longSubject = "y".repeat(100);
+      const g = goal([p(1, "p1", [t(1, longSubject, "in_progress")], "in_progress")]);
+      const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
+      const first = dlg.render(80);
+      const firstBody = first.slice(2, -2).join("\n");
+
+      // 推进 2 秒
+      Date.now = () => baseTime + 2_000;
+      const second = dlg.render(80);
+      const secondBody = second.slice(2, -2).join("\n");
+
+      // heading 的 elapsed 应变化
+      expect(second[1]).not.toBe(first[1]);
+      // body 内容应保持不变（wrappedBody 按 width 缓存，不随 elapsed 重算）
+      expect(secondBody).toBe(firstBody);
+    } finally {
+      Date.now = realNow;
+    }
+  });
+});

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
-import { matchesKey, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
@@ -2714,15 +2714,13 @@ export function buildBodyLines(goal: LoopGoal | undefined): RenderLine[] {
 
   for (const ph of goal.plan.phases) {
     const glyph = STATUS_GLYPH[ph.status] ?? "○";
-    const subject = truncateLine(ph.subject, 80);
-    const renderedSubject = isDonePlanStatus(ph.status) ? ansiStrikethrough(subject) : subject;
-    const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
+    const renderedSubject = isDonePlanStatus(ph.status) ? ansiStrikethrough(ph.subject) : ph.subject;
+    const blk = ph.status === "blocked" && ph.blockedReason ? ` [${ph.blockedReason}]` : "";
     lines.push({ type: "phase", status: ph.status, text: `├─ ${glyph} ${renderedSubject}${blk}` });
     for (const t of ph.tasks) {
       const ti = STATUS_GLYPH[t.status] ?? "○";
-      const tSubject = truncateLine(t.subject, 78);
-      const renderedTSubject = isDonePlanStatus(t.status) ? ansiStrikethrough(tSubject) : tSubject;
-      const active = t.status === "in_progress" && t.activeForm ? ` (${truncateLine(t.activeForm, 30)})` : "";
+      const renderedTSubject = isDonePlanStatus(t.status) ? ansiStrikethrough(t.subject) : t.subject;
+      const active = t.status === "in_progress" && t.activeForm ? ` (${t.activeForm})` : "";
       lines.push({ type: "task", status: t.status, text: `│    ${ti} ${renderedTSubject}${active}` });
     }
   }
@@ -2752,6 +2750,38 @@ export function colorize(line: RenderLine, theme: Theme): string {
   if (line.type === "spacer") return line.text;
   if (line.type === "phase") return theme.fg("text", line.text);
   return theme.fg("dim", line.text); // task
+}
+
+/** 把单行文本按 width 自动换行；continuation 行前面补 contIndentWidth 个空格。
+ *  用于 modal 内 heading / hint 等无树形前缀的内容。 */
+function wrapModalText(text: string, width: number, contIndentWidth: number): string[] {
+  if (visibleWidth(text) <= width) return [text];
+  const wrapped = wrapTextWithAnsi(text, width);
+  if (wrapped.length <= 1) return wrapped;
+  const indent = " ".repeat(contIndentWidth);
+  return wrapped.map((wl, i) => (i === 0 ? wl : indent + wl));
+}
+
+/** 把 RenderLine 按 width 自动换行，并保证 phase/task 的续行与内容对齐。
+ *  phase 前缀 " ├─ ○ " 占 6 列，task 前缀 " │    ○ " 占 8 列。 */
+function wrapModalLine(line: RenderLine, width: number, theme: Theme): string[] {
+  const leftPad = " ";
+  const colored = colorize(line, theme);
+  if (line.type === "spacer") return [leftPad + colored];
+
+  const prefixWidth =
+    line.type === "phase"
+      ? visibleWidth(`${leftPad}├─ ${line.status ? STATUS_GLYPH[line.status] : "○"} `)
+      : visibleWidth(`${leftPad}│    ${line.status ? STATUS_GLYPH[line.status] : "○"} `);
+
+  const fullText = leftPad + colored;
+  if (visibleWidth(fullText) <= width) return [fullText];
+
+  const wrapped = wrapTextWithAnsi(fullText, width);
+  if (wrapped.length <= 1) return wrapped;
+
+  const indent = " ".repeat(prefixWidth);
+  return wrapped.map((wl, i) => (i === 0 ? wl : indent + wl));
 }
 
 /** Scroll key handling — returns new offset, "exit", or null if key not recognized.
@@ -2972,6 +3002,10 @@ export class PlanStatusDialog implements Component, Focusable {
   private cachedLines?: string[];
   /** 量化到秒的 elapsed；同一秒内 elapsed 相同 → cache 命中，避免每秒全量重渲。 */
   private cachedElapsedSec?: number;
+  /** 换行后的物理 body 行，供 handleInput 按物理行滚动。 */
+  private cachedWrappedBody?: string[];
+  /** wrappedBody 只依赖 width，与 elapsedSec 解耦，避免 tick 每秒重算换行。 */
+  private cachedWrappedBodyWidth?: number;
   private scrollOffset = 0;
   private readonly maxVisible = 20;
 
@@ -2987,8 +3021,9 @@ export class PlanStatusDialog implements Component, Focusable {
       if (matchesKey(data, "escape") || matchesKey(data, "ctrl+c")) this.done();
       return;
     }
-    const body = buildBodyLinesNoHeading(this.goal);
-    const result = computeScrollOffset(data, this.scrollOffset, body.length, this.maxVisible);
+    // 优先按换行后的物理行总数滚动；render 前未缓存时回退到逻辑行数。
+    const total = this.cachedWrappedBody?.length ?? buildBodyLinesNoHeading(this.goal).length;
+    const result = computeScrollOffset(data, this.scrollOffset, total, this.maxVisible);
     if (result === "exit") {
       this.done();
       return;
@@ -3003,6 +3038,8 @@ export class PlanStatusDialog implements Component, Focusable {
     this.cachedWidth = undefined;
     this.cachedLines = undefined;
     this.cachedElapsedSec = undefined;
+    this.cachedWrappedBody = undefined;
+    this.cachedWrappedBodyWidth = undefined;
   }
 
   render(width: number): string[] {
@@ -3049,19 +3086,30 @@ export class PlanStatusDialog implements Component, Focusable {
 
     // heading 钉顶（accent + bold + 🎯）
     const heading = " " + th.fg("accent", th.bold(buildHeadingLine(this.goal)));
-    lines.push(truncateToWidth(heading, width));
+    lines.push(...wrapModalText(heading, width, 1));
 
-    // body 可滚动切片
+    // body 可滚动切片：先按当前 width 把逻辑行展开为物理行，再按物理行滚动。
+    // wrappedBody 只依赖 width，elapsed 每秒变化时复用，避免 tick 重算换行。
     const body = buildBodyLinesNoHeading(this.goal);
-    const start = this.scrollOffset;
-    const end = Math.min(start + this.maxVisible, body.length);
-    const visibleBody = body.slice(start, end);
-    for (const rl of visibleBody) {
-      lines.push(truncateToWidth(" " + colorize(rl, th), width));
+    let wrappedBody: string[];
+    if (this.cachedWrappedBody && this.cachedWrappedBodyWidth === width) {
+      wrappedBody = this.cachedWrappedBody;
+    } else {
+      wrappedBody = [];
+      for (const rl of body) {
+        wrappedBody.push(...wrapModalLine(rl, width, th));
+      }
+      this.cachedWrappedBody = wrappedBody;
+      this.cachedWrappedBodyWidth = width;
     }
 
+    const total = wrappedBody.length;
+    const start = Math.min(this.scrollOffset, Math.max(0, total - this.maxVisible));
+    this.scrollOffset = start; // 宽度变化后做 clamp
+    const end = Math.min(start + this.maxVisible, total);
+    lines.push(...wrappedBody.slice(start, end));
+
     // 只有内容超过可见高度时才提示滚动键；短内容只提示关闭键，避免误导。
-    const total = body.length;
     const isScrollable = total > this.maxVisible;
     const shown = `${start + 1}-${end} / ${total}`;
     const hint = isScrollable ? t("status.dialogHint", { shown }) : t("status.dialogCloseHint");
