@@ -103,9 +103,12 @@ pending ──→ active ──→ done                # 正常路径
 ```bash
 npm test         # bun: 全套
 npm run test:rpc # python: RPC 加载 + 命令注册
+npm run test:smoke # python: AI 驱动 smoke（真实模型 × 隔离环境）——消耗真实 token
 ```
 
 测试文件覆盖数据模型 + 持久化、plan reducer（状态机 + 环检测）、浮层渲染、启动闸门、状态机 + prompt、端到端集成、工具 execute 真实路径集成、上下文固化，以及 detached process group（独立进程组）收尸监督。
+
+**AI 驱动 smoke**（`npm run test:smoke`，`test/test-ai-smoke.py`）：在隔离环境（`pi -ne -e ./index.ts -ns -np --mode rpc`）驱动真实多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。真实模型 + 真实 token，故不进 CI。
 
 **TUI 交互行为**（启动闸门确认 UI、真实 `dgoal_check` 子进程审计内容、终审 rejected 回环、aboveEditor 浮层渲染）仍需在 Pi TUI 用真实模型做人工 smoke test。
 

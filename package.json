@@ -16,6 +16,7 @@
   "scripts": {
     "test:context": "bun test test/context-input-cap.test.ts",
     "test:rpc": "python3 test/test-extension-rpc.py",
+    "test:smoke": "python3 test/test-ai-smoke.py",
     "test": "bun test"
   },
   "pi": {

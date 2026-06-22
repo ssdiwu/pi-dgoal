@@ -52,14 +52,17 @@ pi-dgoal/
 
 ## 验证
 
-改动后至少执行：
+改动后按覆盖面从低到高三档执行：
 
 ```bash
-npm run test:rpc      # RPC 加载 + /dgoal 命令注册
+npm run test:rpc      # RPC 加载 + /dgoal 命令注册（python）
 npm run test:context  # 启动背景固化逻辑（bun test）
+npm test              # 全量 bun test
 ```
 
-完整自动续跑和审核行为仍需在 Pi TUI 中用真实模型做人工 smoke test。
+**AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用 `pi -ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展（`-ne` 禁扩展发现、`-ns/-np` 禁 skill/prompt 发现），让主模型真实跑一个多 phase dgoal，覆盖 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。⚠️ 消耗真实 token，需网络与已配置 provider。关键约束：启动闸门与建检依赖 `ui.select` 确认，纯 `-p`/`--mode json` 下 UI 方法是 no-op 会跑不通，必须用 `--mode rpc` + driver 注入确认响应；隔离扩展发现用 `-ne -ns -np`，**不要**设空 `PI_CODING_AGENT_DIR`（会把 provider 凭据一起隔离，pi 拿不到 API key 卡在网络层），凭据靠继承真实配置保留。
+
+**人工 TUI smoke（仍不可省）**：浮层/overlay/modal 渲染、启动闸门确认 UI 的真实交互、终审 rejected 回环等纯渲染与交互行为，仍需在 Pi TUI 用真实模型做人工 smoke test。
 
 ## 发版流程
 
@@ -68,7 +71,7 @@ npm run test:context  # 启动背景固化逻辑（bun test）
 1. 同步版本号：`package.json` + `package-lock.json`（如存在 lock 版本字段）。
 2. 更新 `CHANGELOG.md`：把 `Unreleased` 内容落到 `## [x.y.z] - YYYY-MM-DD`，并保留新的空 `Unreleased` 段。
 3. 确认 `package.json` 版本、`CHANGELOG.md` 版本段、`git tag v<x.y.z>` 三者一致。
-4. 运行验证：至少 `npm test`，并按改动面补 `npm run test:rpc` / `npm run test:context` 或真实 Pi TUI smoke test。
+4. 运行验证：按改动面分层补——至少 `npm test`；涉及工具/状态机/建检循环补 AI 驱动 smoke（`pi --no-extensions -e ./index.ts` 隔离环境 + RPC driver）；涉及 overlay/modal/TUI 交互补人工 TUI smoke。
 5. 提交单一主题 commit，再 `git tag v<x.y.z>`。
 6. 发布：`npm publish`；发布后 `git push && git push --tags`。
 

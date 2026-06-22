@@ -107,9 +107,12 @@ See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the re
 ```bash
 npm test         # bun: full suite
 npm run test:rpc # python: RPC loading + command registration
+npm run test:smoke # python: AI-driven smoke (real model, isolated env) — costs real tokens
 ```
 
 Test files cover data model + persistence, plan reducer (state machine + cycle detection), overlay rendering, startup gate, state machine + prompt, end-to-end integration, tool execute real-path integration, context hardening, and subprocess supervision for detached process-group cleanup.
+
+**AI-driven smoke** (`npm run test:smoke`, `test/test-ai-smoke.py`): drives a real multi-phase dgoal in an isolated env (`pi -ne -e ./index.ts -ns -np --mode rpc`), auto-answering the startup-gate select and tracking the full `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` tool chain. Real model + real tokens, so not in CI.
 
 **TUI interaction behavior** (startup gate confirm UI, real `dgoal_check` subprocess audit content, terminal rejected retry path, aboveEditor widget rendering) still requires a manual smoke test in the Pi TUI with a real model.
 
