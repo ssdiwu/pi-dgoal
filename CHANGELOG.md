@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-06-23
+
 ### Added
 
 - **AI 驱动 smoke（`npm run test:smoke`）**：新增 `test/test-ai-smoke.py`，用 `pi -ne -e ./index.ts -ns -np --mode rpc --no-session` 在隔离环境（临时工作目录 + 只加载本扩展）以真实模型跑通多 phase dgoal 全工具链（`dgoal_propose → dgoal_plan → dgoal_check → dgoal_done`），自动回复启动闸门 `select`（取 `confirmStart` 选项）并追踪每个 `dgoal_*` 工具调用的 `isError`、文件产物与退出信号。补齐离线 RPC 测试（仅加载/命令注册）与人工 TUI smoke 之间的验证档位。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。
