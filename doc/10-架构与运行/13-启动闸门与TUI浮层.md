@@ -37,6 +37,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **heading**:`🎯 <objective 首行> (X/Y)`,X/Y 为 phase 完成数。
 - **每行**:`├─ [符] phase subject`,符 ○ pending / ◐ in_progress / ✓ done / ⚠ blocked;done 的 phase/task 标题文本带删除线,状态字符和树形符号不带(ADR 0009)。
 - **task 默认隐藏**:双可见性轴。跟随 Pi 的 `app.tools.expand`(默认 `Ctrl+O`)展开,看 phase 下 task 细节(含 blockedReason、evidence);浮层底部同一行固定提示快捷键 + 常用命令说明。
+- **不展示建检报告**:aboveEditor 浮层只显示状态与 plan 结构，不承载阶段/终审失败报告；报告是 agent-facing 修复输入，不是持续浮层正文。
 - **A-line i18n 软依赖**:浮层、状态栏、通知、启动闸门确认 UI 等用户可见文案通过 `pi-di18n` bundle 本地化;缺失 `pi-di18n` 时降级为内置中文。模型侧 prompt、tool description、schema description 不在本地化范围,避免改变 agent 行为。
 - **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。
 - **10 行折叠**:浮层自身最多渲 10 行(heading + body + 底部 hint),给 Pi core 的 widget 区域留余量,避免触发 `(widget truncated)`;溢出时保留底部 `Ctrl+O 显示/隐藏 task` hint,并用 `+N more` 摘要。
@@ -51,9 +52,9 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 
 ## `/dgoal s` 详细查询 Modal(v0.4.2+,视觉编码 v0.5+ 见 ADR 0009)
 
-`/dgoal s`（`status` 单字母别名）调 `ctx.ui.custom()` 弹一个 center overlay modal，让用户能按需看完整 plan 状态（goal + 所有 phase + 所有 task）。**与上方持续显示浮层职责正交**——浮层是“持续进度显示”，s 是“按需详细查询”。
+`/dgoal s`（`status` 单字母别名）调 `ctx.ui.custom()` 弹一个 center overlay modal，让用户能按需看完整 plan 状态（goal + 所有 phase + 所有 task）。**与上方持续显示浮层职责正交**——浮层是“持续进度显示”，s 是“按需详细查询”。两者都只展示状态与 plan 结构，**不展示建检报告正文**。
 
-决策依据：形态选型 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`（原 Variant A top-center，v0.5+ 切 center，见追加决策）；视觉编码 `doc/决策档案/0009-tui-visual-encoding-layer-over-status.md`（**层级靠颜色，状态靠字符**，覆盖 ADR 0008 的 emoji+status 色方案）；探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`。
+决策依据：形态选型 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`（原 Variant A top-center，v0.5+ 切 center，见追加决策）；视觉编码 `doc/决策档案/0009-TUI视觉编码改为层级靠颜色状态靠字符.md`（**层级靠颜色，状态靠字符**，覆盖 ADR 0008 的 emoji+status 色方案）；探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`。
 
 形态:
 - **heading 钉顶**:`🎯 <objective 首行> (X/Y) ⏱️ <elapsed>`,accent 色 + bold
@@ -69,4 +70,4 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 
 ## 兜底(已决)
 
-主代理不调 `dgoal_propose`(跑偏没产出 plan)时:降级提示重试 2 次;仍无产出则中止启动(goal 不进 `active`,直接清除),不走"进 loop 自建 plan"的纯自主兜底。详见 `30-路线图` 与 `adr/0002-startup-gate-tool-callback.md`。
+主代理不调 `dgoal_propose`(跑偏没产出 plan)时:降级提示重试 2 次;仍无产出则中止启动(goal 不进 `active`,直接清除),不走"进 loop 自建 plan"的纯自主兜底。详见 `30-路线图` 与 `决策档案/0002-启动闸门与工具回调提交计划.md`。
