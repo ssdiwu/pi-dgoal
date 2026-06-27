@@ -3,6 +3,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  __setCheckSnapshotForTest,
   __setI18nForTest,
   PlanStatusDialog,
   type LoopGoal,
@@ -67,7 +68,7 @@ describe("PlanStatusDialog.render", () => {
     // 期望：上边框(1) + heading(1) + body(1) + hint(1) + 下边框(1) = 5 行
     expect(lines.length).toBe(5);
     // 第一行 = 上边框 + 标题（mockTheme 包装为 <border>...<accent>...<bold>title</bold>...</accent>...</border>）
-    expect(lines[0]).toContain("Dgoal 计划状态 — 顶部浮层");
+    expect(lines[0]).toContain("Dgoal 详细查询 Modal");
     expect(lines[0]).toContain("╭─"); // 上边框起手
     expect(lines[0]).toContain("─╮"); // 上边框收尾
     // 第二行 = heading（钉顶，含 🎯）
@@ -88,7 +89,7 @@ describe("PlanStatusDialog.render", () => {
       const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
       const lines = dlg.render(80);
       expect(lines[0]).toContain("本地化状态弹窗");
-      expect(lines[0]).not.toContain("Dgoal Plan Status — Top overlay");
+      expect(lines[0]).not.toContain("Dgoal Status Modal");
     } finally {
       beforeAllSetI18n();
     }
@@ -101,6 +102,27 @@ describe("PlanStatusDialog.render", () => {
     expect(hint).toContain("ESC/Ctrl+C 关闭");
     expect(hint).not.toContain("↓/j");
     expect(hint).not.toContain("PgDn/PgUp");
+  });
+
+  test("建检运行中时 /dgoal s 展示活性片段而不展示报告正文", () => {
+    __setCheckSnapshotForTest({
+      liveness: "thinking",
+      lastSnippet: "read index.ts",
+      idleSecondsLeft: 119,
+      idleSecondsTotal: 120,
+      attempt: 1,
+      attemptTotal: 3,
+    });
+    try {
+      const dlg = new PlanStatusDialog(goal([p(1, "p1", [], "in_progress")]), mockTheme() as any, () => {});
+      const lines = dlg.render(80);
+      expect(lines.join("\n")).toContain("建检活性");
+      expect(lines.join("\n")).toContain("read index.ts");
+      expect(lines.join("\n")).toContain("第 1/3 次");
+      expect(lines.join("\n")).not.toContain("审核报告正文");
+    } finally {
+      __setCheckSnapshotForTest(undefined);
+    }
   });
 
   test("heading 钉顶：scroll 到第二页 heading 仍在第 2 行", () => {

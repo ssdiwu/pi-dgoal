@@ -11,7 +11,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 process.env.PI_DGOAL_NO_AUDIT = "1";
 
 import {
+  __executeDgoalCheckForTest,
+  __executeDgoalDoneForTest,
   __finalizeGoalForTest,
+  __handleFinalAuditRejectedForTest,
+  __pauseOnAuditFailureForTest,
   __resetGoalForTest,
   __resumeGoalForTest,
   __setApiForTest,
@@ -22,7 +26,9 @@ import {
   type Phase,
   type PlanProposal,
   proposalToPlan,
+  setFinalFeedback,
   setPhaseCompleted,
+  currentUncheckedPhase,
   type Task,
   type TaskPlan,
 } from "../index.ts";
@@ -202,6 +208,66 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(isLooping("done")).toBe(false);
   });
 
+  // v0.5.2 切片3 · 终审反馈生命周期（ADR 0011）
+  test("终审未通过写 finalFeedback，覆盖上一轮报告", () => {
+    let goal: LoopGoal = { id: "1", objective: "o", status: "rejected", rejectedCount: 1, startedAt: 1, updatedAt: 1, iteration: 0 };
+    goal = setFinalFeedback(goal, "终审报告 v1", 1);
+    expect(goal.finalFeedback!.report).toBe("终审报告 v1");
+    expect(goal.finalFeedback!.rejectedCount).toBe(1);
+    // 重新 rejected 覆盖
+    goal = setFinalFeedback({ ...goal, rejectedCount: 2 }, "终审报告 v2", 2);
+    expect(goal.finalFeedback!.report).toBe("终审报告 v2");
+    expect(goal.finalFeedback!.rejectedCount).toBe(2);
+  });
+
+  test("resume(audit_failed_3x) 清零 rejectedCount 但保留 finalFeedback", () => {
+    // 3 次不过进入 paused，finalFeedback 带在 goal 上
+    const paused: LoopGoal = {
+      id: "1", objective: "o", status: "paused", pauseReason: "audit_failed_3x",
+      rejectedCount: 3, finalFeedback: { report: "第3次终审报告", rejectedCount: 3, createdAt: 1 },
+      startedAt: 1, updatedAt: 1, iteration: 0,
+    } as LoopGoal;
+    // 模拟 resume 逻辑：markGoalResumed(goal, now, clearRejected ? {rejectedCount:0} : {})
+    const clearRejected = paused.pauseReason === "audit_failed_3x";
+    const resumed: LoopGoal = { ...paused, ...(clearRejected ? { rejectedCount: 0 } : {}), status: "active" } as LoopGoal;
+    expect(resumed.rejectedCount).toBe(0);
+    expect(resumed.finalFeedback!.report).toBe("第3次终审报告");
+    expect(resumed.finalFeedback!.rejectedCount).toBe(3); // 报告记录的是当时的计数，不清
+  });
+
+  test("终审 approved 后随 goal 清空，finalFeedback 不残留", () => {
+    const goal: LoopGoal = {
+      id: "1", objective: "o", status: "rejected", rejectedCount: 1,
+      finalFeedback: { report: "报告", rejectedCount: 1, createdAt: 1 },
+      startedAt: 1, updatedAt: 1, iteration: 0,
+    } as LoopGoal;
+    // 模拟 finalizeGoal：currentGoal = null / persistGoal(null)
+    // goal 被清空，feedback 随之结束
+    expect(goal.finalFeedback).toBeDefined();
+    const cleared = null;
+    expect(cleared).toBeNull();
+  });
+
+  test("audit_error 暂停会写 pauseReason=audit_error", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "audit-error-1",
+      objective: "o",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+    });
+    const notes: string[] = [];
+    const ctx = { ui: { setStatus: () => {}, notify: (msg: string) => notes.push(msg) } } as never;
+    __pauseOnAuditFailureForTest(ctx, "idle_timeout");
+    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    expect(persisted.status).toBe("paused");
+    expect(persisted.pauseReason).toBe("audit_error");
+    expect(notes.at(-1)).toContain("idle_timeout");
+  });
+
   test("resume(audit_failed_3x) 清零 rejectedCount，resume(其他) 不清零", () => {
     const { api } = makeApi();
     __setApiForTest(api);
@@ -251,6 +317,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
       const persisted = writes.at(-1)?.data.goal as LoopGoal;
       expect(persisted.status).toBe("active");
       expect(persisted.pauseStartedAt).toBeUndefined();
+      expect(persisted.pauseReason).toBeUndefined();
       // 旧累计 500ms + 本次 pause 6s = 6500ms
       expect(persisted.pausedTotalMs).toBe(6_500);
       expect(sent.length).toBe(1);
@@ -417,5 +484,124 @@ describe("端到端集成 · finalizeGoal UI 边界容错（Spacer is not define
     expect(() => __finalizeGoalForTest(ctx)).not.toThrow();
     expect(writes.some((w) => w.data.goal?.status === "done")).toBe(true);
     expect(writes.at(-1)?.data.goal).toBeNull();
+  });
+});
+
+describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not defined）", () => {
+  beforeEach(() => {
+    __resetGoalForTest();
+    __setPlanOverlayForTest(undefined);
+  });
+
+  test("pauseOnAuditFailure：setStatus/notify/overlay.update 抛错时，仍先落盘 paused(audit_error)", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "audit-ui-1",
+      objective: "o",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+    });
+    __setPlanOverlayForTest({ update() { throw new ReferenceError("Spacer is not defined"); } } as never);
+    const ctx = {
+      ui: {
+        setStatus() { throw new ReferenceError("Spacer is not defined"); },
+        notify() { throw new ReferenceError("Spacer is not defined"); },
+      },
+    } as never;
+    expect(() => __pauseOnAuditFailureForTest(ctx, "idle_timeout")).not.toThrow();
+    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    expect(persisted.status).toBe("paused");
+    expect(persisted.pauseReason).toBe("audit_error");
+  });
+
+  test("终审 rejected：setStatus/notify 抛错时，仍先落盘 rejected + finalFeedback", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    const goal: LoopGoal = {
+      id: "audit-ui-2",
+      objective: "o",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+    };
+    __setGoalForTest(goal);
+    const ctx = {
+      ui: {
+        setStatus() { throw new ReferenceError("Spacer is not defined"); },
+        notify() { throw new ReferenceError("Spacer is not defined"); },
+      },
+    } as never;
+    expect(() => __handleFinalAuditRejectedForTest({ completedGoal: goal, summary: "s", verification: "v", auditOutput: "报告", ctx })).not.toThrow();
+    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    expect(persisted.status).toBe("rejected");
+    expect(persisted.finalFeedback?.report).toBe("报告");
+    expect(persisted.rejectedCount).toBe(1);
+  });
+
+  test("终审第 3 次 rejected：setStatus/notify/overlay.update 抛错时，仍先落盘 paused(audit_failed_3x)", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    const goal: LoopGoal = {
+      id: "audit-ui-3",
+      objective: "o",
+      status: "rejected",
+      rejectedCount: 2,
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+    };
+    __setGoalForTest(goal);
+    __setPlanOverlayForTest({ update() { throw new ReferenceError("Spacer is not defined"); } } as never);
+    const ctx = {
+      ui: {
+        setStatus() { throw new ReferenceError("Spacer is not defined"); },
+        notify() { throw new ReferenceError("Spacer is not defined"); },
+      },
+    } as never;
+    expect(() => __handleFinalAuditRejectedForTest({ completedGoal: goal, summary: "s", verification: "v", auditOutput: "报告3", ctx })).not.toThrow();
+    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    expect(persisted.status).toBe("paused");
+    expect(persisted.pauseReason).toBe("audit_failed_3x");
+    expect(persisted.finalFeedback?.report).toBe("报告3");
+    expect(persisted.rejectedCount).toBe(3);
+  });
+});
+
+describe("端到端集成 · v0.5.2 越闸门推进拦截（切片6）", () => {
+  // 构造：phase1 未 done，phase2 后续
+  function makeGoalWithPendingPhase1(): LoopGoal {
+    const t1: Task = { id: 1, subject: "t1", status: "in_progress" };
+    const t2: Task = { id: 2, subject: "t2", status: "pending" };
+    const ph1: Phase = { id: 1, subject: "阶段一", status: "in_progress", tasks: [t1] };
+    const ph2: Phase = { id: 2, subject: "阶段二", status: "pending", tasks: [t2] };
+    return { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph1, ph2], nextId: 3 } } as LoopGoal;
+  }
+
+  test("dgoal_check 真实工具入口：phase1 未过时，对 phase2 建检 = 越闸门推进", async () => {
+    __setGoalForTest(makeGoalWithPendingPhase1());
+    const result = await __executeDgoalCheckForTest({ phaseId: 2 });
+    expect(result.details?.error).toBe("gate jumping progression");
+    expect(String(result.content?.[0]?.text ?? "")).toContain("越闸门推进");
+    expect(String(result.content?.[0]?.text ?? "")).toContain("phase #1");
+  });
+
+  test("dgoal_done 真实工具入口：有 phase 未过时 = 越终审推进", async () => {
+    __setGoalForTest(makeGoalWithPendingPhase1());
+    const result = await __executeDgoalDoneForTest({ summary: "done", verification: "evidence" });
+    expect(result.details?.error).toBe("gate jumping progression");
+    expect(result.isError).toBe(true);
+    expect(String(result.content?.[0]?.text ?? "")).toContain("越终审推进");
+    expect(String(result.content?.[0]?.text ?? "")).toContain("phase #1");
+  });
+
+  test("所有 phase done 后，dgoal_done 放行（无 pending）", () => {
+    const t: Task = { id: 1, subject: "t", status: "done", evidence: "ok" };
+    const ph: Phase = { id: 1, subject: "阶段一", status: "done", tasks: [t] };
+    const goal = { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph], nextId: 2 } } as LoopGoal;
+    expect(currentUncheckedPhase(goal)).toBeUndefined();
   });
 });

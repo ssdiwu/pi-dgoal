@@ -1,13 +1,14 @@
 # 13 - 启动闸门与 TUI 浮层
 
-> `/dgoal` 启动流程与计划浮层。决策依据见 `adr/0002`。
+> `/dgoal` 启动流程与计划浮层。决策依据见 `../决策档案/0002-启动闸门与工具回调提交计划.md`。
 
 ## 启动闸门流程
 
 ```
-/dgoal <objective>
+/dgoal <objective>            # 路径 A：显式目标启动
+/dgoal                       # 路径 B：承接前文共识启动（v0.5.2）
   ↓
-主代理读代码 + 整理 plan(用 dgoal_propose 提交 goal + phases + 可选初始 task)
+主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 可选初始 task)
   ↓
 dgoal_propose execute:存参数 + 触发确认 UI
   ↓
@@ -20,6 +21,13 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
   ├─ 调了 → 走确认 UI
   └─ 没调 → 兜底(见下,已决)
 ```
+
+### 裸 `/dgoal`（路径 B，v0.5.2）
+
+- **目的**：grill / 讨论已经在前文把目标对齐清楚时，不要求用户再手打一遍 objective。
+- **路由**：裸 `/dgoal`（空 args）从原来的 `status` 改为 `start`；看状态统一用显式 `/dgoal s`。
+- **承接方式**：命令层只发“承接前文启动”的信号，`summarizeContext` 仍只产 `contextSummary` 背景；真正的 `objective` 由主代理在 `dgoal_propose` 里归纳并提交。
+- **前文为空时不硬启动**：如果当前 session 没有可承接的前文共识，就提示改用 `/dgoal <objective>` 或先对齐后再裸 `/dgoal`。
 
 ### 为什么是启动闸门(不是纯自主)
 
@@ -36,7 +44,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **注册**:`pi.setWidget("dgoal-plan", factory, { placement: "aboveEditor" })`
 - **heading**:`🎯 <objective 首行> (X/Y)`,X/Y 为 phase 完成数。
 - **每行**:`├─ [符] phase subject`,符 ○ pending / ◐ in_progress / ✓ done / ⚠ blocked;done 的 phase/task 标题文本带删除线,状态字符和树形符号不带(ADR 0009)。
-- **task 默认隐藏**:双可见性轴。跟随 Pi 的 `app.tools.expand`(默认 `Ctrl+O`)展开,看 phase 下 task 细节(含 blockedReason、evidence);浮层底部同一行固定提示快捷键 + 常用命令说明。
+- **task 默认隐藏**:双可见性轴。持续显示浮层的展开态跟随 Pi 的 `app.tools.expand`(默认 `Ctrl+O`)，但只展开 `pending / in_progress` phase 的 task；`done phase` 持久显示标题行，不再在持续显示展开态里露出其 task。浮层底部同一行固定提示快捷键 + 常用命令说明。
 - **不展示建检报告**:aboveEditor 浮层只显示状态与 plan 结构，不承载阶段/终审失败报告；报告是 agent-facing 修复输入，不是持续浮层正文。
 - **A-line i18n 软依赖**:浮层、状态栏、通知、启动闸门确认 UI 等用户可见文案通过 `pi-di18n` bundle 本地化;缺失 `pi-di18n` 时降级为内置中文。模型侧 prompt、tool description、schema description 不在本地化范围,避免改变 agent 行为。
 - **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。
@@ -52,13 +60,20 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 
 ## `/dgoal s` 详细查询 Modal(v0.4.2+,视觉编码 v0.5+ 见 ADR 0009)
 
-`/dgoal s`（`status` 单字母别名）调 `ctx.ui.custom()` 弹一个 center overlay modal，让用户能按需看完整 plan 状态（goal + 所有 phase + 所有 task）。**与上方持续显示浮层职责正交**——浮层是“持续进度显示”，s 是“按需详细查询”。两者都只展示状态与 plan 结构，**不展示建检报告正文**。
+`/dgoal s`（`status` 单字母别名）调 `ctx.ui.custom()` 弹一个 center overlay modal，让用户能按需看完整 plan 细节（goal + 所有 phase + 所有 task）。**与上方持续显示浮层职责正交**——浮层是“持续进度显示”，s 是“按需详细查询”。持续显示浮层走收敛视图，详细查询 Modal 保留全量 phase/task 细节；两者都不展示建检报告正文。
+
+### 建检反馈的可见性边界（v0.5.2）
+
+- 原始建检/终审失败报告会通过 system prompt 的 `<check_feedback>` block 注入给主 agent，作为后续修复输入。
+- 注入顺序：`<loop_goal>` → `<loop_context>` → `<loop_plan>` → `<check_feedback>` → 循环规则。
+- **用户侧 TUI 不复读报告正文**：aboveEditor 浮层、`/dgoal s` modal、底部状态栏都不渲染 `report`，避免把 agent-facing 修复材料变成持续 UI 噪音。
+- 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running` / `idle Ns/120s`），但这仍属于运行时状态，不是报告正文。
 
 决策依据：形态选型 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`（原 Variant A top-center，v0.5+ 切 center，见追加决策）；视觉编码 `doc/决策档案/0009-TUI视觉编码改为层级靠颜色状态靠字符.md`（**层级靠颜色，状态靠字符**，覆盖 ADR 0008 的 emoji+status 色方案）；探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`。
 
 形态:
 - **heading 钉顶**:`🎯 <objective 首行> (X/Y) ⏱️ <elapsed>`,accent 色 + bold
-- **body 可滚动**(层级靠颜色,状态靠字符):每 phase 一行(前缀统一状态字符 `○/◐/✓/⚠` + phase 层级基色 text),phase 下 task 缩进(`│    ○/◐/✓/⚠` + task 层级基色 dim);done 的 phase/task 标题文本带删除线,状态字符和树形符号不带;行内后缀说明(`activeForm` 用 `(...)`、`blockedReason` 用 `[...]`)作为辅助信息弱化显示,不参与删除线
+- **body 可滚动**(层级靠颜色,状态靠字符):每 phase 一行(前缀统一状态字符 `○/◐/✓/⚠` + phase 层级基色 text),phase 下 task 缩进(`│    ○/◐/✓/⚠` + task 层级基色 dim);详细查询 Modal 保留全量 phase/task 细节，包含 `done phase` 的 task；done 的 phase/task 标题文本带删除线,状态字符和树形符号不带;行内后缀说明(`activeForm` 用 `(...)`、`blockedReason` 用 `[...]`)作为辅助信息弱化显示,不参与删除线
 - **底部 hint**:内容超过可见高度时显示 offset 指示 + 滚动键位;短内容 / 空状态只显示 `ESC/Ctrl+C` 关闭提示。
 - **滚动**:vim 风格 `j` 下、`k` 上;`↑↓` 方向键、`PgDn/PgUp` 跳 10、`End/G` 跳底、`Home/g` 跳顶、`ESC` 退出
 - **overlay 配置**：`anchor: "center"`, `width: "100%"`, `maxHeight: "85%"`, `margin: 1`（原 top-center，v0.5+ 切 center，见 ADR 0008 追加决策）

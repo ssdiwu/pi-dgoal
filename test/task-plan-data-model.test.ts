@@ -8,6 +8,11 @@ import {
   isLoopGoal,
   loadGoal,
   persistGoal,
+  setPhaseFeedback,
+  clearPhaseFeedback,
+  setFinalFeedback,
+  setPhaseCompleted,
+  currentUncheckedPhase,
   type LoopGoal,
   type Phase,
   type Task,
@@ -215,5 +220,115 @@ describe("切片1 · 三层内容数据结构", () => {
     const phase: Phase = { id: 1, subject: "p", status: "blocked", tasks: [task] };
     const goal = makeGoalWithPlan({ plan: { phases: [phase], nextId: 2 } });
     expect(goal.plan!.phases[0].tasks[0].blockedReason).toBe("缺 prod token");
+  });
+});
+
+// v0.5.2 切片1 · 建检反馈纯函数（ADR 0011）
+describe("v0.5.2 · 建检反馈纯函数", () => {
+  test("setPhaseFeedback 写入并覆盖最新报告", () => {
+    const goal = makeGoalWithPlan();
+    const g1 = setPhaseFeedback(goal, 1, "报告 v1");
+    expect(g1.phaseFeedbackById!["1"].report).toBe("报告 v1");
+    expect(g1.phaseFeedbackById!["1"].phaseId).toBe(1);
+    // 同 phase 再次 rejected 覆盖为最新报告
+    const g2 = setPhaseFeedback(g1, 1, "报告 v2");
+    expect(g2.phaseFeedbackById!["1"].report).toBe("报告 v2");
+    expect(Object.keys(g2.phaseFeedbackById!)).toEqual(["1"]);
+  });
+
+  test("setPhaseFeedback 不 mutate 入参 goal", () => {
+    const goal = makeGoalWithPlan();
+    setPhaseFeedback(goal, 1, "报告");
+    expect(goal.phaseFeedbackById).toBeUndefined();
+  });
+
+  test("clearPhaseFeedback 清除对应 phase，保留其他 phase", () => {
+    const goal = makeGoalWithPlan();
+    const g1 = setPhaseFeedback(goal, 1, "phase1 报告");
+    const g2 = setPhaseFeedback(g1, 2, "phase2 报告");
+    const g3 = clearPhaseFeedback(g2, 1);
+    expect(g3.phaseFeedbackById!["1"]).toBeUndefined();
+    expect(g3.phaseFeedbackById!["2"].report).toBe("phase2 报告");
+  });
+
+  test("clearPhaseFeedback 对无反馈 goal 是 no-op", () => {
+    const goal = makeGoalWithPlan();
+    const cleared = clearPhaseFeedback(goal, 1);
+    expect(cleared).toBe(goal);
+  });
+
+  test("setFinalFeedback 记录报告与 rejectedCount", () => {
+    const goal = makeGoalWithPlan();
+    const g1 = setFinalFeedback(goal, "终审报告", 2);
+    expect(g1.finalFeedback!.report).toBe("终审报告");
+    expect(g1.finalFeedback!.rejectedCount).toBe(2);
+  });
+
+  test("currentUncheckedPhase 返回第一个未 done 的 phase", () => {
+    const task: Task = { id: 1, subject: "t", status: "done" };
+    const ph1: Phase = { id: 1, subject: "已完成", status: "done", tasks: [task] };
+    const ph2: Phase = { id: 2, subject: "进行中", status: "in_progress", tasks: [{ id: 2, subject: "t2", status: "in_progress" }] };
+    const goal = makeGoalWithPlan({ plan: { phases: [ph1, ph2], nextId: 3 } });
+    const current = currentUncheckedPhase(goal);
+    expect(current?.id).toBe(2);
+  });
+
+  test("currentUncheckedPhase 全 done 时返回 undefined", () => {
+    const task: Task = { id: 1, subject: "t", status: "done" };
+    const ph: Phase = { id: 1, subject: "已完成", status: "done", tasks: [task] };
+    const goal = makeGoalWithPlan({ plan: { phases: [ph], nextId: 2 } });
+    expect(currentUncheckedPhase(goal)).toBeUndefined();
+  });
+
+  test("phaseFeedbackById 旧 goal 无此字段仍可 isLoopGoal（向后兼容）", () => {
+    const legacy = makeLegacyGoal();
+    expect(isLoopGoal(legacy)).toBe(true);
+    expect(legacy.phaseFeedbackById).toBeUndefined();
+    expect(legacy.finalFeedback).toBeUndefined();
+  });
+
+  test("带 feedback 的 goal persist 后 load 能完整恢复 phase 和 final feedback", () => {
+    __resetGoalForTest();
+    let captured: { type: string; data: { goal: LoopGoal | null } } | undefined;
+    __setApiForTest({
+      appendEntry: (type, data) => {
+        captured = { type, data: data as { goal: LoopGoal | null } };
+      },
+    });
+
+    const original = setFinalFeedback(setPhaseFeedback(makeGoalWithPlan(), 1, "phase 报告"), "final 报告", 1);
+    persistGoal(original);
+
+    const ctx = makeCtx([{ type: "custom", customType: "dgoal-state", data: captured!.data }]);
+    const restored = loadGoal(ctx as never);
+
+    expect(restored).not.toBeUndefined();
+    expect(restored!.phaseFeedbackById!["1"].report).toBe("phase 报告");
+    expect(restored!.phaseFeedbackById!["1"].phaseId).toBe(1);
+    expect(restored!.finalFeedback!.report).toBe("final 报告");
+    expect(restored!.finalFeedback!.rejectedCount).toBe(1);
+  });
+
+  test("阶段建检序列：rejected 写 feedback，approved 清 feedback", () => {
+    // 模拟 dgoal_check 的 feedback 写入/清理序列（切片2 行为契约）
+    let goal = makeGoalWithPlan();
+    // task 全终态以备 approved
+    const doneTask: Task = { id: 1, subject: "t", status: "done", evidence: "ok" };
+    goal = { ...goal, plan: { phases: [{ id: 1, subject: "p", status: "in_progress", tasks: [doneTask] }], nextId: 2 } };
+
+    // 1. 建检 rejected：写 phase feedback
+    goal = setPhaseFeedback(goal, 1, "phase1 未通过报告");
+    expect(goal.phaseFeedbackById!["1"].report).toBe("phase1 未通过报告");
+
+    // 2. 修复后重新建检 approved：setPhaseCompleted 后清 feedback
+    const r = setPhaseCompleted(goal, 1);
+    expect(r.op.kind).not.toBe("error");
+    goal = clearPhaseFeedback(r.goal, 1);
+    expect(goal.phaseFeedbackById!["1"]).toBeUndefined();
+
+    // 3. 异常/aborted 不写 feedback（契约：只有有结论的未通过才写）
+    // 这里用纯函数无法模拟异常路径，但行为上异常分支不调 setPhaseFeedback，
+    // 故 phaseFeedbackById 保持空
+    expect(goal.phaseFeedbackById!["1"]).toBeUndefined();
   });
 });

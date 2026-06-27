@@ -22,6 +22,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
 | `startup-gate.test.ts` | 切片4：启动闸门纯函数—— `validateProposalInput`、`formatProposalForConfirm`、`buildProposalConfirmationOptions`、确认 UI 摘要/明细切换。 |
+| `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=120`、`isAuditorError` 三态判定、`runCheckWithRetry` 透明重试（approved/rejected 不重试、auditor_error 3 次）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
 | `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done，`finalizeGoal` UI 边界容错，blockedBy DAG。 |

@@ -4,7 +4,7 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **v0.2.0**：Task Plan（goal/phase/task）+ 启动闸门 + 实时浮层 + 建检循环 + 终审。详见 `doc/30-路线图`。
+> **v0.5.2**：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动。详见 `CHANGELOG.md` 与 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。
 
 ## 安装
 
@@ -29,19 +29,21 @@ pi install npm:pi-dgoal
 /dgoal 修复当前项目里的 failing tests，并运行测试验证
 ```
 
+如果前文里已经把目标对齐清楚，也可以直接用裸 `/dgoal` 承接前文共识进入启动闸门；如果当前没有可承接的前文，dgoal 不会硬启动，而是提示改用 `/dgoal <objective>`。看状态统一用显式 `/dgoal s`，不再复用裸 `/dgoal`。
+
 启动闸门对话框默认只展示阶段级摘要（goal + verification + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。
 
 dgoal 执行中：
 
 - agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → done | blocked`）
 - 每个 phase 完成都通过 `dgoal_check`（独立子进程，带受限核验工具，含 `bash`）独立审核
-- editor 上方实时浮层显示 phase 进度；task 默认隐藏，跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`）展开，底部同一行提示快捷键与常用命令说明
+- editor 上方的持续显示浮层展示 phase 进度；task 默认隐藏，持续显示展开态跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`），但只展开 pending / in_progress phase；done phase 仍持久显示标题行，不再展开其 task。底部同一行提示快捷键与常用命令说明
 - 安装 `pi-di18n` 时，浮层、状态栏、通知和启动闸门等用户可见文案可跟随 locale；模型侧 prompt 和工具 schema 保持不变
 
 控制目标：
 
 ```text
-/dgoal status | s   # center modal 查看完整 plan 状态；没有 active goal 时显示空 dgoal 状态
+/dgoal status | s   # 详细查询 Modal，查看完整 plan 细节；没有 active goal 时显示空 dgoal 状态
 /dgoal pause  | p   # 停止自动续跑（保留 goal）
 /dgoal resume | r   # 恢复暂停的 goal
 /dgoal clear  | c   # 清除当前 session 的 goal
@@ -57,8 +59,8 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，dg
 |---|---|
 | `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks，用户确认后才开始执行 dgoal |
 | `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
-| `dgoal_check` | phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具），最后 phase 调用即终审 |
-| `dgoal_done` | 声明 goal 完成，内部触发终审，是关闭 goal 的唯一方式 |
+| `dgoal_check` | phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具）；即使是最后一个 phase，也只负责该 phase 建检 |
+| `dgoal_done` | 在所有 phase 都通过 `dgoal_check` 后声明 goal 完成，内部触发 goal 级终审，是关闭 goal 的唯一方式 |
 
 ## 设计边界
 
@@ -85,16 +87,16 @@ pending ──→ active ──→ done                # 正常路径
 
 ## 完成审核
 
-`dgoal_done` 走 `dgoal_check` 终审模式：独立 `pi` 子进程，fresh 上下文，受限核验工具（`read`、`grep`、`find`、`ls`、`bash`）。
+`dgoal_done` 复用与 phase 建检相同的独立审核运行时，但作用在 goal 级终审：独立 `pi` 子进程，fresh 上下文，受限核验工具（`read`、`grep`、`find`、`ls`、`bash`）。
 
 ```text
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
-- 拒绝：goal 进 `rejected`，审核报告注入对话，每轮 prompt 钉着未过问题；连续 3 次拒绝 → 暂停，`/dgoal resume` 清零重试
-- 审核出错 / 中断 / 空闲超时 / 无结论：goal 安全暂停，`/dgoal resume` 继续
-- 审核过程会通过工具增量更新回传；即使中途停下，也会尽量返回部分审核输出
+- 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
+- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`），工具内部先透明重试最多 3 次；仍失败才安全暂停，`/dgoal resume` 继续
+- 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` / `idle Ns/120s` 等活性信息；即使中途停下，也会尽量返回部分审核输出
 - 审核报告更接近验收单：GWT 风格的 PASS / FAIL / BLOCKER 条目，加代码与文档一致性检查
 - 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核（仅调试）
 
@@ -127,7 +129,7 @@ pi-dgoal/
 │   ├── 30-路线图/                 ← 路线图
 │   ├── 40-版本实施方案/           ← 当前版本
 │   ├── 90-归档/                   ← 历史归档
-│   └── adr/                       ← 架构决策记录
+│   └── 决策档案/                  ← 架构决策记录
 ├── package.json
 ├── index.ts                       ← 单文件扩展（约 3040 行）
 └── test/

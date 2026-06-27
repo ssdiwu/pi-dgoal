@@ -35,6 +35,18 @@ describe("切片4 · validateProposalInput（verification 必填，ADR 0007）",
     expect(r!.error).toBe("no objective");
   });
 
+  test("validateProposalInput 的固定错误文案可被英文 i18n 覆盖", () => {
+    __setI18nForTest({
+      t: (key: string) => key.endsWith(".proposal.validate.noObjective") ? "proposal must include an objective (goal summary)." : undefined,
+    });
+    try {
+      const r = validateProposalInput({ objective: "", verification: "v", phaseCount: 1 });
+      expect(r?.message).toBe("proposal must include an objective (goal summary).");
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+
   test("phases 为空被拒（no phases，向后兼容）", () => {
     const r = validateProposalInput({ objective: "o", verification: "v", phaseCount: 0 });
     expect(r!.error).toBe("no phases");

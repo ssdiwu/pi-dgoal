@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 3 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __resetGoalForTest, __setGoalForTest, __setI18nForTest, PlanOverlay, renderPlanLines, type LoopGoal, type Phase, type Task, type TaskPlan } from "../index.ts";
+import { __resetGoalForTest, __setCheckSnapshotForTest, __setGoalForTest, __setI18nForTest, PlanOverlay, renderPlanLines, type LoopGoal, type Phase, type Task, type TaskPlan } from "../index.ts";
 
 function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
   return { id, subject, status, ...extra };
@@ -157,17 +157,40 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
   });
 });
 
+describe("切片3 · 建检活性片段", () => {
+  test("有运行时建检快照时，aboveEditor 浮层展示轻量活性片段但不展示报告正文", () => {
+    __setCheckSnapshotForTest({
+      liveness: "tool_running",
+      currentTool: "read",
+      idleSecondsLeft: 118,
+      idleSecondsTotal: 120,
+      attempt: 2,
+      attemptTotal: 3,
+    });
+    try {
+      const g = goal([p(1, "阶段A", [], "in_progress")]);
+      const lines = renderPlanLines(g, noHide);
+      expect(lines.some((l) => l.includes("建检活性"))).toBe(true);
+      expect(lines.some((l) => l.includes("read"))).toBe(true);
+      expect(lines.some((l) => l.includes("第 2/3 次"))).toBe(true);
+      expect(lines.some((l) => l.includes("报告正文"))).toBe(false);
+    } finally {
+      __setCheckSnapshotForTest(undefined);
+    }
+  });
+});
+
 describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
   test("expandTasks=false 不显示 task", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
     const lines = renderPlanLines(g, noHide);
     expect(lines.some((l) => l.includes("task1"))).toBe(false);
-    expect(lines.at(-1)).toContain("Ctrl+O 显示 task");
+    expect(lines.at(-1)).toContain("Ctrl+O 展开持续显示（待办/进行中 phase）");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
-  test("expandTasks=true 显示 task（缩进 + 符号）", () => {
+  test("expandTasks=true 显示未完成 phase 的 task（缩进 + 符号）", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress", { activeForm: "正在做" })], "in_progress")]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
@@ -175,12 +198,12 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     const taskLine = lines.find((l) => l.includes("task1"))!;
     expect(taskLine).toContain("│");
     expect(taskLine).toContain("◐");
-    expect(taskLine).toContain("(正在做)"); // activeForm
-    expect(lines.at(-1)).toContain("Ctrl+O 隐藏 task");
+    expect(taskLine).toContain("(正在做)");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起持续显示展开态");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
-  test("done task 显示删除线", () => {
+  test("进行中 phase 内的 done task 在展开态仍显示删除线", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "done")], "in_progress")]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
@@ -190,13 +213,26 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     expect(taskLine).toContain("\u001b[29m");
   });
 
+  test("done phase 持久显示标题，但展开态不再显示其 task", () => {
+    __setI18nForTest(undefined);
+    const g = goal([
+      p(1, "已完成阶段", [t(1, "done-task", "done")], "done"),
+      p(2, "当前阶段", [t(2, "active-task", "in_progress")], "in_progress"),
+    ]);
+    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    expect(lines.some((l) => l.includes("已完成阶段"))).toBe(true);
+    expect(lines.some((l) => l.includes("当前阶段"))).toBe(true);
+    expect(lines.some((l) => l.includes("done-task"))).toBe(false);
+    expect(lines.some((l) => l.includes("active-task"))).toBe(true);
+  });
+
   test("pi-di18n 可覆盖浮层提示为英文", () => {
     __setI18nForTest({
       t(fullKey, params) {
         const messages: Record<string, string> = {
           "dgoal.overlay.commands": "/dgoal status | pause | resume | clear",
-          "dgoal.overlay.showTasks": "⌨ Ctrl+O show tasks · {commands}",
-          "dgoal.overlay.hideTasks": "⌨ Ctrl+O hide tasks · {commands}",
+          "dgoal.overlay.showTasks": "⌨ Ctrl+O expand live overlay · {commands}",
+          "dgoal.overlay.hideTasks": "⌨ Ctrl+O collapse expanded live overlay · {commands}",
           "dgoal.overlay.more": "└─ +{count} more",
         };
         return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
@@ -205,7 +241,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     try {
       const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
       const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: false });
-      expect(lines.at(-1)).toContain("Ctrl+O show tasks");
+      expect(lines.at(-1)).toContain("Ctrl+O expand live overlay");
       expect(lines.at(-1)).toContain("/dgoal status | pause | resume | clear");
     } finally {
       __setI18nForTest(undefined);
@@ -221,7 +257,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     ]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines.at(-1)).toContain("Ctrl+O 隐藏 task");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起持续显示展开态");
     expect(lines.at(-2)).toContain("more");
   });
 });

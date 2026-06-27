@@ -4,7 +4,7 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.2.0**: Task Plan (goal/phase/task) with startup gate + live overlay + build-check loop + final audit. See [CHANGELOG](#) or `doc/30-路线图`.
+> **v0.5.2**: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover. See `CHANGELOG.md` and `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.
 
 ## Install
 
@@ -33,19 +33,21 @@ Start a goal with a Task Plan:
 /dgoal Fix the failing tests in this project and verify the result
 ```
 
+Or, after you've already aligned the goal in the current conversation, use bare `/dgoal` to carry that prior discussion into the startup gate. If there is no prior discussion to carry, dgoal does not hard-start; it asks for an explicit objective instead. Use explicit `/dgoal s` (not bare `/dgoal`) to view status.
+
 The startup gate dialog shows a phase-level summary by default (goal + verification + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before dgoal execution begins.
 
 During dgoal execution:
 
 - The agent updates task status via `dgoal_plan` (`pending → in_progress → done | blocked`).
 - Each phase completion is independently audited via `dgoal_check` (isolated subprocess with limited verification tools, including `bash`).
-- A live overlay above the editor shows phase progress; tasks default-hidden, follow Pi's `app.tools.expand` action (default `Ctrl+O`) when expanded, and show a single bottom line with the shortcut plus common command descriptions.
+- A live widget above the editor shows phase progress; tasks are hidden by default. Its expanded state follows Pi's `app.tools.expand` action (default `Ctrl+O`) and only expands pending / in-progress phases, while done phases stay persistently visible as title rows only. The bottom line keeps the shortcut plus common command descriptions.
 - User-facing overlay, status, notification, and startup-gate text can follow `pi-di18n` when that extension is installed; model-facing prompts and tool schemas stay unchanged.
 
 Control the goal:
 
 ```text
-/dgoal status | s   # center modal for full plan status, or an empty dgoal state when none is active
+/dgoal status | s   # detailed query modal for full plan details, or an empty dgoal state when none is active
 /dgoal pause  | p   # stop auto-continuation (keep goal)
 /dgoal resume | r   # resume paused goal
 /dgoal clear  | c   # remove goal from session
@@ -61,8 +63,8 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 |---|---|
 | `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before dgoal execution begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
-| `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Also the final-audit mechanism when called on the last phase. |
-| `dgoal_done` | Declare goal completion. Triggers final audit internally; the only way to close a goal. |
+| `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Even on the last phase, it only checks that phase. |
+| `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. Triggers the goal-level final audit internally; the only way to close a goal. |
 
 ## Design Boundaries
 
@@ -89,16 +91,16 @@ See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the re
 
 ## Completion Audit
 
-`dgoal_done` runs `dgoal_check` in final-audit mode: an isolated `pi` subprocess with fresh context and limited verification tools (`read`, `grep`, `find`, `ls`, `bash`).
+`dgoal_done` runs the same isolated audit runtime used by phase checks, but at the goal level: an isolated `pi` subprocess with fresh context and limited verification tools (`read`, `grep`, `find`, `ls`, `bash`).
 
 ```text
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
 - Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
-- Rejected: goal enters `rejected`; the audit report is injected and pinned to each subsequent turn's prompt. Three consecutive rejections pause the goal; `/dgoal resume` clears the counter and retries.
-- Audit error / abort / idle-timeout / no clear decision: goal is safely paused; `/dgoal resume` continues.
-- Audit progress is streamed back through the tool call; if the check stops mid-way, partial output is still returned.
+- Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.
+- Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`) after up to 3 transparent retries; the goal is then safely paused and `/dgoal resume` continues.
+- Audit progress is streamed back through the tool call, including liveness updates such as `thinking`, `tool_running`, and `idle Ns/120s`; if the check stops mid-way, partial output is still returned.
 - Audit reports use a stricter acceptance style: GWT-like PASS / FAIL / BLOCKER items plus a code-and-doc consistency section.
 - Escape hatch: `PI_DGOAL_NO_AUDIT=1` skips the audit (debugging only).
 
@@ -131,7 +133,7 @@ pi-dgoal/
 │   ├── 30-路线图/                 ← roadmap
 │   ├── 40-版本实施方案/           ← active versions
 │   ├── 90-归档/                   ← historical
-│   └── adr/                       ← architecture decision records
+│   └── 决策档案/                  ← architecture decision records
 ├── package.json
 ├── index.ts                       ← single-file extension (~3040 lines)
 └── test/

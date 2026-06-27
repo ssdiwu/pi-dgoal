@@ -11,9 +11,15 @@ import { beforeEach, describe, expect, test } from "bun:test";
 process.env.PI_DGOAL_NO_AUDIT = "1";
 
 import {
+  __executeDgoalCheckForTest,
+  __executeDgoalPlanForTest,
+  __executeDgoalProposeForTest,
   __resetGoalForTest,
   __setApiForTest,
+  __setGoalForTest,
+  __setI18nForTest,
   applyPlanMutation,
+  formatPlanResult,
   proposalToPlan,
   type LoopGoal,
   type PlanProposal,
@@ -179,6 +185,60 @@ describe("工具 execute 真实端到端 · 涌现分解：长链 blockedBy", ()
   });
 });
 
+describe("工具 execute 用户可见固定文案 · i18n 覆盖", () => {
+  test("formatPlanResult 可被英文 i18n 覆盖", () => {
+    __setI18nForTest({
+      t: (key: string, params?: Record<string, string | number>) => {
+        if (key === "dgoal.tool.plan.created") return `Created task #${params?.taskId} in phase #${params?.phaseId}`;
+        return undefined;
+      },
+    });
+    try {
+      expect(formatPlanResult({ kind: "create", taskId: 3, phaseId: 2 })).toBe("Created task #3 in phase #2");
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+
+  test("dgoal_propose 无 pending goal 的固定结果文案可被英文 i18n 覆盖", async () => {
+    __resetGoalForTest();
+    __setI18nForTest({
+      t: (key: string) => key === "dgoal.tool.propose.noPendingGoal" ? "There is no pending /dgoal goal (startup gate is not active)." : undefined,
+    });
+    try {
+      const result = await __executeDgoalProposeForTest({ objective: "o", phases: [{ subject: "p" }], verification: "v" });
+      expect(String(result.content?.[0]?.text ?? "")).toBe("There is no pending /dgoal goal (startup gate is not active).");
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+
+  test("dgoal_check 无 active goal 的固定结果文案可被英文 i18n 覆盖", async () => {
+    __resetGoalForTest();
+    __setI18nForTest({
+      t: (key: string) => key === "dgoal.tool.check.noGoal" ? "There is no active /dgoal goal or plan; cannot run phase check." : undefined,
+    });
+    try {
+      const result = await __executeDgoalCheckForTest({ phaseId: 1 });
+      expect(String(result.content?.[0]?.text ?? "")).toBe("There is no active /dgoal goal or plan; cannot run phase check.");
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+
+  test("dgoal_plan 无 active goal 的固定结果文案可被英文 i18n 覆盖", async () => {
+    __resetGoalForTest();
+    __setI18nForTest({
+      t: (key: string) => key === "dgoal.tool.plan.noGoal" ? "There is no active /dgoal goal; cannot operate on the plan." : undefined,
+    });
+    try {
+      const result = await __executeDgoalPlanForTest({ action: "list" });
+      expect(String(result.content?.[0]?.text ?? "")).toBe("There is no active /dgoal goal; cannot operate on the plan.");
+    } finally {
+      __setI18nForTest(undefined);
+    }
+  });
+});
 
 // helpers
 function makeApi() {

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-27
+
+### Added
+
+- **建检反馈闭环增强**：`LoopGoal` 新增 `phaseFeedbackById` / `finalFeedback`，把阶段建检未通过与终审 rejected 的原始报告持久化到 session 状态；system prompt 在 `<loop_plan>` 后按状态注入 `<check_feedback>`，让 compact / 恢复 / rejected 回环后主 agent 仍能读到完整失败报告。
+- **事件流化审核器活性状态**：`runIsolatedCheck` 现在消费 `thinking_*`、`toolcall_*`、`text_delta`、`message_end` 等事件，任一有效事件都会重置 idle timer；活性状态和 `idle Ns/120s` 倒计时通过 `onUpdate` 流出，不写入 `LoopGoal`。
+- **裸 `/dgoal` 承接前文启动**：空参数 `/dgoal` 不再落到状态查询，而是走启动闸门“路径 B”；命令层只发承接信号，由主 agent 在 `dgoal_propose` 中归纳 objective。当前无前文可承接时会提示改用 `/dgoal <objective>`。
+- **TUI smoke 证据**：录制启动闸门确认 UI、provider/model 标识、`/dgoal s` 详细查询 Modal、持续显示浮层展开态以及裸 `/dgoal` 承接启动的 ANSI 证据（覆盖切片 4/8 关键路径）。切片 5/6 的 TUI 定向补录受当前 Pi 0.80.2 inline extension 运行时限制未能完成，改由单元/集成测试覆盖。
+
+### Changed
+
+- **建检结果三态化**：`dgoal_check` / 终审正式区分 `approved` / `rejected` / `auditor_error`；`rejected` 保持 `isError: false`（正常业务结果），`auditor_error` 才是 `isError: true`（判卷器异常）。
+- **`auditor_error` 3 次透明重试**：审核器自身异常在一次工具调用内部最多重试 3 次；任一重试成功即收敛为正常建检结果，3 次全失败才进入 `paused(audit_error)`。
+- **建检闸门锁定与越闸门推进拦截**：阶段建检不过时，goal 保持 `active`，但只能修当前 phase；对后续 phase 的 `dgoal_check`、以及前序 phase 未过时的 `dgoal_done` 会被硬拒。
+- **用户可见边界收紧**：aboveEditor 浮层、`/dgoal s` 详细查询 Modal、底部状态栏继续只展示状态与 plan 结构，不展示建检报告正文。
+- **持续显示展开态收敛**：`Ctrl+O` 打开的持续显示浮层展开态只展开 `pending / in_progress` phase；`done phase` 仅持久显示标题行，不再展开其 task，而 `/dgoal s` 详细查询 Modal 继续保留全量 phase/task 细节。
+- **中英文术语统一**：用户可见文案统一为“持续显示浮层 / 持续显示展开态 / 详细查询 Modal”，英文同步为 `live overlay` / `expanded live overlay` / `Detailed Query Modal`。
+
 ## [0.5.1] - 2026-06-23
 
 ### Added

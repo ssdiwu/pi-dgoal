@@ -68,13 +68,13 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     expect(buildBodyLines(goal([p(1, "p", [], "in_progress")], { status: "pending" }))).toEqual([]);
   });
 
-  test("正常 goal：返回 heading + spacer + phase + task", () => {
+  test("正常 goal：/dgoal s 详细查询 Modal 仍返回 heading + spacer + phase + task", () => {
     const g = goal([
       p(1, "phaseA", [t(1, "taskA1", "in_progress")], "in_progress"),
       p(2, "phaseB", [], "pending"),
     ]);
     const lines = buildBodyLines(g);
-    expect(lines.length).toBe(5); // heading + spacer + phase + task + phase
+    expect(lines.length).toBe(5);
     expect(lines[0].type).toBe("heading");
     expect(lines[0].status).toBeUndefined();
     expect(lines[0].text).toContain("🎯 实施 v0.4.2");
@@ -89,6 +89,15 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     expect(lines[4].type).toBe("phase");
     expect(lines[4].status).toBe("pending");
     expect(lines[4].text).toContain("○ phaseB");
+  });
+
+  test("/dgoal s 详细查询 Modal 会保留 done phase 的 task 细节", () => {
+    const g = goal([p(1, "phaseA", [t(1, "taskA1", "done")], "done")]);
+    const lines = buildBodyLines(g);
+    const phaseLine = lines.find((l) => l.type === "phase" && l.text.includes("phaseA"));
+    const taskLine = lines.find((l) => l.type === "task" && l.text.includes("taskA1"));
+    expect(phaseLine).toBeDefined();
+    expect(taskLine).toBeDefined();
   });
 
   test("blocked phase 带 blockedReason 后缀", () => {

@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   buildPlanContextBlock,
+  buildCheckFeedbackBlock,
   shouldAbortCurrentTurnOnClear,
   shouldDeliverContinuationNow,
   type LoopGoal,
@@ -216,5 +217,61 @@ describe("切片6 · rejected resume 清零逻辑（通过字段语义验证）"
     const count = 2;
     const newCount = count + 1;
     expect(newCount >= 3).toBe(true); // 触发 paused
+  });
+});
+
+describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）", () => {
+  function t2(id: number, subject: string, status: Task["status"] = "pending"): Task { return { id, subject, status }; }
+  function p2(id: number, subject: string, tasks: Task[], status: Phase["status"] = "in_progress"): Phase { return { id, subject, tasks, status }; }
+
+  test("active + 当前 phase 有阶段反馈：注入 phase 反馈", () => {
+    const g: LoopGoal = {
+      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
+      phaseFeedbackById: { "1": { phaseId: 1, report: "phase1 未通过报告", createdAt: 1 } },
+    } as LoopGoal;
+    const block = buildCheckFeedbackBlock(g);
+    expect(block).toContain('<check_feedback type="phase" phaseId="1">');
+    expect(block).toContain("phase1 未通过报告");
+  });
+
+  test("active + 非当前 phase 的反馈：不注入", () => {
+    const g: LoopGoal = {
+      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")]), p2(2, "阶段二", [t2(2, "t2", "pending")])], nextId: 3 },
+      // 反馈在 phase 2，但当前未完成是 phase 1
+      phaseFeedbackById: { "2": { phaseId: 2, report: "phase2 报告", createdAt: 1 } },
+    } as LoopGoal;
+    expect(buildCheckFeedbackBlock(g)).toBe("");
+  });
+
+  test("rejected + 终审反馈：注入 final 反馈", () => {
+    const g: LoopGoal = {
+      id: "g", objective: "o", status: "rejected", rejectedCount: 2, startedAt: 1, updatedAt: 1, iteration: 0,
+      finalFeedback: { report: "终审未通过报告", rejectedCount: 2, createdAt: 1 },
+    } as LoopGoal;
+    const block = buildCheckFeedbackBlock(g);
+    expect(block).toContain('<check_feedback type="final" rejectedCount="2">');
+    expect(block).toContain("终审未通过报告");
+  });
+
+  test("无任何反馈：不生成空 block", () => {
+    const g: LoopGoal = {
+      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
+    } as LoopGoal;
+    expect(buildCheckFeedbackBlock(g)).toBe("");
+  });
+
+  test("final 优先：resume 后 active 但 finalFeedback 仍在，注入 final 而非 phase", () => {
+    const g: LoopGoal = {
+      id: "g", objective: "o", status: "active", rejectedCount: 0, startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
+      phaseFeedbackById: { "1": { phaseId: 1, report: "phase 报告", createdAt: 1 } },
+      finalFeedback: { report: "终审报告（resume 后继续修）", rejectedCount: 3, createdAt: 1 },
+    } as LoopGoal;
+    const block = buildCheckFeedbackBlock(g);
+    expect(block).toContain('type="final"');
+    expect(block).not.toContain('type="phase"');
   });
 });
