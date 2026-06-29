@@ -16,3 +16,4 @@
 | [0010](./0010-done-phase软遗忘注入只留标题行.md) | done phase 软遗忘，注入只留标题行 | done phase 注入只保留标题行，其下 task 软遗忘以聚焦当前进度 |
 | [0011](./0011-建检反馈持久化到LoopGoal.md) | 建检反馈持久化到 LoopGoal | 建检失败报告持久化到 LoopGoal，不靠 transcript 存活 |
 | [0012](./0012-阶段建检闸门锁定与事件流化审核器.md) | 阶段建检闸门锁定 + 事件流化审核器 | 建检不过则锁当前 phase，审核子进程改事件流导向 |
+| [0013](./0013-auditorModel配置落点选独立文件.md) | auditorModel 配置落点选独立文件 | 审核器选模用 pi-dgoal.json 而非借道 settings.json，不依赖 Pi 未文档化的未知字段容忍 |

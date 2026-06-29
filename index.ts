@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
-import { defineTool } from "@earendil-works/pi-coding-agent";
+import { CONFIG_DIR_NAME, defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
@@ -14,6 +14,8 @@ const APPROVED_MARKER = "<APPROVED>";
 const REJECTED_MARKER = "<REJECTED>";
 // 审核跑在隔离子进程里，可读文件也可执行验证命令；仍无主会话上下文。
 const AUDITOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
+const DGOAL_CONFIG_FILE_NAME = "pi-dgoal.json";
+const notifiedDgoalConfigKeys = new Set<string>();
 
 type LoopStatus = "pending" | "active" | "rejected" | "paused" | "done";
 
@@ -59,6 +61,15 @@ interface Task {
   blockedBy?: number[];
   evidence?: string;
   blockedReason?: string;
+}
+
+export interface DgoalConfig {
+  auditorModel?: string;
+}
+
+export interface DgoalConfigIssue {
+  key: string;
+  params?: Record<string, string | number>;
 }
 
 type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
@@ -231,6 +242,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
       "notify.continuationFailed": "Dgoal 续跑失败：{error}",
       "notify.auditFailurePaused": "Dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
+      "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需单独选模，可在 {globalPath} 配置 \"auditorModel\"（格式 provider/model），不配则不变。",
+      "notify.dgoalConfigUnreadable": "无法读取 {path}：{error}",
+      "notify.dgoalConfigBadJson": "{path} 不是合法 JSON：{error}",
+      "notify.dgoalConfigNotObject": "{path} 顶层必须是 JSON object，已忽略。",
+      "notify.auditorModelInvalid": "{path} 的 auditorModel 必须是 provider/model 格式字符串，已回退到当前会话模型。",
       "check.liveness.starting": "启动中",
       "check.liveness.thinking": "思考中",
       "check.liveness.tool_running": "调工具中",
@@ -365,6 +381,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
       "notify.continuationFailed": "Dgoal continuation failed: {error}",
       "notify.auditFailurePaused": "Dgoal paused ({reason}). Run /dgoal resume to continue.",
+      "notify.auditorModelHint": "The auditor uses the current session model by default. To pick a separate model, set \"auditorModel\" (provider/model) in {globalPath}; otherwise it stays unchanged.",
+      "notify.dgoalConfigUnreadable": "Cannot read {path}: {error}",
+      "notify.dgoalConfigBadJson": "{path} is not valid JSON: {error}",
+      "notify.dgoalConfigNotObject": "{path} must be a JSON object at the top level; ignored.",
+      "notify.auditorModelInvalid": "auditorModel in {path} must be a provider/model string; falling back to the current session model.",
       "check.liveness.starting": "starting",
       "check.liveness.thinking": "thinking",
       "check.liveness.tool_running": "tool running",
@@ -2279,6 +2300,112 @@ function clearCurrentCheckSnapshot(): void {
   currentCheckSnapshot = undefined;
 }
 
+export function getDgoalConfigPaths(cwd: string, agentDir = getAgentDir()) {
+  return {
+    globalPath: path.join(agentDir, DGOAL_CONFIG_FILE_NAME),
+    projectPath: path.join(cwd, CONFIG_DIR_NAME, DGOAL_CONFIG_FILE_NAME),
+  };
+}
+
+export function normalizeAuditorModelId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  const slashIndex = trimmed.indexOf("/");
+  if (!trimmed || slashIndex <= 0 || slashIndex >= trimmed.length - 1) return undefined;
+  return trimmed;
+}
+
+async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalConfig; issues: DgoalConfigIssue[]; existed: boolean }> {
+  let raw: string;
+  try {
+    raw = await fs.promises.readFile(configPath, "utf-8");
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : undefined;
+    if (code === "ENOENT") return { config: {}, issues: [], existed: false };
+    return {
+      config: {},
+      issues: [{ key: "notify.dgoalConfigUnreadable", params: { path: configPath, error: error instanceof Error ? error.message : String(error) } }],
+      existed: true,
+    };
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    return {
+      config: {},
+      issues: [{ key: "notify.dgoalConfigBadJson", params: { path: configPath, error: error instanceof Error ? error.message : String(error) } }],
+      existed: true,
+    };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      config: {},
+      issues: [{ key: "notify.dgoalConfigNotObject", params: { path: configPath } }],
+      existed: true,
+    };
+  }
+
+  const issues: DgoalConfigIssue[] = [];
+  const config: DgoalConfig = {};
+  const auditorModel = (parsed as DgoalConfig).auditorModel;
+  if (auditorModel !== undefined) {
+    const normalized = normalizeAuditorModelId(auditorModel);
+    if (normalized) config.auditorModel = normalized;
+    else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath } });
+  }
+
+  return { config, issues, existed: true };
+}
+
+export async function loadDgoalConfig(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+  options: { agentDir?: string } = {},
+): Promise<{ config: DgoalConfig; issues: DgoalConfigIssue[]; anyConfigFileExists: boolean }> {
+  const { globalPath, projectPath } = getDgoalConfigPaths(ctx.cwd, options.agentDir);
+  const globalResult = await readDgoalConfigFile(globalPath);
+  const projectResult = ctx.isProjectTrusted() ? await readDgoalConfigFile(projectPath) : { config: {}, issues: [], existed: false };
+  return {
+    config: {
+      ...globalResult.config,
+      ...projectResult.config,
+    },
+    issues: [...globalResult.issues, ...projectResult.issues],
+    anyConfigFileExists: globalResult.existed || projectResult.existed,
+  };
+}
+
+// 配置提示去重：同一类 issue.key 只通知一次，避免每次审核都刷屏。
+function notifyDgoalConfigOnce(ctx: Pick<ExtensionContext, "ui">, notifications: { key: string; params?: Record<string, string | number>; level: "info" | "warning" }[]) {
+  for (const item of notifications) {
+    if (notifiedDgoalConfigKeys.has(item.key)) continue;
+    notifiedDgoalConfigKeys.add(item.key);
+    try {
+      ctx.ui.notify(t(item.key, item.params), item.level);
+    } catch {
+      // UI 渲染失败不阻断审核。
+    }
+  }
+}
+
+export async function resolveAuditorModelId(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model" | "ui">,
+  options: { agentDir?: string } = {},
+): Promise<string | undefined> {
+  const fallbackModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+  const { globalPath } = getDgoalConfigPaths(ctx.cwd, options.agentDir);
+  const { config, issues, anyConfigFileExists } = await loadDgoalConfig(ctx, options);
+  if (issues.length > 0) {
+    notifyDgoalConfigOnce(ctx, issues.map((issue) => ({ ...issue, level: "warning" as const })));
+  } else if (!anyConfigFileExists) {
+    // 首次审核且无任何 pi-dgoal.json：一次性提示可单独选模，不自动生成文件。
+    notifyDgoalConfigOnce(ctx, [{ key: "notify.auditorModelHint", params: { globalPath }, level: "info" }]);
+  }
+  return config.auditorModel ?? fallbackModelId;
+}
+
 export function buildCheckCliArgs(args: {
   modelId?: string;
   systemPrompt: string;
@@ -2300,8 +2427,7 @@ async function runIsolatedCheck(args: {
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
   const { ctx, systemPrompt, task } = args;
-  const model = ctx.model;
-  const modelId = model ? `${model.provider}/${model.id}` : undefined;
+  const modelId = await resolveAuditorModelId(ctx);
   const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
   const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
@@ -2560,6 +2686,14 @@ export function buildPhaseCheckTask(goal: LoopGoal, phase: Phase) {
     const blk = t.status === "blocked" && t.blockedReason ? `\n    blocked 原因：${t.blockedReason}` : "";
     return `  - [${t.status}] ${t.subject}${ev}${blk}`;
   }).join("\n");
+  const previousFeedback = goal.phaseFeedbackById?.[String(phase.id)];
+  const previousFeedbackLines = previousFeedback?.report?.trim() ? [
+    "",
+    "上一轮建检未通过，原始反馈如下（这是重审：先逐条核验下列问题是否真已修好，再全量查新问题）：",
+    "<previous_feedback>",
+    escapeXml(previousFeedback.report),
+    "</previous_feedback>",
+  ] : [];
   return [
     "判定下面的 /dgoal 阶段（phase）是否真的完成（其下 task 全终态且成果站得住）。",
     "",
@@ -2573,6 +2707,7 @@ export function buildPhaseCheckTask(goal: LoopGoal, phase: Phase) {
     "  tasks:",
     taskLines,
     "</phase>",
+    ...previousFeedbackLines,
     "",
     "审核要求：",
     "1. 把 phase 下每个 task 视为至少一条验收条件，必要时从 phase subject/description 补充隐含验收条件。",
@@ -2606,6 +2741,9 @@ const PHASE_CHECK_SYSTEM_PROMPT = [
   "原则：",
   "- 基于代码事实和验证结果判定，不基于 agent 自述、感觉或善意推断。",
   "- 只运行与验收直接相关的受限验证命令；禁止修改文件、禁止补实现、禁止为通过而修代码。",
+  "- 一次提全：本轮审核预算内，把所有已能发现的问题全部列出，不要找到第一个 blocker 就停——主 agent 会逐条修，挤牙膏式往返浪费双方 token。",
+  "- 分级列出所有发现：FAIL 和 BLOCKER 都必须列出，warning 级也列出但不一定导致 <REJECTED>。先穷举所有验收条件再判定，不要只盯一个问题就出结论。",
+  "- 重审聚焦：若 task 含 <previous_feedback> 块，先快速核验上轮指出的每个问题是否真已修好，再继续全量查新问题——避免修了旧的、漏了新的。",
   "- 主动 FAIL：发现虚报、evidence 不可复现、文档不一致、blocked 理由不实，就 <REJECTED>。",
   "- 只有 phase 的验收条件整体成立时才 <APPROVED>。",
 ].join("\n");
@@ -2688,6 +2826,14 @@ export function summarizeCheckProgress(output: string): string {
 }
 
 export function buildAuditorTask(goal: LoopGoal, summary: string, verification: string) {
+  const previousFeedback = goal.finalFeedback;
+  const previousFeedbackLines = previousFeedback?.report?.trim() ? [
+    "",
+    `上一轮终审未通过（第 ${previousFeedback.rejectedCount}/3 次），原始反馈如下（这是重审：先逐条核验下列问题是否真已修好，再全量查新问题）：`,
+    "<previous_feedback>",
+    escapeXml(previousFeedback.report),
+    "</previous_feedback>",
+  ] : [];
   return [
     "判定下面的 /dgoal 目标是否真的完成。",
     "",
@@ -2700,6 +2846,7 @@ export function buildAuditorTask(goal: LoopGoal, summary: string, verification: 
     "",
     "Agent 声称的验证证据：",
     verification || "（未提供）",
+    ...previousFeedbackLines,
     "",
     "审核要求：",
     "1. 从目标和 verification 中抽出真实的成功标准（含质量 / 用户可感知结果，不只是“代码存在”）。",
@@ -2734,6 +2881,9 @@ const AUDITOR_SYSTEM_PROMPT = [
   "原则：",
   "- 基于代码事实和文件证据判定，不基于 agent 的自述、感觉或善意推断。",
   "- 逐条对照目标里的可验证要求，用 read/grep/find/ls/bash 实地核验。",
+  "- 一次提全：本轮审核预算内，把所有已能发现的问题全部列出，不要找到第一个 blocker 就停——主 agent 会逐条修，挤牙膏式往返浪费双方 token。",
+  "- 分级列出所有发现：FAIL 和 BLOCKER 都必须列出，warning 级也列出但不一定导致 <REJECTED>。先穷举所有要求再判定，不要只盯一个问题就出结论。",
+  "- 重审聚焦：若 task 含 <previous_feedback> 块，先快速核验上轮指出的每个问题是否真已修好，再继续全量查新问题——避免修了旧的、漏了新的。",
   "- 若证据是“生成了脚手架 / 占位代码 / 仅 build 通过 / proxy 指标”，且用户目标未被真实满足，判 REJECTED。",
   "- 若有任何要求缺失、弱验证、文档失配、矛盾、无法用证据检验，判 REJECTED。",
   "- 只运行与验收直接相关的受限验证命令；禁止修改文件、禁止补实现、禁止为通过而修代码。",
@@ -2844,6 +2994,11 @@ export function __setCheckSnapshotForTest(snapshot: CheckLivenessSnapshot | unde
 
 export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
   i18nApi = mockI18n;
+}
+
+// 测试专用：重置配置提示去重 Set，让 hint/warning 提示在隔离测试间可重复触发。
+export function __resetDgoalConfigNotifiedForTest() {
+  notifiedDgoalConfigKeys.clear();
 }
 
 // 测试专用：暴露 /dgoal 子命令解析，覆盖全拼/单字母与 stop 删除后的行为。

@@ -4,7 +4,7 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **v0.5.2**：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动。详见 `CHANGELOG.md` 与 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。
+> **v0.5.3**：独立审核器选模配置（`pi-dgoal.json`）+ 穷举式审核 prompt + 重审反馈注入。详见 `CHANGELOG.md`。（v0.5.2：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动，见 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。）
 
 ## 安装
 
@@ -92,6 +92,23 @@ pending ──→ active ──→ done                # 正常路径
 ```text
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
+
+可通过 `pi-dgoal.json` 给审核子进程单独选模：
+
+```json
+// ~/.pi/agent/pi-dgoal.json 或 .pi/pi-dgoal.json
+{
+  "auditorModel": "openai/gpt-5"
+}
+```
+
+解析优先级：
+
+1. 项目 `.pi/pi-dgoal.json`（仅项目已 trusted 时生效）
+2. 全局 `~/.pi/agent/pi-dgoal.json`
+3. 回退到当前会话模型
+
+如果文件缺失、不可读，或 `auditorModel` 非法，dgoal 会回退到当前会话模型，审核流程不中断。该文件不会被自动创建；首次审核时若没有任何 `pi-dgoal.json`，dgoal 会一次性提示全局路径，之后保持静默。提示文案在安装 `pi-di18n` 时跟随 locale。
 
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试

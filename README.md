@@ -4,7 +4,7 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.5.2**: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover. See `CHANGELOG.md` and `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.
+> **v0.5.3**: independent auditor model selection via `pi-dgoal.json` + exhaustive audit prompts + previous-feedback injection for re-audits. See `CHANGELOG.md` for details. (v0.5.2: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover, see `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.)
 
 ## Install
 
@@ -96,6 +96,23 @@ See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the re
 ```text
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
+
+You can override the auditor subprocess model with `pi-dgoal.json`:
+
+```json
+// ~/.pi/agent/pi-dgoal.json or .pi/pi-dgoal.json
+{
+  "auditorModel": "openai/gpt-5"
+}
+```
+
+Resolution order:
+
+1. Project `.pi/pi-dgoal.json` (only when the project is trusted)
+2. Global `~/.pi/agent/pi-dgoal.json`
+3. Fallback to the current session model
+
+If the file is missing, unreadable, or `auditorModel` is invalid, dgoal falls back to the current session model and keeps the audit running. The config file is never auto-created; the first time an audit runs with no `pi-dgoal.json` anywhere, dgoal shows a one-time hint pointing to the global path, then stays silent. User-facing hints and warnings follow `pi-di18n` when installed.
 
 - Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
 - Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.

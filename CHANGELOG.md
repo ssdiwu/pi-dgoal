@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-06-29
+
+### Added
+
+- **独立审核器选模配置**：新增 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json`，可通过 `auditorModel`（格式 `provider/model`）为独立审核子进程单独指定模型。解析顺序为项目级（仅项目已 trusted 时生效）> 全局 > 当前会话模型；配置缺失、不可读或非法时回退到当前会话模型，审核不中断。首次审核且无任何配置文件时，dgoal 会一次性 i18n 提示全局路径（提示文案在安装 `pi-di18n` 时跟随 locale），之后保持静默；配置文件不被自动创建。该配置只影响独立审核子进程选模，不改变主执行线程模型。
+- **穷举式审核 prompt**：`PHASE_CHECK_SYSTEM_PROMPT` 与 `AUDITOR_SYSTEM_PROMPT` 增加「一次提全」与「分级列出所有发现」指令，要求审核器在本轮预算内把所有已能发现的问题全部列出（FAIL/BLOCKER 必须列出，warning 级列出但不一定导致 REJECTED），不要找到第一个 blocker 就停，减少挤牙膏式往返。
+- **重审反馈注入**：`buildPhaseCheckTask` / `buildAuditorTask` 在存在上一轮反馈时，把已持久化的 `phaseFeedbackById` / `finalFeedback` 原始报告以 `<previous_feedback>` 块注入审核子进程 task；两个 SYSTEM_PROMPT 增加「重审聚焦」指令，要求审核器先核验上轮问题是否真已修好，再全量查新问题，消除重审视野漂移。数据结构不变，复用已有反馈持久化。
+- **新决策**：新增 `doc/决策档案/0013-auditorModel配置落点选独立文件.md`，记录审核器选模配置为什么用 `pi-dgoal.json` 而非借道 Pi 的 `settings.json`（不依赖 Pi 未文档化的未知字段容忍）。
+
 ## [0.5.2] - 2026-06-27
 
 ### Added

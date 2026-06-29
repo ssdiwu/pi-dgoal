@@ -194,6 +194,47 @@ describe("acceptance check alignment", () => {
     expect(task).toContain("最后一行必须只包含 <APPROVED>");
     expect(task).toContain("README");
   });
+
+  test("buildPhaseCheckTask injects previous phase feedback when it exists", () => {
+    const task = buildPhaseCheckTask(
+      {
+        objective: "修复建检",
+        phaseFeedbackById: { "1": { phaseId: 1, report: "上次 FAIL：测试没跑\n文档缺失", createdAt: 1 } },
+      } as any,
+      { id: 1, subject: "修复 phase check", status: "in_progress", tasks: [{ id: 1, subject: "跑测试", status: "done", evidence: "npm test" }] } as any,
+    );
+
+    expect(task).toContain("<previous_feedback>");
+    expect(task).toContain("上次 FAIL：测试没跑");
+    expect(task).toContain("这是重审");
+  });
+
+  test("buildPhaseCheckTask does not inject an empty previous_feedback block when there is no phase feedback", () => {
+    const task = buildPhaseCheckTask(
+      { objective: "修复建检" } as any,
+      { id: 1, subject: "修复", status: "in_progress", tasks: [{ id: 1, subject: "跑测试", status: "done", evidence: "npm test" }] } as any,
+    );
+
+    expect(task).not.toContain("<previous_feedback>");
+  });
+
+  test("buildAuditorTask injects previous final-audit feedback when it exists", () => {
+    const task = buildAuditorTask(
+      { objective: "完成目标", finalFeedback: { report: "终审失败：证据不足", rejectedCount: 1, createdAt: 1 } } as any,
+      "已完成",
+      "跑测试",
+    );
+
+    expect(task).toContain("<previous_feedback>");
+    expect(task).toContain("终审失败：证据不足");
+    expect(task).toContain("第 1/3 次");
+  });
+
+  test("buildAuditorTask does not inject an empty previous_feedback block when there is no final feedback", () => {
+    const task = buildAuditorTask({ objective: "完成目标" } as any, "已完成", "跑测试");
+
+    expect(task).not.toContain("<previous_feedback>");
+  });
 });
 
 describe("buildCompletionReplySignal", () => {
