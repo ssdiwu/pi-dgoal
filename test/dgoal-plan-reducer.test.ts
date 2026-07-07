@@ -93,6 +93,50 @@ describe("切片2 · create task", () => {
   });
 });
 
+describe("切片2 · 字符串化数组参数兼容（模型序列化降级）", () => {
+  // 模型有时把空数组/数组参数 stringify 成 "[]"/"[1,2]" 字符串。
+  // schema 放宽为 Array<number> | string，reducer 必须 coerce 回 number[]。
+  test("create blockedBy 为字符串空数组 → 视作无依赖", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a")])], 2);
+    const r = run(goal, "create", { phaseId: 1, subject: "b", blockedBy: "[]" });
+    expect(r.op.kind).toBe("create");
+    if (r.op.kind !== "create") return;
+    expect(r.goal.plan!.phases[0].tasks[1].blockedBy ?? []).toEqual([]);
+  });
+
+  test("create blockedBy 为字符串 '[1]' → 解析成 [1]", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a")])], 2);
+    const r = run(goal, "create", { phaseId: 1, subject: "b", blockedBy: "[1]" });
+    expect(r.op.kind).toBe("create");
+    if (r.op.kind !== "create") return;
+    expect(r.goal.plan!.phases[0].tasks[1].blockedBy).toEqual([1]);
+  });
+
+  test("update addBlockedBy 为字符串 '[1]' → 增量加依赖 1", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a"), task(2, "b")])]);
+    const r = run(goal, "update", { id: 2, addBlockedBy: "[1]" });
+    expect(r.op.kind).toBe("update");
+    if (r.op.kind !== "update") return;
+    expect(r.goal.plan!.phases[0].tasks[1].blockedBy).toEqual([1]);
+  });
+
+  test("update removeBlockedBy 为字符串 '[1]' → 移除依赖 1", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a"), task(2, "b", "pending", { blockedBy: [1] })])]);
+    const r = run(goal, "update", { id: 2, removeBlockedBy: "[1]" });
+    expect(r.op.kind).toBe("update");
+    if (r.op.kind !== "update") return;
+    expect(r.goal.plan!.phases[0].tasks[1].blockedBy ?? []).toEqual([]);
+  });
+
+  test("create blockedBy 为字符串 '[1,2]' → 解析成 [1,2]", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a"), task(2, "b")])], 3);
+    const r = run(goal, "create", { phaseId: 1, subject: "c", blockedBy: "[1,2]" });
+    expect(r.op.kind).toBe("create");
+    if (r.op.kind !== "create") return;
+    expect(r.goal.plan!.phases[0].tasks[2].blockedBy).toEqual([1, 2]);
+  });
+});
+
 describe("切片2 · update task 状态机", () => {
   test("pending → in_progress 合法", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);

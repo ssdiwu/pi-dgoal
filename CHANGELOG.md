@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`dgoal_plan` / `dgoal_propose` 兼容模型把数组参数序列化成字符串**：模型有时会把 `blockedBy` / `addBlockedBy` / `removeBlockedBy`（以及 `dgoal_propose` 的 `phases[].tasks[].blockedBy`）序列化成字符串 `"[]"` / `"[1,2]"` 而非真正的数组，此前 pi-ai 入参校验（`TypeBox` `Value.Convert` 把字符串转成类数组结构后按元素逐项校验）直接以 `blockedBy.0: must be number` 拒绝，导致建 task / 加依赖失败。现新增 `prepareArguments` 钩子（框架提供的「校验前规整模型坏输入」接缝，在 `validateToolArguments` 之前执行），把字符串化的数组 `JSON.parse` 回 `number[]`；schema 保持严格 `Array<number>` 不放宽对 LLM 的契约。reducer 入口同时保留 `coerceNumberArray` 兜底作为防御性二次清洗。
+
 ## [0.5.5] - 2026-07-07
 
 ### Fixed

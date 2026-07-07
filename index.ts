@@ -843,6 +843,25 @@ const dgoalPlanTool = defineTool({
     evidence: Type.Optional(Type.String({ description: "完成证据：可独立复验的命令/文件/测试结果" })),
     blockedReason: Type.Optional(Type.String({ description: "blocked 原因（标 blocked 时必带）" })),
   }),
+  // 模型有时把数组参数 stringify 成 "[]"/"[1,2]"。schema 期望 number[]，
+  // 这里在校验前把字符串化的 blockedBy/addBlockedBy/removeBlockedBy coerce 回数组。
+  // 接缝由框架提供（prepareArguments 在 validateToolArguments 之前执行）。
+  prepareArguments(args) {
+    if (typeof args !== "object" || args === null) return args as never;
+    const a = args as Record<string, unknown>;
+    let changed = false;
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(a)) {
+      const v = a[key];
+      if ((key === "blockedBy" || key === "addBlockedBy" || key === "removeBlockedBy") && v !== undefined && !Array.isArray(v)) {
+        out[key] = coerceNumberArray(v);
+        changed = true;
+      } else {
+        out[key] = v;
+      }
+    }
+    return (changed ? out : args) as never;
+  },
   async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
     const goal = currentGoal;
     if (!goal || !isGoalRunning(goal.status)) {
@@ -957,9 +976,9 @@ export function proposalToPlan(proposal: PlanProposal): TaskPlan {
     const rawTasks = ph.tasks ?? [];
     const taskGlobalIds = rawTasks.map(() => nextId++);
     const tasks: Task[] = rawTasks.map((tt, idx) => {
-      const mappedBlockedBy = tt.blockedBy
-        ?.map((localOneBased) => taskGlobalIds[localOneBased - 1])
-        .filter((id): id is number => typeof id === "number") ?? [];
+      const mappedBlockedBy = coerceNumberArray(tt.blockedBy)
+        .map((localOneBased) => taskGlobalIds[localOneBased - 1])
+        .filter((id): id is number => typeof id === "number");
       return {
         id: taskGlobalIds[idx],
         subject: tt.subject,
@@ -1040,6 +1059,29 @@ const dgoalProposeTool = defineTool({
       { description: "阶段性目标列表（用户在确认 UI 看到的）" },
     ),
   }),
+  // 模型有时把 phases[].tasks[].blockedBy stringify 成 "[1]"。校验前 coerce 回数组。
+  prepareArguments(args) {
+    if (typeof args !== "object" || args === null) return args as never;
+    const a = args as Record<string, unknown>;
+    const phases = Array.isArray(a.phases) ? a.phases : undefined;
+    if (!phases) return args as never;
+    let changed = false;
+    const newPhases = phases.map((ph: unknown) => {
+      if (typeof ph !== "object" || ph === null || !Array.isArray((ph as Record<string, unknown>).tasks)) return ph;
+      const tasks = (ph as Record<string, unknown>).tasks as unknown[];
+      const newTasks = tasks.map((tk: unknown) => {
+        if (typeof tk !== "object" || tk === null) return tk;
+        const t = tk as Record<string, unknown>;
+        if ("blockedBy" in t && !Array.isArray(t.blockedBy)) {
+          changed = true;
+          return { ...t, blockedBy: coerceNumberArray(t.blockedBy) };
+        }
+        return tk;
+      });
+      return changed ? { ...(ph as Record<string, unknown>), tasks: newTasks } : ph;
+    });
+    return changed ? ({ ...a, phases: newPhases } as never) : (args as never);
+  },
   async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
     const goal = currentGoal;
     if (!goal || goal.status !== "pending") {
@@ -3324,6 +3366,15 @@ export function __resumeGoalForTest(pi: ExtensionAPI, ctx: DgoalContext) {
   return resumeGoal(pi, ctx);
 }
 
+// 测试专用：暴露工具定义（含 prepareArguments + parameters），
+// 供 schema 层集成测试验证 prepareArguments → 严格 schema Check 链路。
+export function __dgoalPlanToolDefForTest() {
+  return dgoalPlanTool;
+}
+export function __dgoalProposeToolDefForTest() {
+  return dgoalProposeTool;
+}
+
 // 测试专用：直接走 dgoal_check / dgoal_done 工具 execute，覆盖真实工具入口分支。
 export function __executeDgoalPlanForTest(
   params: Record<string, unknown>,
@@ -3509,6 +3560,29 @@ function enforcePhaseOrder(goal: GoalState, action: PlanAction, params: Record<s
   return `阶段顺序违规：phase #${currentPh.id}（${currentPh.subject}）尚未完成。必须先完成当前 phase 的所有 task 并调用 dgoal_check 建检通过后，才能操作 phase #${targetPh.id}（${targetPh.subject}）。`;
 }
 
+// 把模型可能 stringify 的数组参数（blockedBy / addBlockedBy / removeBlockedBy）
+// 降级回 number[]。模型有时把空数组/数组序列化成 "[]"/"[1,2]" 字符串；
+// prepareArguments 钩子在校验前调用本函数，reducer 入口也作为防御性二次清洗。
+// 非数组/无法解析 → []，保证不丢依赖也不误造依赖。
+function coerceNumberArray(value: unknown): number[] {
+  if (value == null) return [];
+  if (typeof value === "number") return Number.isFinite(value) ? [value] : [];
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (trimmed === "") return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed.map((v) => Number(v)).filter((n): n is number => Number.isFinite(n)) : [];
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(value)) {
+    return value.map((v) => Number(v)).filter((n): n is number => Number.isFinite(n));
+  }
+  return [];
+}
+
 // 纯 reducer：(goal, action, params) → (goal, op)。不 mutate 入参 goal。
 // agent 通过 dgoal_plan 工具调用；工具层负责把返回的 goal commit 到 currentGoal + persistGoal。
 export function applyPlanMutation(
@@ -3525,7 +3599,7 @@ export function applyPlanMutation(
       const phaseId = Number(params.phaseId);
       const phaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
       if (phaseIdx === -1) return planError(goal, t("plan.error.phaseNotFound", { phaseId }));
-      const initialBlockedBy = Array.isArray(params.blockedBy) ? (params.blockedBy as number[]) : [];
+      const initialBlockedBy = coerceNumberArray(params.blockedBy);
       const allTasks = flattenTasks(goal.plan);
       for (const dep of initialBlockedBy) {
         const depTask = allTasks.find((t) => t.id === dep);
@@ -3555,6 +3629,8 @@ export function applyPlanMutation(
       const taskIdx = phase.tasks.findIndex((t) => t.id === id);
       const current = phase.tasks[taskIdx];
 
+      const addList = coerceNumberArray(params.addBlockedBy);
+      const removeList = coerceNumberArray(params.removeBlockedBy);
       const hasMutation =
         params.subject !== undefined ||
         params.description !== undefined ||
@@ -3562,8 +3638,8 @@ export function applyPlanMutation(
         params.status !== undefined ||
         params.evidence !== undefined ||
         params.blockedReason !== undefined ||
-        (Array.isArray(params.addBlockedBy) && (params.addBlockedBy as number[]).length > 0) ||
-        (Array.isArray(params.removeBlockedBy) && (params.removeBlockedBy as number[]).length > 0);
+        addList.length > 0 ||
+        removeList.length > 0;
       if (!hasMutation) return planError(goal, t("plan.error.updateRequiresMutableField"));
 
       let newStatus = current.status;
@@ -3580,9 +3656,8 @@ export function applyPlanMutation(
       }
 
       let newBlockedBy = current.blockedBy ? [...current.blockedBy] : [];
-      const removeSet = Array.isArray(params.removeBlockedBy) ? new Set(params.removeBlockedBy as number[]) : new Set<number>();
+      const removeSet = new Set<number>(removeList);
       if (removeSet.size) newBlockedBy = newBlockedBy.filter((d) => !removeSet.has(d));
-      const addList = Array.isArray(params.addBlockedBy) ? (params.addBlockedBy as number[]) : [];
       if (addList.length) {
         const allTasks = flattenTasks(goal.plan);
         for (const dep of addList) {

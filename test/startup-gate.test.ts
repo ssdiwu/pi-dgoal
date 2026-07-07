@@ -359,4 +359,15 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
     expect(plan.phases[0].tasks).toEqual([]);
     expect(plan.phases[0].status).toBe("pending");
   });
+
+  test("task blockedBy 为字符串 '[1]' → 解析成局部索引 1", () => {
+    // 模型可能把 tasks[].blockedBy stringify 成 "[1]"，proposalToPlan 要 coerce 回数组。
+    const proposal: PlanProposal = {
+      objective: "o",
+      phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" }] }],
+    };
+    const plan = proposalToPlan(proposal);
+    // t2 局部索引 1 → 全局 id（t1=2, phase=1, t2=3），blockedBy 指向 t1 的全局 id 2
+    expect(plan.phases[0].tasks[1].blockedBy).toEqual([2]);
+  });
 });
