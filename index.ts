@@ -967,6 +967,10 @@ let pendingProposal: { goalId: string; proposal: PlanProposal } | undefined;
 // 启动闸门兜底计数：主代理未产出 proposal 时的降级重试次数（拷问25，上限2）。
 let proposalRetryCount = 0;
 const MAX_PROPOSAL_RETRIES = 2;
+// startGoal 初始化进行中标志：从创建 pending goal 到投递 propose prompt 期间为 true。
+// 作用：此期间被中断 turn 的 agent_end 会看到 pending goal，不抑制会触发 handleStartupGate
+// 与 startGoal 自己的 propose 投递撞车（双发）。agent_end 的 pending 分支看到本标志即跳过。
+let startGoalInProgress = false;
 
 // 把 proposal 转成 TaskPlan（分配 id，建 phase + 初始 task）。
 export function proposalToPlan(proposal: PlanProposal): TaskPlan {
@@ -1245,17 +1249,14 @@ export default function dgoal(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (_event, ctx) => {
-    clearContinuation();
-    clearCurrentCheckSnapshot();
-    resetAuditorWorkspaceTracker();
-    currentGoal = loadGoal(ctx);
-    ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-    // 切片3：计划浮层——首次带 UI 的 session_start 构造 overlay 并渲染
-    if ((ctx as { hasUI?: boolean }).hasUI) {
-      planOverlay ??= new PlanOverlay();
-      planOverlay.setUI(ctx.ui as PlanOverlay["ui"]);
-      planOverlay.update();
-    }
+    resyncGoalFromSession(ctx);
+  });
+
+  // /tree（navigateTree）原地切 session 分支：不发 session_shutdown/session_start，
+  // 只发 session_tree 通知。不重同步会导致 currentGoal 停在旧分支、overlay 显示陈旧状态
+  // （阶段明明完成了还显示未完成，计时器也冻住）。与 session_start 复用同一套重同步。
+  pi.on("session_tree", (_event, ctx) => {
+    resyncGoalFromSession(ctx);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
@@ -1297,7 +1298,10 @@ export default function dgoal(pi: ExtensionAPI) {
 
   pi.on("agent_end", async (event, ctx) => {
     // 切片4：启动闸门阶段（goal pending）——主代理应调 dgoal_propose 提交计划。
+    // startGoal 初始化期间（创建 pending → 投递 propose）跳过：被中断 turn 的 agent_end
+    // 会看到 pending goal，不跳过会与 startGoal 自己的 propose 投递撞车（双发）。
     if (currentGoal && currentGoal.status === "pending") {
+      if (startGoalInProgress) return;
       await handleStartupGate(pi, ctx, currentGoal);
       return;
     }
@@ -1428,56 +1432,65 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
 
   consecutiveErrors = 0;
   clearContinuation();
-  // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
-  // 否则 before_agent_start / agent_end 会提前把它当活跃 dgoal 推进，甚至打出孤儿 START prompt。
-  // 新 goal 启动时清除上一个 goal 遗留的 auditor workspace tracker，避免旧 worktree 路径泄漏到新 goal。
-  resetAuditorWorkspaceTracker();
-  const pendingGoal = createGoal(objective.trim());
-  currentGoal = pendingGoal;
-  persistGoal(currentGoal);
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+  // 暂停当前 LLM 工作，专注开启 dgoal（用户期望 /dgoal 立即接管，而非等当前 turn 跑完）。
+  // 必须在设置 pending goal 前后用 startGoalInProgress 标志包住：被中断 turn 的 agent_end
+  // 会看到 pending goal，不抑制会触发 handleStartupGate 与本函数自己的 propose 投递撞车。
+  startGoalInProgress = true;
+  try {
+    if (shouldAbortCurrentTurnOnClear(ctx)) ctx.abort?.();
+    // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
+    // 否则 before_agent_start / agent_end 会提前把它当活跃 dgoal 推进，甚至打出孤儿 START prompt。
+    // 新 goal 启动时清除上一个 goal 遗留的 auditor workspace tracker，避免旧 worktree 路径泄漏到新 goal。
+    resetAuditorWorkspaceTracker();
+    const pendingGoal = createGoal(objective.trim());
+    currentGoal = pendingGoal;
+    persistGoal(currentGoal);
+    ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
 
-  // 启动前固化前文背景：防止 dgoal 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
-  // 摘要失败不阻断启动——objective 本身仍在，摘要只是补充，挂了降级为空继续。
-  const priorDiscussion = extractPriorDiscussion(ctx);
-  if (priorDiscussion) {
-    ctx.ui.notify(t("notify.summarizingContext"), "info");
-    const result = await summarizeContext({
-      ctx: ctx as ExtensionContext,
-      objective: pendingGoal.objective,
-      priorDiscussion,
-    });
-    // 摘要期间 goal 可能被用户 /dgoal clear 或替换；校验仍是同一个 pending goal。
+    // 启动前固化前文背景：防止 dgoal 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
+    // 摘要失败不阻断启动——objective 本身仍在，摘要只是补充，挂了降级为空继续。
+    const priorDiscussion = extractPriorDiscussion(ctx);
+    if (priorDiscussion) {
+      ctx.ui.notify(t("notify.summarizingContext"), "info");
+      const result = await summarizeContext({
+        ctx: ctx as ExtensionContext,
+        objective: pendingGoal.objective,
+        priorDiscussion,
+      });
+      // 摘要期间 goal 可能被用户 /dgoal clear 或替换；校验仍是同一个 pending goal。
+      if (!currentGoal || currentGoal.id !== pendingGoal.id) {
+        ctx.ui.notify(t("notify.startInterrupted"), "warning");
+        return;
+      }
+      if (result.aborted) {
+        ctx.ui.notify(t("notify.contextAborted"), "warning");
+        currentGoal = undefined;
+        persistGoal(null);
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+        return;
+      }
+      if (result.summary && result.summary.trim() && result.summary.trim() !== "无额外背景") {
+        currentGoal = { ...currentGoal, contextSummary: result.summary.trim(), updatedAt: Date.now() };
+        persistGoal(currentGoal);
+      } else if (result.error) {
+        ctx.ui.notify(t("notify.contextFailed", { error: result.error }), "warning");
+      }
+    }
+
+    // 再次校验：摘要期间 goal 仍可能在、且仍是本次 pending goal。
     if (!currentGoal || currentGoal.id !== pendingGoal.id) {
       ctx.ui.notify(t("notify.startInterrupted"), "warning");
       return;
     }
-    if (result.aborted) {
-      ctx.ui.notify(t("notify.contextAborted"), "warning");
-      currentGoal = undefined;
-      persistGoal(null);
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-      return;
-    }
-    if (result.summary && result.summary.trim() && result.summary.trim() !== "无额外背景") {
-      currentGoal = { ...currentGoal, contextSummary: result.summary.trim(), updatedAt: Date.now() };
-      persistGoal(currentGoal);
-    } else if (result.error) {
-      ctx.ui.notify(t("notify.contextFailed", { error: result.error }), "warning");
-    }
+    // 切片4：启动闸门——保持 pending，发“请用 dgoal_propose 提交计划”指令让主代理整理 plan。
+    // 不直接转 active：要等主代理调 dgoal_propose + 用户确认后才激活 dgoal。
+    // proposalRetryCount 由 agent_end 消费做兜底（拷问25：重试2次失败中止）。
+    proposalRetryCount = 0;
+    ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+    await sendPrompt(pi, ctx, buildProposePrompt(currentGoal));
+  } finally {
+    startGoalInProgress = false;
   }
-
-  // 再次校验：摘要期间 goal 仍可能在、且仍是本次 pending goal。
-  if (!currentGoal || currentGoal.id !== pendingGoal.id) {
-    ctx.ui.notify(t("notify.startInterrupted"), "warning");
-    return;
-  }
-  // 切片4：启动闸门——保持 pending，发"请用 dgoal_propose 提交计划"指令让主代理整理 plan。
-  // 不直接转 active：要等主代理调 dgoal_propose + 用户确认后才激活 dgoal。
-  // proposalRetryCount 由 agent_end 消费做兜底（拷问25：重试2次失败中止）。
-  proposalRetryCount = 0;
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  await sendPrompt(pi, ctx, buildProposePrompt(currentGoal));
 }
 
 function markGoalPaused(goal: GoalState, pausedAt = Date.now(), extra: Partial<GoalState> = {}): GoalState {
@@ -2009,6 +2022,27 @@ export function loadGoal(ctx: DgoalContext) {
   return isGoalState(data?.goal) && data.goal.status !== "done" && data.goal.status !== "pending"
     ? data.goal
     : undefined;
+}
+
+// session_start / session_tree 共用：从当前 session 重新加载 goal 并重同步 status/overlay。
+// 抽出来共用是为了保证两个事件路径不分叉（tree 不重同步是历史 bug 根因）。
+// UI 抛错不阻断状态重同步——currentGoal 已在前面 load 完，UI 只是展示层。
+export function resyncGoalFromSession(ctx: DgoalContext) {
+  clearContinuation();
+  clearCurrentCheckSnapshot();
+  resetAuditorWorkspaceTracker();
+  currentGoal = loadGoal(ctx);
+  try {
+    ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+    // 切片3：计划浮层——首次带 UI 时构造 overlay；session_tree 复用已有实例。
+    if ((ctx as { hasUI?: boolean }).hasUI) {
+      planOverlay ??= new PlanOverlay();
+      planOverlay.setUI(ctx.ui as PlanOverlay["ui"]);
+      safeUpdatePlanOverlay();
+    }
+  } catch {
+    // UI 渲染失败不阻断状态重同步。
+  }
 }
 
 export function resolveAuditorWorkspaceCwd(ctx: Pick<DgoalContext, "cwd" | "sessionManager">): string {
@@ -3320,6 +3354,14 @@ export function __terminateManagedSubprocessForTest(proc: ChildProcess, forceKil
 
 export function __setGoalForTest(goal: GoalState | undefined) {
   currentGoal = goal;
+}
+export function __getGoalForTest() {
+  return currentGoal;
+}
+// 测试专用：验证 startGoalInProgress 标志在 startGoal 结束后正确清零
+// （标志卡 true 会永久抑制 handleStartupGate，导致启动闸门锁死）。
+export function __isStartGoalInProgressForTest() {
+  return startGoalInProgress;
 }
 
 export function __setCheckSnapshotForTest(snapshot: CheckLivenessSnapshot | undefined) {

@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`/tree` 导航后浮层与 goal 状态不重同步**：`/tree`（`navigateTree`）原地切 session 分支，只发 `session_tree` 通知、不发 `session_start`，而 pi-dgoal 此前未监听 `session_tree`，导致 `currentGoal` 停在旧分支、计划浮层显示陈旧状态（阶段明明完成了还显示未完成，计时器也冻住）。现抽取 `resyncGoalFromSession`（清 continuation/check snapshot/auditor tracker + `loadGoal` + setStatus + overlay 重同步），`session_start` 与新增的 `session_tree` 处理共用，保证两个事件路径不分叉；UI 抛错不阻断状态重同步。`/fork` 走 `session_start reason fork`，同步被覆盖。
+
+- **`/dgoal` 启动不暂停当前 LLM 工作**：`startGoal` 此前不 abort 当前 agent turn（`clearGoal` 有 `ctx.abort`，`startGoal` 没有），用户在 LLM 工作时敲 `/dgoal` 要等当前 turn 跑完才进 dgoal。现 `startGoal` 入口在非 idle 时 `ctx.abort`（参照 `shouldAbortCurrentTurnOnClear`）；并用 `startGoalInProgress` 标志包住「创建 pending goal → 投递 propose prompt」整段（try/finally），抑制被中断 turn 的 `agent_end` 触发 `handleStartupGate` 与 startGoal 自己的 propose 投递撞车（双发）。
+
 - **`dgoal_plan` / `dgoal_propose` 兼容模型把数组参数序列化成字符串**：模型有时会把 `blockedBy` / `addBlockedBy` / `removeBlockedBy`（以及 `dgoal_propose` 的 `phases[].tasks[].blockedBy`）序列化成字符串 `"[]"` / `"[1,2]"` 而非真正的数组，此前 pi-ai 入参校验（`TypeBox` `Value.Convert` 把字符串转成类数组结构后按元素逐项校验）直接以 `blockedBy.0: must be number` 拒绝，导致建 task / 加依赖失败。现新增 `prepareArguments` 钩子（框架提供的「校验前规整模型坏输入」接缝，在 `validateToolArguments` 之前执行），把字符串化的数组 `JSON.parse` 回 `number[]`；schema 保持严格 `Array<number>` 不放宽对 LLM 的契约。reducer 入口同时保留 `coerceNumberArray` 兜底作为防御性二次清洗。
 
 ## [0.5.5] - 2026-07-07
