@@ -28,6 +28,7 @@
 17. `20-能力参考/26-Datawhale-LoopEngineering三文件循环参考.md` — Datawhale 推文三文件循环、图片机制核对与 dgoal 借鉴判断
 18. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
 19. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
+20. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
 
 历史材料：
 
