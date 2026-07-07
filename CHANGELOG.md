@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-07-07
+
 ### Fixed
 
 - **`/tree` 导航后浮层与 goal 状态不重同步**：`/tree`（`navigateTree`）原地切 session 分支，只发 `session_tree` 通知、不发 `session_start`，而 pi-dgoal 此前未监听 `session_tree`，导致 `currentGoal` 停在旧分支、计划浮层显示陈旧状态（阶段明明完成了还显示未完成，计时器也冻住）。现抽取 `resyncGoalFromSession`（清 continuation/check snapshot/auditor tracker + `loadGoal` + setStatus + overlay 重同步），`session_start` 与新增的 `session_tree` 处理共用，保证两个事件路径不分叉；UI 抛错不阻断状态重同步。`/fork` 走 `session_start reason fork`，同步被覆盖。
