@@ -580,6 +580,9 @@ let api: ExtensionAPI | undefined;
 let pendingContinuation: { goalId: string; marker: string; sent: boolean } | undefined;
 let continuationDeliveryTimer: ReturnType<typeof setTimeout> | undefined;
 const cancelledMarkers = new Set<string>();
+const pendingFileToolExecutions = new Map<string, { toolName: "read" | "write" | "edit"; path: string }>();
+let latestSuccessfulModifiedFilePath: string | undefined;
+let latestSuccessfulReadFilePath: string | undefined;
 
 const dgoalDoneTool = defineTool({
   name: "dgoal_done",
@@ -1202,6 +1205,7 @@ export default function dgoal(pi: ExtensionAPI) {
   pi.on("session_start", (_event, ctx) => {
     clearContinuation();
     clearCurrentCheckSnapshot();
+    resetAuditorWorkspaceTracker();
     currentGoal = loadGoal(ctx);
     ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
     // 切片3：计划浮层——首次带 UI 的 session_start 构造 overlay 并渲染
@@ -1216,6 +1220,7 @@ export default function dgoal(pi: ExtensionAPI) {
     if (currentGoal) persistGoal(currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
+    resetAuditorWorkspaceTracker();
     planOverlay?.dispose();
     planOverlay = undefined;
     ctx.ui.setStatus(STATUS_KEY, undefined);
@@ -1236,8 +1241,13 @@ export default function dgoal(pi: ExtensionAPI) {
     };
   });
 
+  pi.on("tool_execution_start", (event, ctx) => {
+    trackFileToolExecutionStart(event.toolCallId, event.toolName, event.args, ctx.cwd);
+  });
+
   // 切片3：plan 相关工具执行后刷新浮层（tool_execution_end 只读 currentGoal，不 replay）
   pi.on("tool_execution_end", (event) => {
+    trackFileToolExecutionEnd(event.toolCallId, event.isError);
     if (event.isError) return;
     if (event.toolName !== DGOAL_PLAN_TOOL_NAME && event.toolName !== DGOAL_CHECK_TOOL_NAME) return;
     planOverlay?.update();
@@ -1378,6 +1388,8 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   clearContinuation();
   // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
   // 否则 before_agent_start / agent_end 会提前把它当活跃 dgoal 推进，甚至打出孤儿 START prompt。
+  // 新 goal 启动时清除上一个 goal 遗留的 auditor workspace tracker，避免旧 worktree 路径泄漏到新 goal。
+  resetAuditorWorkspaceTracker();
   const pendingGoal = createGoal(objective.trim());
   currentGoal = pendingGoal;
   persistGoal(currentGoal);
@@ -1957,6 +1969,100 @@ export function loadGoal(ctx: DgoalContext) {
     : undefined;
 }
 
+export function resolveAuditorWorkspaceCwd(ctx: Pick<DgoalContext, "cwd" | "sessionManager">): string {
+  const sessionManager = ctx.sessionManager as
+    | { getBranch?: () => SessionBranchEntry[]; getEntries?: () => SessionBranchEntry[] }
+    | undefined;
+  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+  const baseGitRoot = findNearestGitRoot(ctx.cwd);
+  if (!baseGitRoot) return ctx.cwd;
+
+  const candidatePath = latestSuccessfulModifiedFilePath
+    ?? latestSuccessfulReadFilePath
+    ?? findLatestSessionToolPath(entries, ctx.cwd, new Set(["write", "edit"]))
+    ?? findLatestSessionToolPath(entries, ctx.cwd, new Set(["read"]));
+  if (!candidatePath) return ctx.cwd;
+
+  const candidateGitRoot = findNearestGitRoot(candidatePath);
+  if (!candidateGitRoot || sameFilesystemPath(candidateGitRoot, baseGitRoot)) return ctx.cwd;
+  return candidateGitRoot;
+}
+
+function resetAuditorWorkspaceTracker() {
+  pendingFileToolExecutions.clear();
+  latestSuccessfulModifiedFilePath = undefined;
+  latestSuccessfulReadFilePath = undefined;
+}
+
+function trackFileToolExecutionStart(toolCallId: string, toolName: string, args: unknown, cwd: string) {
+  if (toolName !== "read" && toolName !== "write" && toolName !== "edit") return;
+  if (!args || typeof args !== "object") return;
+  const rawPath = (args as { path?: unknown }).path;
+  if (typeof rawPath !== "string" || rawPath.length === 0) return;
+  const resolvedPath = path.isAbsolute(rawPath) ? path.normalize(rawPath) : path.resolve(cwd, rawPath);
+  pendingFileToolExecutions.set(toolCallId, { toolName, path: resolvedPath });
+}
+
+function trackFileToolExecutionEnd(toolCallId: string, isError: boolean) {
+  const pending = pendingFileToolExecutions.get(toolCallId);
+  if (!pending) return;
+  pendingFileToolExecutions.delete(toolCallId);
+  if (isError) return;
+  if (pending.toolName === "read") {
+    latestSuccessfulReadFilePath = pending.path;
+    return;
+  }
+  latestSuccessfulModifiedFilePath = pending.path;
+}
+
+function findLatestSessionToolPath(entries: SessionBranchEntry[], cwd: string, toolNames: ReadonlySet<string>): string | undefined {
+  for (let entryIndex = entries.length - 1; entryIndex >= 0; entryIndex -= 1) {
+    const entry = entries[entryIndex];
+    if (entry.type !== "message") continue;
+    const message = entry.message;
+    if (!message || message.role !== "assistant" || !Array.isArray(message.content)) continue;
+
+    for (let blockIndex = message.content.length - 1; blockIndex >= 0; blockIndex -= 1) {
+      const block = message.content[blockIndex];
+      if (!block || typeof block !== "object") continue;
+      const candidate = block as { type?: unknown; name?: unknown; arguments?: unknown };
+      if (candidate.type !== "toolCall" || typeof candidate.name !== "string" || !toolNames.has(candidate.name)) continue;
+      if (!candidate.arguments || typeof candidate.arguments !== "object") continue;
+      const rawPath = (candidate.arguments as { path?: unknown }).path;
+      if (typeof rawPath !== "string" || rawPath.length === 0) continue;
+      return path.isAbsolute(rawPath) ? path.normalize(rawPath) : path.resolve(cwd, rawPath);
+    }
+  }
+  return undefined;
+}
+
+function findNearestGitRoot(startPath: string): string | undefined {
+  let current = startPath;
+  try {
+    if (!fs.statSync(current).isDirectory()) current = path.dirname(current);
+  } catch {
+    current = path.dirname(current);
+  }
+
+  while (true) {
+    if (fs.existsSync(path.join(current, ".git"))) return current;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+
+function sameFilesystemPath(left: string, right: string) {
+  const normalize = (value: string) => {
+    try {
+      return fs.realpathSync.native?.(value) ?? fs.realpathSync(value);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  return normalize(left) === normalize(right);
+}
+
 // 从当前会话分支里提取 user/assistant 对话文本，作为摘要子进程的输入素材。
 // 只取真实对话：toolResult / bashExecution / custom 等噪音过滤掉，每条裁到合理长度。
 function extractPriorDiscussion(ctx: DgoalContext, capBytes = CONTEXT_INPUT_CAP_BYTES): string {
@@ -2295,6 +2401,7 @@ function safeNotify(ctx: DgoalContext, message: string, level: "info" | "warning
 function clearActiveGoal(ctx: DgoalContext) {
   cancelPendingContinuation();
   consecutiveErrors = 0;
+  resetAuditorWorkspaceTracker();
   currentGoal = undefined;
   persistGoal(null);
   safeSetDgoalStatus(ctx, undefined);
@@ -2309,6 +2416,7 @@ function finalizeGoal(ctx: DgoalContext) {
     persistGoal(currentGoal);
   }
   cancelPendingContinuation();
+  resetAuditorWorkspaceTracker();
   // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失。
   // UI 边界容错：planOverlay / ctx.ui 由主程序实现，TUI 渲染异常（如主程序 0.79.4 的
   // Spacer is not defined）不得阻断 goal 状态清空——状态机一致性优先于最终 UI 展示。
@@ -2588,7 +2696,11 @@ async function runIsolatedCheck(args: {
   const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
   const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
-    const proc = spawnManagedSubprocess(invocation.command, invocation.args, ctx.cwd);
+    const auditorCwd = resolveAuditorWorkspaceCwd({
+      cwd: ctx.cwd,
+      sessionManager: (ctx as unknown as DgoalContext).sessionManager,
+    });
+    const proc = spawnManagedSubprocess(invocation.command, invocation.args, auditorCwd);
 
     let finalReport = "";
     let partialReport = "";
@@ -3144,6 +3256,19 @@ export function __resetGoalForTest() {
   currentGoal = undefined;
   currentCheckSnapshot = undefined;
   i18nApi = undefined;
+  resetAuditorWorkspaceTracker();
+}
+
+export function __resetAuditorWorkspaceTrackerForTest() {
+  resetAuditorWorkspaceTracker();
+}
+
+export function __trackFileToolExecutionStartForTest(toolCallId: string, toolName: string, args: unknown, cwd: string) {
+  trackFileToolExecutionStart(toolCallId, toolName, args, cwd);
+}
+
+export function __trackFileToolExecutionEndForTest(toolCallId: string, isError: boolean) {
+  trackFileToolExecutionEnd(toolCallId, isError);
 }
 
 // 测试专用：复用生产里的子进程终止逻辑，验证 detached process group 能被整体收尸。

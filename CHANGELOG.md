@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-07
+
+### Fixed
+
+- **建检子进程在 git worktree 场景下看对真实工作目录**：`dgoal_check` / `dgoal_done` 起的独立审核子进程此前始终用会话 `ctx.cwd` 启动，在 agent 于独立 `git worktree`（嵌套工作树）里改文件时看不到改动，导致 agent 为过建检不得不把 diff `git apply` 回主 worktree。现新增审核工作目录推断：优先取当前轮已成功执行的文件型工具调用（`edit` / `write`，再回退 `read`）的路径，再回退到已持久化的会话历史里的最近文件工具调用，最终在其所属 git 根与当前 `ctx.cwd` 所属 git 根不同时切到对应 worktree 根；同仓库仍保持原 `ctx.cwd`，无文件历史时回退当前目录。tracker 生命周期对齐 goal：在 `startGoal` / `clearActiveGoal` / `finalizeGoal` / `session_start` / `session_shutdown` 均重置，避免上一个 goal 的 worktree 路径泄漏到下一个 goal。
+
 ## [0.5.4] - 2026-07-06
 
 ### Added
