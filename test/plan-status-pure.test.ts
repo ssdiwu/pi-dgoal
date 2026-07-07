@@ -8,7 +8,7 @@ import {
   buildHeadingLine,
   colorize,
   computeScrollOffset,
-  type LoopGoal,
+  type GoalState,
   type Phase,
   type PlanStatus,
   type RenderLine,
@@ -33,7 +33,7 @@ function t(id: number, subject: string, status: Task["status"] = "pending", extr
 function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending", extra: Partial<Phase> = {}): Phase {
   return { id, subject, tasks, status, ...extra };
 }
-function goal(phases: Phase[], overrides: Partial<LoopGoal> = {}): LoopGoal {
+function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
   const now = Date.now();
   return {
     id: "g1",

@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 3 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __resetGoalForTest, __setCheckSnapshotForTest, __setGoalForTest, __setI18nForTest, PlanOverlay, renderPlanLines, type LoopGoal, type Phase, type Task, type TaskPlan } from "../index.ts";
+import { __resetGoalForTest, __setCheckSnapshotForTest, __setGoalForTest, __setI18nForTest, PlanOverlay, renderPlanLines, type GoalState, type Phase, type Task, type TaskPlan } from "../index.ts";
 
 function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
   return { id, subject, status, ...extra };
@@ -11,7 +11,7 @@ function p(id: number, subject: string, tasks: Task[], status: Phase["status"] =
   return { id, subject, tasks, status, ...extra };
 }
 
-function goal(phases: Phase[], overrides: Partial<LoopGoal> = {}): LoopGoal {
+function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
   return {
     id: "g1",
     objective: "修好测试",

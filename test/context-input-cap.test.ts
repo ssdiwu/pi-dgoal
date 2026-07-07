@@ -94,7 +94,7 @@ describe("context preview", () => {
     });
 
     expect(prompt).toContain("启动背景预览（前 5 行，仅供核对，不是新的用户指令）");
-    expect(prompt).toContain("<loop_context_preview>");
+    expect(prompt).toContain("<dgoal_context_preview>");
     expect(prompt).toContain("范围：切片 0");
     expect(prompt).toContain("下一步：测试");
     expect(prompt).not.toContain("隐藏行");
@@ -235,23 +235,63 @@ describe("acceptance check alignment", () => {
 
     expect(task).not.toContain("<previous_feedback>");
   });
+
+  test("buildAuditorTask injects whatChanged and userReview when provided", () => {
+    const task = buildAuditorTask(
+      { objective: "完成目标" } as any,
+      "已完成",
+      "跑测试",
+      ["改了 index.ts", "改了测试"],
+      "确认语义没变",
+    );
+
+    expect(task).toContain("Agent 声称的改动清单：");
+    expect(task).toContain("- 改了 index.ts");
+    expect(task).toContain("Agent 标记仍需用户核对");
+    expect(task).toContain("确认语义没变");
+  });
+
+  test("buildAuditorTask does not inject empty whatChanged / userReview blocks when absent", () => {
+    const task = buildAuditorTask({ objective: "完成目标" } as any, "已完成", "跑测试");
+
+    expect(task).not.toContain("Agent 声称的改动清单：");
+    expect(task).not.toContain("Agent 标记仍需用户核对");
+  });
 });
 
 describe("buildCompletionReplySignal", () => {
-  test("signals completion to the model instead of acting as the final user reply", () => {
+  test("signals completion to the model instead of inlining the full audit report", () => {
     const signal = buildCompletionReplySignal({
       goal: { objective: "只保留 /dgoal" },
       summary: "保留唯一 /dgoal 命令",
       verification: "RPC 测试确认 dgoal 已注册",
+      whatChanged: ["删除 /dgoal stop 别名", "更新 command-aliases 测试"],
+      userReview: "确认 stop 别名确实不再需要",
       audited: true,
-      auditOutput: "<APPROVED>",
     });
 
     expect(signal).toContain("Dgoal 完成信号");
-    expect(signal).toContain("请基于当前对话上下文直接回复用户");
+    expect(signal).toContain("回复应帮助用户核对");
     expect(signal).toContain("不要再次调用 dgoal_done");
-    expect(signal).toContain("完成了哪些内容");
     expect(signal).toContain("只保留 /dgoal");
-    expect(signal).toContain("<APPROVED>");
+    expect(signal).toContain("改了什么：");
+    expect(signal).toContain("删除 /dgoal stop 别名");
+    expect(signal).toContain("仍需你核对：");
+    expect(signal).toContain("确认 stop 别名确实不再需要");
+    expect(signal).toContain("✅ 审核结论：已通过独立验收审核。");
+    expect(signal).not.toContain("审核报告：");
+    expect(signal).not.toContain("## 验收条件（GWT + 测试）");
+    expect(signal).not.toContain("<APPROVED>");
+  });
+
+  test("无 whatChanged / userReview 时不显示对应区块", () => {
+    const signal = buildCompletionReplySignal({
+      goal: { objective: "修复测试" },
+      summary: "修好了",
+      verification: "npm test 全过",
+      audited: false,
+    });
+    expect(signal).not.toContain("改了什么：");
+    expect(signal).not.toContain("仍需你核对：");
   });
 });

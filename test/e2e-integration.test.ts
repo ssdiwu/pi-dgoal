@@ -22,7 +22,7 @@ import {
   __setGoalForTest,
   __setPlanOverlayForTest,
   renderPlanLines,
-  type LoopGoal,
+  type GoalState,
   type Phase,
   type PlanProposal,
   proposalToPlan,
@@ -35,9 +35,9 @@ import {
 
 // mock api：捕获 persistGoal 写入 + 模拟 appendEntry
 function makeApi() {
-  const writes: Array<{ type: string; data: { goal: LoopGoal | null } }> = [];
+  const writes: Array<{ type: string; data: { goal: GoalState | null } }> = [];
   const api = {
-    appendEntry: (type: string, data: { goal: LoopGoal | null }) => {
+    appendEntry: (type: string, data: { goal: GoalState | null }) => {
       writes.push({ type, data });
     },
   };
@@ -61,7 +61,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     __setApiForTest(api);
 
     // 1. 启动 goal（pending 状态，模拟 startGoal 建 goal）
-    let goal: LoopGoal = {
+    let goal: GoalState = {
       id: "e2e-1",
       objective: "E2E 测试目标",
       status: "pending",
@@ -153,7 +153,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
   test("计时从用户确认计划进入 active 时开始，而不是 pending 启动阶段", () => {
     const pendingStartedAt = 1_000;
     const activatedAt = 2_000;
-    const pendingGoal: LoopGoal = {
+    const pendingGoal: GoalState = {
       id: "timer-1",
       objective: "计时测试",
       status: "pending",
@@ -165,7 +165,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
       objective: "计时测试",
       phases: [{ subject: "阶段A" }],
     };
-    const activeGoal: LoopGoal = {
+    const activeGoal: GoalState = {
       ...pendingGoal,
       plan: proposalToPlan(proposal),
       status: "active",
@@ -180,7 +180,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const { api } = makeApi();
     __setApiForTest(api);
 
-    let goal: LoopGoal = {
+    let goal: GoalState = {
       id: "e2e-2",
       objective: "rejected 测试",
       status: "rejected",
@@ -200,17 +200,17 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(goal.rejectedCount).toBe(3);
   });
 
-  test("rejected 状态 isLooping 返回 true（agent_end/before_agent_start 仍推进）", () => {
-    const isLooping = (status: LoopGoal["status"]) => status === "active" || status === "rejected";
-    expect(isLooping("rejected")).toBe(true);
-    expect(isLooping("active")).toBe(true);
-    expect(isLooping("paused")).toBe(false);
-    expect(isLooping("done")).toBe(false);
+  test("rejected 状态 isGoalRunning 返回 true（agent_end/before_agent_start 仍推进）", () => {
+    const isGoalRunning = (status: GoalState["status"]) => status === "active" || status === "rejected";
+    expect(isGoalRunning("rejected")).toBe(true);
+    expect(isGoalRunning("active")).toBe(true);
+    expect(isGoalRunning("paused")).toBe(false);
+    expect(isGoalRunning("done")).toBe(false);
   });
 
   // v0.5.2 切片3 · 终审反馈生命周期（ADR 0011）
   test("终审未通过写 finalFeedback，覆盖上一轮报告", () => {
-    let goal: LoopGoal = { id: "1", objective: "o", status: "rejected", rejectedCount: 1, startedAt: 1, updatedAt: 1, iteration: 0 };
+    let goal: GoalState = { id: "1", objective: "o", status: "rejected", rejectedCount: 1, startedAt: 1, updatedAt: 1, iteration: 0 };
     goal = setFinalFeedback(goal, "终审报告 v1", 1);
     expect(goal.finalFeedback!.report).toBe("终审报告 v1");
     expect(goal.finalFeedback!.rejectedCount).toBe(1);
@@ -222,25 +222,25 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
 
   test("resume(audit_failed_3x) 清零 rejectedCount 但保留 finalFeedback", () => {
     // 3 次不过进入 paused，finalFeedback 带在 goal 上
-    const paused: LoopGoal = {
+    const paused: GoalState = {
       id: "1", objective: "o", status: "paused", pauseReason: "audit_failed_3x",
       rejectedCount: 3, finalFeedback: { report: "第3次终审报告", rejectedCount: 3, createdAt: 1 },
       startedAt: 1, updatedAt: 1, iteration: 0,
-    } as LoopGoal;
+    } as GoalState;
     // 模拟 resume 逻辑：markGoalResumed(goal, now, clearRejected ? {rejectedCount:0} : {})
     const clearRejected = paused.pauseReason === "audit_failed_3x";
-    const resumed: LoopGoal = { ...paused, ...(clearRejected ? { rejectedCount: 0 } : {}), status: "active" } as LoopGoal;
+    const resumed: GoalState = { ...paused, ...(clearRejected ? { rejectedCount: 0 } : {}), status: "active" } as GoalState;
     expect(resumed.rejectedCount).toBe(0);
     expect(resumed.finalFeedback!.report).toBe("第3次终审报告");
     expect(resumed.finalFeedback!.rejectedCount).toBe(3); // 报告记录的是当时的计数，不清
   });
 
   test("终审 approved 后随 goal 清空，finalFeedback 不残留", () => {
-    const goal: LoopGoal = {
+    const goal: GoalState = {
       id: "1", objective: "o", status: "rejected", rejectedCount: 1,
       finalFeedback: { report: "报告", rejectedCount: 1, createdAt: 1 },
       startedAt: 1, updatedAt: 1, iteration: 0,
-    } as LoopGoal;
+    } as GoalState;
     // 模拟 finalizeGoal：currentGoal = null / persistGoal(null)
     // goal 被清空，feedback 随之结束
     expect(goal.finalFeedback).toBeDefined();
@@ -262,7 +262,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const notes: string[] = [];
     const ctx = { ui: { setStatus: () => {}, notify: (msg: string) => notes.push(msg) } } as never;
     __pauseOnAuditFailureForTest(ctx, "idle_timeout");
-    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    const persisted = writes.at(-1)?.data.goal as GoalState;
     expect(persisted.status).toBe("paused");
     expect(persisted.pauseReason).toBe("audit_error");
     expect(notes.at(-1)).toContain("idle_timeout");
@@ -273,12 +273,12 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     __setApiForTest(api);
 
     // audit_failed_3x
-    const g1: LoopGoal = { id: "1", objective: "o", status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3, startedAt: 1, updatedAt: 1, iteration: 0 };
+    const g1: GoalState = { id: "1", objective: "o", status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3, startedAt: 1, updatedAt: 1, iteration: 0 };
     const clear1 = g1.pauseReason === "audit_failed_3x";
     expect(clear1).toBe(true);
 
     // user_abort
-    const g2: LoopGoal = { id: "2", objective: "o", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 };
+    const g2: GoalState = { id: "2", objective: "o", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 };
     const clear2 = g2.pauseReason === "audit_failed_3x";
     expect(clear2).toBe(false);
   });
@@ -314,7 +314,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
 
       await __resumeGoalForTest(pi, ctx);
 
-      const persisted = writes.at(-1)?.data.goal as LoopGoal;
+      const persisted = writes.at(-1)?.data.goal as GoalState;
       expect(persisted.status).toBe("active");
       expect(persisted.pauseStartedAt).toBeUndefined();
       expect(persisted.pauseReason).toBeUndefined();
@@ -329,7 +329,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
 
 describe("端到端集成 · 浮层渲染与状态机的连贯性", () => {
   test("phase 状态变化后浮层正确反映", () => {
-    let goal: LoopGoal = {
+    let goal: GoalState = {
       id: "e2e-3",
       objective: "连贯性测试",
       status: "active",
@@ -391,7 +391,7 @@ describe("端到端集成 · 启动闸门兜底（拷问 25：重试 2 次失败
 // 复刻工具的 reducer 核心：status 转换 + phase 聚合，调用真正的 export 函数
 import { applyPlanMutation, detectPlanCycle } from "../index.ts";
 
-function applyPlanUpdate(goal: LoopGoal, params: Record<string, unknown>): { goal: LoopGoal; op: unknown } {
+function applyPlanUpdate(goal: GoalState, params: Record<string, unknown>): { goal: GoalState; op: unknown } {
   const r = applyPlanMutation(goal, "update", params);
   return { goal: r.goal, op: r.op };
 }
@@ -426,7 +426,7 @@ describe("端到端集成 · finalizeGoal UI 边界容错（Spacer is not define
     __setPlanOverlayForTest(undefined);
   });
 
-  function makeActiveGoal(): LoopGoal {
+  function makeActiveGoal(): GoalState {
     return {
       id: "resil-1",
       objective: "容错测试目标",
@@ -512,7 +512,7 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
       },
     } as never;
     expect(() => __pauseOnAuditFailureForTest(ctx, "idle_timeout")).not.toThrow();
-    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    const persisted = writes.at(-1)?.data.goal as GoalState;
     expect(persisted.status).toBe("paused");
     expect(persisted.pauseReason).toBe("audit_error");
   });
@@ -520,7 +520,7 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
   test("终审 rejected：setStatus/notify 抛错时，仍先落盘 rejected + finalFeedback", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
-    const goal: LoopGoal = {
+    const goal: GoalState = {
       id: "audit-ui-2",
       objective: "o",
       status: "active",
@@ -536,7 +536,7 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
       },
     } as never;
     expect(() => __handleFinalAuditRejectedForTest({ completedGoal: goal, summary: "s", verification: "v", auditOutput: "报告", ctx })).not.toThrow();
-    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    const persisted = writes.at(-1)?.data.goal as GoalState;
     expect(persisted.status).toBe("rejected");
     expect(persisted.finalFeedback?.report).toBe("报告");
     expect(persisted.rejectedCount).toBe(1);
@@ -545,7 +545,7 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
   test("终审第 3 次 rejected：setStatus/notify/overlay.update 抛错时，仍先落盘 paused(audit_failed_3x)", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
-    const goal: LoopGoal = {
+    const goal: GoalState = {
       id: "audit-ui-3",
       objective: "o",
       status: "rejected",
@@ -563,7 +563,7 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
       },
     } as never;
     expect(() => __handleFinalAuditRejectedForTest({ completedGoal: goal, summary: "s", verification: "v", auditOutput: "报告3", ctx })).not.toThrow();
-    const persisted = writes.at(-1)?.data.goal as LoopGoal;
+    const persisted = writes.at(-1)?.data.goal as GoalState;
     expect(persisted.status).toBe("paused");
     expect(persisted.pauseReason).toBe("audit_failed_3x");
     expect(persisted.finalFeedback?.report).toBe("报告3");
@@ -573,12 +573,12 @@ describe("端到端集成 · 审核失败路径 UI 边界容错（Spacer is not 
 
 describe("端到端集成 · v0.5.2 越闸门推进拦截（切片6）", () => {
   // 构造：phase1 未 done，phase2 后续
-  function makeGoalWithPendingPhase1(): LoopGoal {
+  function makeGoalWithPendingPhase1(): GoalState {
     const t1: Task = { id: 1, subject: "t1", status: "in_progress" };
     const t2: Task = { id: 2, subject: "t2", status: "pending" };
     const ph1: Phase = { id: 1, subject: "阶段一", status: "in_progress", tasks: [t1] };
     const ph2: Phase = { id: 2, subject: "阶段二", status: "pending", tasks: [t2] };
-    return { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph1, ph2], nextId: 3 } } as LoopGoal;
+    return { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph1, ph2], nextId: 3 } } as GoalState;
   }
 
   test("dgoal_check 真实工具入口：phase1 未过时，对 phase2 建检 = 越闸门推进", async () => {
@@ -601,7 +601,7 @@ describe("端到端集成 · v0.5.2 越闸门推进拦截（切片6）", () => {
   test("所有 phase done 后，dgoal_done 放行（无 pending）", () => {
     const t: Task = { id: 1, subject: "t", status: "done", evidence: "ok" };
     const ph: Phase = { id: 1, subject: "阶段一", status: "done", tasks: [t] };
-    const goal = { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph], nextId: 2 } } as LoopGoal;
+    const goal = { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph], nextId: 2 } } as GoalState;
     expect(currentUncheckedPhase(goal)).toBeUndefined();
   });
 });

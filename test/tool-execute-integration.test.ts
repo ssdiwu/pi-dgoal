@@ -21,7 +21,7 @@ import {
   applyPlanMutation,
   formatPlanResult,
   proposalToPlan,
-  type LoopGoal,
+  type GoalState,
   type PlanProposal,
   type Task,
 } from "../index.ts";
@@ -46,7 +46,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     const { api, writes } = makeApi();
     __setApiForTest(api);
 
-    let goal: LoopGoal = makeActiveGoal();
+    let goal: GoalState = makeActiveGoal();
 
     // create task
     const r1 = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t1" });
@@ -93,7 +93,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
   test("dgoal_plan 错误分支：create 缺 subject 报 error（工具 execute 透传不 persist）", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
-    let goal: LoopGoal = makeActiveGoal();
+    let goal: GoalState = makeActiveGoal();
 
     const r = applyPlanMutation(goal, "create", { phaseId: 1 }); // 缺 subject
     expect(r.op.kind).toBe("error");
@@ -106,7 +106,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
   test("completed 不回退的不可逆性（连续 reject）", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
-    let goal: LoopGoal = makeActiveGoal();
+    let goal: GoalState = makeActiveGoal();
     const c = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t" });
     if (c.op.kind !== "create") throw new Error("setup");
     goal = c.goal; api.appendEntry("dgoal-state", { goal });
@@ -144,7 +144,7 @@ describe("工具 execute 真实端到端 · proposalToPlan + plan 注入", () =>
     expect(plan.nextId).toBe(10); // 3 phase + 6 task = 7（phase 1, task 1,2, phase 2, task 3,4, phase 3, task 5,6, nextId 7）
 
     // 注入到 goal
-    const goal: LoopGoal = { ...makeActiveGoal(), plan, objective: proposal.objective };
+    const goal: GoalState = { ...makeActiveGoal(), plan, objective: proposal.objective };
     expect(goal.plan!.phases[0].subject).toBe("调研");
   });
 });
@@ -153,7 +153,7 @@ describe("工具 execute 真实端到端 · 涌现分解：长链 blockedBy", ()
   test("真实场景：5 task 线性依赖，addBlockedBy 增量合并", () => {
     const { api } = makeApi();
     __setApiForTest(api);
-    let goal: LoopGoal = makeActiveGoal();
+    let goal: GoalState = makeActiveGoal();
 
     // 建 5 个 task（id 1-5）
     for (let i = 0; i < 5; i += 1) {
@@ -242,16 +242,16 @@ describe("工具 execute 用户可见固定文案 · i18n 覆盖", () => {
 
 // helpers
 function makeApi() {
-  const writes: Array<{ type: string; data: { goal: LoopGoal | null } }> = [];
+  const writes: Array<{ type: string; data: { goal: GoalState | null } }> = [];
   const api = {
-    appendEntry: (type: string, data: { goal: LoopGoal | null }) => {
+    appendEntry: (type: string, data: { goal: GoalState | null }) => {
       writes.push({ type, data });
     },
   };
   return { api, writes };
 }
 
-function makeActiveGoal(): LoopGoal {
+function makeActiveGoal(): GoalState {
   return {
     id: "tool-1",
     objective: "工具测试",

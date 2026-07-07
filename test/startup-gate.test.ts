@@ -2,14 +2,11 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __handleProposalConfirmationForTest, __setI18nForTest, buildProposalConfirmationOptions, formatProposalConfirmTitle, formatProposalForConfirm, validateProposalInput, type LoopGoal, type PlanProposal } from "../index.ts";
+import { __handleProposalConfirmationForTest, __setI18nForTest, assessProposalReadiness, buildProposalConfirmationOptions, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type GoalState, type PlanProposal } from "../index.ts";
 
-// proposalToPlan 未 export，通过 formatProposalForConfirm 间接覆盖；
-// 这里单独 export 测需要，先确认是否 export。
-// 实际 proposalToPlan 是内部函数，通过 formatProposalForConfirm + 后续 dgoal_propose 工具集成测。
-// 这里测 formatProposalForConfirm（已 export）。
+// proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
 
-function goal(): LoopGoal {
+function goal(): GoalState {
   return { id: "g1", objective: "修测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
 }
 
@@ -50,6 +47,33 @@ describe("切片4 · validateProposalInput（verification 必填，ADR 0007）",
   test("phases 为空被拒（no phases，向后兼容）", () => {
     const r = validateProposalInput({ objective: "o", verification: "v", phaseCount: 0 });
     expect(r!.error).toBe("no phases");
+  });
+});
+
+describe("提案就绪度评估", () => {
+  test("已有 objective + verification + phases，但缺边界字段时 = L2，并显式暴露 non-goals 缺口", () => {
+    const readiness = assessProposalReadiness({
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phaseCount: 2,
+    });
+    expect(readiness.level).toBe("L2");
+    expect(readiness.gaps).toContain("nonGoals");
+    expect(readiness.gaps).toContain("guardrails");
+    expect(readiness.gaps).toContain("budget");
+  });
+
+  test("边界字段齐备时 = L3", () => {
+    const readiness = assessProposalReadiness({
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      phaseCount: 2,
+      nonGoals: ["不重构 i18n 框架"],
+      guardrails: ["不改跨会话状态"],
+      budget: "预计 2-3 轮，先跑 bun test",
+    });
+    expect(readiness.level).toBe("L3");
+    expect(readiness.gaps).toEqual([]);
   });
 });
 
@@ -167,6 +191,9 @@ describe("切片4 · formatProposalForConfirm", () => {
     const text = formatProposalForConfirm(goal(), proposal);
     expect(text).toContain("目标：修好 auth 测试");
     expect(text).toContain("验证：npm test auth 全过");
+    expect(text).toContain("就绪度：L2");
+    expect(text).toContain("缺口提示：");
+    expect(text).toContain("non-goals：未显式声明这个 goal 不做什么");
     expect(text).toContain("阶段计划（2 个 phase）");
     expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).not.toContain("- task 1: 修登录用例");
@@ -177,10 +204,13 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
   });
 
-  test("showTasks=true 时显示 task 明细", () => {
+  test("showTasks=true 时显示 task 明细与已提供的边界字段", () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
       verification: "npm test auth 全过",
+      nonGoals: ["不拆 PR"],
+      guardrails: ["不改跨会话状态"],
+      budget: "预计 2 轮内完成",
       phases: [
         {
           subject: "修复登录",
@@ -192,6 +222,10 @@ describe("切片4 · formatProposalForConfirm", () => {
       ],
     };
     const text = formatProposalForConfirm(goal(), proposal, { showTasks: true });
+    expect(text).toContain("就绪度：L3");
+    expect(text).toContain("不做什么：不拆 PR");
+    expect(text).toContain("护栏：不改跨会话状态");
+    expect(text).toContain("预算：预计 2 轮内完成");
     expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).toContain("- task 1: 修登录用例");
     expect(text).toContain("说明：覆盖 token 过期");
@@ -234,6 +268,7 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(summaryTitle).toContain("确认 /dgoal 计划？");
     expect(summaryTitle).toContain("目标：修好 auth 测试");
     expect(summaryTitle).toContain("验证：npm test auth 全过");
+    expect(summaryTitle).toContain("就绪度：L2");
     expect(summaryTitle).toContain("1. 修复登录（1 个 task）");
     expect(summaryTitle).not.toContain("- task 1: 修登录用例");
     expect(summaryTitle).toContain("覆盖 token 过期");
@@ -248,6 +283,12 @@ describe("切片4 · formatProposalForConfirm", () => {
         const messages: Record<string, string> = {
           "dgoal.proposal.objective": "Goal: {objective}",
           "dgoal.proposal.verification": "Verification: {verification}",
+          "dgoal.proposal.readiness": "Readiness: {level} ({meaning})",
+          "dgoal.proposal.readiness.meaning.L2": "goal, acceptance, and phase plan exist; boundary declarations still have gaps",
+          "dgoal.proposal.gapsHeading": "Gaps:",
+          "dgoal.proposal.gap.nonGoals": "  - non-goals: the plan never states what this goal will not do",
+          "dgoal.proposal.gap.guardrails": "  - guardrails: high-risk boundaries / explicit do-not-touch areas are missing",
+          "dgoal.proposal.gap.budget": "  - budget: missing cost or turn-boundary expectations",
           "dgoal.proposal.planHeading": "Phase plan ({count} phases):",
           "dgoal.proposal.taskCount": " ({count} tasks)",
           "dgoal.proposal.taskLine": "     - task {index}: {subject}",
@@ -269,6 +310,8 @@ describe("切片4 · formatProposalForConfirm", () => {
       const title = formatProposalConfirmTitle(goal(), proposal);
       expect(text).toContain("Goal: fix tests");
       expect(text).toContain("Verification: npm test");
+      expect(text).toContain("Readiness: L2");
+      expect(text).toContain("Gaps:");
       expect(text).toContain("Phase plan (1 phases):");
       expect(text).toContain("1. repair (1 tasks)");
       expect(text).not.toContain("- task 1: update assertions");
@@ -281,48 +324,6 @@ describe("切片4 · formatProposalForConfirm", () => {
     }
   });
 });
-
-import { proposalToPlan } from "../index.ts";
-
-describe("切片4 · proposalToPlan 转换", () => {
-  test("phase 和 task 分配递增 id，nextId 正确", () => {
-    const proposal: PlanProposal = {
-      objective: "o",
-      phases: [
-        { subject: "p1", tasks: [{ subject: "t1" }, { subject: "t2" }] },
-        { subject: "p2", tasks: [{ subject: "t3" }] },
-      ],
-    };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases).toHaveLength(2);
-    expect(plan.phases[0].id).toBe(1);
-    expect(plan.phases[0].tasks[0].id).toBe(2);
-    expect(plan.phases[0].tasks[1].id).toBe(3);
-    expect(plan.phases[1].id).toBe(4);
-    expect(plan.phases[1].tasks[0].id).toBe(5);
-    expect(plan.nextId).toBe(6);
-  });
-
-  test("task 初始 pending，带可选字段", () => {
-    const proposal: PlanProposal = {
-      objective: "o",
-      phases: [{ subject: "p1", tasks: [{ subject: "t1", description: "d", activeForm: "正在做" }] }],
-    };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases[0].tasks[0].status).toBe("pending");
-    expect(plan.phases[0].tasks[0].description).toBe("d");
-    expect(plan.phases[0].tasks[0].activeForm).toBe("正在做");
-  });
-
-  test("无 tasks 的 phase 也能建", () => {
-    const proposal: PlanProposal = { objective: "o", phases: [{ subject: "p1" }] };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases[0].tasks).toEqual([]);
-    expect(plan.phases[0].status).toBe("pending");
-  });
-});
-
-import { proposalToPlan } from "../index.ts";
 
 describe("切片4 · proposalToPlan 转换（id 分配）", () => {
   test("phase 和 task 顺序分配 id，nextId 递增", () => {

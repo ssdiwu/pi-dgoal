@@ -26,6 +26,8 @@
 15. `20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md` — Pi `ctx.ui.custom()` modal 选型调研
 16. `20-能力参考/25-dgoal-s-modal变体探索参考.md` — `/dgoal s` 三个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘
 17. `20-能力参考/26-Datawhale-LoopEngineering三文件循环参考.md` — Datawhale 推文三文件循环、图片机制核对与 dgoal 借鉴判断
+18. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
+19. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
 
 历史材料：
 

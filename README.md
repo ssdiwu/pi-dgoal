@@ -35,7 +35,7 @@ Start a goal with a Task Plan:
 
 Or, after you've already aligned the goal in the current conversation, use bare `/dgoal` to carry that prior discussion into the startup gate. If there is no prior discussion to carry, dgoal does not hard-start; it asks for an explicit objective instead. Use explicit `/dgoal s` (not bare `/dgoal`) to view status.
 
-The startup gate dialog shows a phase-level summary by default (goal + verification + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before dgoal execution begins.
+The startup gate dialog shows a phase-level summary by default (goal + verification + readiness + boundary gaps/signals + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before dgoal execution begins.
 
 During dgoal execution:
 
@@ -55,7 +55,7 @@ Control the goal:
 
 Declare completion (triggers final audit):
 
-The agent calls `dgoal_done(summary, verification)`. If the final audit passes, the goal closes and dgoal execution stops.
+The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. The completion reply produces a structured, checkable text (what changed / how verified / what still needs your review) rather than just announcing "done". If the final audit passes, the goal closes and dgoal execution stops.
 
 ## Tools
 
@@ -64,7 +64,7 @@ The agent calls `dgoal_done(summary, verification)`. If the final audit passes, 
 | `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before dgoal execution begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
 | `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Even on the last phase, it only checks that phase. |
-| `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. Triggers the goal-level final audit internally; the only way to close a goal. |
+| `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. Triggers the goal-level final audit internally; the only way to close a goal. Produces structured checkable completion text (what changed / how verified / what needs user review). |
 
 ## Design Boundaries
 
@@ -152,7 +152,7 @@ pi-dgoal/
 │   ├── 90-归档/                   ← historical
 │   └── 决策档案/                  ← architecture decision records
 ├── package.json
-├── index.ts                       ← single-file extension (~3040 lines)
+├── index.ts                       ← single-file extension (entry point)
 └── test/
     ├── command-aliases.test.ts
     ├── context-input-cap.test.ts

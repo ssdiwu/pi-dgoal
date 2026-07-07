@@ -5,12 +5,12 @@ import {
   __setGoalForTest,
   __showStatusForTest,
   PlanStatusDialog,
-  type LoopGoal,
+  type GoalState,
   type Phase,
   type TaskPlan,
 } from "../index.ts";
 
-function goal(phases: Phase[] = []): LoopGoal {
+function goal(phases: Phase[] = []): GoalState {
   return {
     id: "g-show-status",
     objective: "实施 v0.4.2",

@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   __resetGoalForTest,
   __setApiForTest,
-  isLoopGoal,
+  isGoalState,
   loadGoal,
   persistGoal,
   setPhaseFeedback,
@@ -13,14 +13,14 @@ import {
   setFinalFeedback,
   setPhaseCompleted,
   currentUncheckedPhase,
-  type LoopGoal,
+  type GoalState,
   type Phase,
   type Task,
   type TaskPlan,
 } from "../index.ts";
 
 // 构造一个带 plan 的 goal（0.2.0 形态）
-function makeGoalWithPlan(overrides: Partial<LoopGoal> = {}): LoopGoal {
+function makeGoalWithPlan(overrides: Partial<GoalState> = {}): GoalState {
   const task: Task = {
     id: 1,
     subject: "修登录测试",
@@ -49,7 +49,7 @@ function makeGoalWithPlan(overrides: Partial<LoopGoal> = {}): LoopGoal {
 }
 
 // 构造一个旧形态 goal（0.1.x，无 plan/verification/pauseReason/rejectedCount）
-function makeLegacyGoal(): LoopGoal {
+function makeLegacyGoal(): GoalState {
   return {
     id: "legacy-1",
     objective: "旧目标",
@@ -74,35 +74,35 @@ function makeCtx(entries: Array<{ type?: string; customType?: string; data?: unk
   };
 }
 
-describe("切片1 · isLoopGoal 向后兼容", () => {
+describe("切片1 · isGoalState 向后兼容", () => {
   test("接受 0.2.0 带 plan 的 goal", () => {
-    expect(isLoopGoal(makeGoalWithPlan())).toBe(true);
+    expect(isGoalState(makeGoalWithPlan())).toBe(true);
   });
 
   test("接受 0.1.x 旧 goal（无 plan 字段）", () => {
-    expect(isLoopGoal(makeLegacyGoal())).toBe(true);
+    expect(isGoalState(makeLegacyGoal())).toBe(true);
   });
 
   test("拒绝缺少必填字段的值", () => {
-    expect(isLoopGoal(null)).toBe(false);
-    expect(isLoopGoal({ id: "x" })).toBe(false);
-    expect(isLoopGoal({ id: "x", objective: "o", status: "active", startedAt: 1 })).toBe(false);
+    expect(isGoalState(null)).toBe(false);
+    expect(isGoalState({ id: "x" })).toBe(false);
+    expect(isGoalState({ id: "x", objective: "o", status: "active", startedAt: 1 })).toBe(false);
   });
 
-  test("plan 内部结构不进 isLoopGoal 硬校验（由 reducer 保证）", () => {
-    // 即便 plan 内部是脏数据，isLoopGoal 仍只校验 goal 顶层必填字段
+  test("plan 内部结构不进 isGoalState 硬校验（由 reducer 保证）", () => {
+    // 即便 plan 内部是脏数据，isGoalState 仍只校验 goal 顶层必填字段
     const goal = makeGoalWithPlan({ plan: { phases: [], nextId: 1 } as TaskPlan });
-    expect(isLoopGoal(goal)).toBe(true);
+    expect(isGoalState(goal)).toBe(true);
   });
 });
 
 describe("切片1 · persist/load 往返", () => {
   test("带 plan 的 goal persist 后 load 能完整恢复三层", () => {
     __resetGoalForTest();
-    let captured: { type: string; data: { goal: LoopGoal | null } } | undefined;
+    let captured: { type: string; data: { goal: GoalState | null } } | undefined;
     __setApiForTest({
       appendEntry: (type, data) => {
-        captured = { type, data: data as { goal: LoopGoal | null } };
+        captured = { type, data: data as { goal: GoalState | null } };
       },
     });
 
@@ -133,10 +133,10 @@ describe("切片1 · persist/load 往返", () => {
 
   test("persistGoal(null) 写入空 goal，loadGoal 返回 undefined", () => {
     __resetGoalForTest();
-    let captured: { goal: LoopGoal | null } | undefined;
+    let captured: { goal: GoalState | null } | undefined;
     __setApiForTest({
       appendEntry: (_type, data) => {
-        captured = data as { goal: LoopGoal | null };
+        captured = data as { goal: GoalState | null };
       },
     });
 
@@ -205,7 +205,7 @@ describe("切片1 · 三层内容数据结构", () => {
     };
     const plan: TaskPlan = { phases: [phase], nextId: 4 };
     const goal = makeGoalWithPlan({ plan });
-    expect(isLoopGoal(goal)).toBe(true);
+    expect(isGoalState(goal)).toBe(true);
     expect(goal.plan!.phases[0].tasks[2].blockedBy).toEqual([2]);
   });
 
@@ -280,19 +280,19 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     expect(currentUncheckedPhase(goal)).toBeUndefined();
   });
 
-  test("phaseFeedbackById 旧 goal 无此字段仍可 isLoopGoal（向后兼容）", () => {
+  test("phaseFeedbackById 旧 goal 无此字段仍可 isGoalState（向后兼容）", () => {
     const legacy = makeLegacyGoal();
-    expect(isLoopGoal(legacy)).toBe(true);
+    expect(isGoalState(legacy)).toBe(true);
     expect(legacy.phaseFeedbackById).toBeUndefined();
     expect(legacy.finalFeedback).toBeUndefined();
   });
 
   test("带 feedback 的 goal persist 后 load 能完整恢复 phase 和 final feedback", () => {
     __resetGoalForTest();
-    let captured: { type: string; data: { goal: LoopGoal | null } } | undefined;
+    let captured: { type: string; data: { goal: GoalState | null } } | undefined;
     __setApiForTest({
       appendEntry: (type, data) => {
-        captured = { type, data: data as { goal: LoopGoal | null } };
+        captured = { type, data: data as { goal: GoalState | null } };
       },
     });
 

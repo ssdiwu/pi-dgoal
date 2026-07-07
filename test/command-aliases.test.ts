@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { __parseCommandForTest, __setI18nForTest, __startGoalForTest, buildProposePrompt, BARE_START_OBJECTIVE, type LoopGoal } from "../index.ts";
+import { __parseCommandForTest, __setI18nForTest, __startGoalForTest, buildProposePrompt, BARE_START_OBJECTIVE, type GoalState } from "../index.ts";
 
 describe("/dgoal command aliases", () => {
   test("status uses full word and single-letter alias; bare /dgoal now starts (承接前文)", () => {
@@ -26,11 +26,11 @@ describe("/dgoal command aliases", () => {
 
 describe("v0.5.2 切片8 · 裸 /dgoal 承接前文启动", () => {
   test("buildProposePrompt 承接版：objective 为占位时发承接指令，要求 agent 归纳 objective", () => {
-    const goal: LoopGoal = {
+    const goal: GoalState = {
       id: "g", objective: BARE_START_OBJECTIVE, status: "pending",
       startedAt: 1, updatedAt: 1, iteration: 0,
       contextSummary: "前文讨论了对齐的方案",
-    } as LoopGoal;
+    } as GoalState;
     const prompt = buildProposePrompt(goal);
     expect(prompt).toContain("承接前文");
     expect(prompt).toContain("归纳");
@@ -39,10 +39,10 @@ describe("v0.5.2 切片8 · 裸 /dgoal 承接前文启动", () => {
   });
 
   test("buildProposePrompt 普通版：objective 明确时不发承接指令", () => {
-    const goal: LoopGoal = {
+    const goal: GoalState = {
       id: "g", objective: "修好测试", status: "pending",
       startedAt: 1, updatedAt: 1, iteration: 0,
-    } as LoopGoal;
+    } as GoalState;
     const prompt = buildProposePrompt(goal);
     expect(prompt).toContain("修好测试");
     expect(prompt).not.toContain("承接前文");

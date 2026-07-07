@@ -6,14 +6,14 @@ import {
   applyPlanMutation,
   detectPlanCycle,
   setPhaseCompleted,
-  type LoopGoal,
+  type GoalState,
   type PlanAction,
   type Task,
   type Phase,
   type TaskPlan,
 } from "../index.ts";
 
-function makeGoal(phases: Phase[], nextId?: number): LoopGoal {
+function makeGoal(phases: Phase[], nextId?: number): GoalState {
   const plan: TaskPlan = { phases, nextId: nextId ?? phases.reduce((n, p) => Math.max(n, ...p.tasks.map((t) => t.id), p.id), 1) + 1 };
   return {
     id: "g1",
@@ -34,7 +34,7 @@ function phase(id: number, subject: string, tasks: Task[], status: Phase["status
   return { id, subject, tasks, status };
 }
 
-function run(goal: LoopGoal, action: PlanAction, params: Record<string, unknown>) {
+function run(goal: GoalState, action: PlanAction, params: Record<string, unknown>) {
   return applyPlanMutation(goal, action, params);
 }
 

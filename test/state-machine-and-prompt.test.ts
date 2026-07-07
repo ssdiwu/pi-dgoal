@@ -3,11 +3,12 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  buildGoalBoundaryBlock,
   buildPlanContextBlock,
   buildCheckFeedbackBlock,
   shouldAbortCurrentTurnOnClear,
   shouldDeliverContinuationNow,
-  type LoopGoal,
+  type GoalState,
   type Phase,
   type Task,
   type TaskPlan,
@@ -20,7 +21,7 @@ function p(id: number, subject: string, tasks: Task[], status: Phase["status"] =
   return { id, subject, tasks, status };
 }
 
-function goal(overrides: Partial<LoopGoal> = {}): LoopGoal {
+function goal(overrides: Partial<GoalState> = {}): GoalState {
   return {
     id: "g1",
     objective: "修测试",
@@ -33,7 +34,7 @@ function goal(overrides: Partial<LoopGoal> = {}): LoopGoal {
 }
 
 describe("切片6 · 状态机类型完整性", () => {
-  test("LoopStatus 含 rejected/done（编译期保证，此处只验证可构造）", () => {
+  test("GoalStatus 含 rejected/done（编译期保证，此处只验证可构造）", () => {
     const g1 = goal({ status: "rejected", rejectedCount: 1 });
     const g2 = goal({ status: "done" });
     const g3 = goal({ status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3 });
@@ -69,8 +70,8 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
       } as TaskPlan,
     });
     const block = buildPlanContextBlock(g);
-    expect(block).toContain("<loop_plan>");
-    expect(block).toContain("</loop_plan>");
+    expect(block).toContain("<dgoal_plan>");
+    expect(block).toContain("</dgoal_plan>");
     // done phase：保留标题行
     expect(block).toContain("[completed] phase #1: 修复auth");
     // done phase：软遗忘其下 task 的 subject 与 evidence
@@ -174,6 +175,28 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
   });
 });
 
+describe("goal 边界注入", () => {
+  test("无边界字段时返回空", () => {
+    expect(buildGoalBoundaryBlock(goal())).toBe("");
+  });
+
+  test("nonGoals / guardrails / budget 会注入 dgoal_boundaries block", () => {
+    const block = buildGoalBoundaryBlock(goal({
+      nonGoals: ["不拆 PR", "不重构 i18n 框架"],
+      guardrails: ["不改跨会话状态"],
+      budget: "预计 2 轮内完成",
+    }));
+    expect(block).toContain("<dgoal_boundaries>");
+    expect(block).toContain("不做什么：");
+    expect(block).toContain("- 不拆 PR");
+    expect(block).toContain("- 不重构 i18n 框架");
+    expect(block).toContain("护栏：");
+    expect(block).toContain("- 不改跨会话状态");
+    expect(block).toContain("预算：预计 2 轮内完成");
+    expect(block).toContain("</dgoal_boundaries>");
+  });
+});
+
 describe("续跑发送时机", () => {
   test("agent 仍忙时不应立刻递送 continuation", () => {
     expect(shouldDeliverContinuationNow({ isIdle: () => false, hasPendingMessages: () => false })).toBe(false);
@@ -225,51 +248,51 @@ describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）
   function p2(id: number, subject: string, tasks: Task[], status: Phase["status"] = "in_progress"): Phase { return { id, subject, tasks, status }; }
 
   test("active + 当前 phase 有阶段反馈：注入 phase 反馈", () => {
-    const g: LoopGoal = {
+    const g: GoalState = {
       id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
       plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
       phaseFeedbackById: { "1": { phaseId: 1, report: "phase1 未通过报告", createdAt: 1 } },
-    } as LoopGoal;
+    } as GoalState;
     const block = buildCheckFeedbackBlock(g);
     expect(block).toContain('<check_feedback type="phase" phaseId="1">');
     expect(block).toContain("phase1 未通过报告");
   });
 
   test("active + 非当前 phase 的反馈：不注入", () => {
-    const g: LoopGoal = {
+    const g: GoalState = {
       id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
       plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")]), p2(2, "阶段二", [t2(2, "t2", "pending")])], nextId: 3 },
       // 反馈在 phase 2，但当前未完成是 phase 1
       phaseFeedbackById: { "2": { phaseId: 2, report: "phase2 报告", createdAt: 1 } },
-    } as LoopGoal;
+    } as GoalState;
     expect(buildCheckFeedbackBlock(g)).toBe("");
   });
 
   test("rejected + 终审反馈：注入 final 反馈", () => {
-    const g: LoopGoal = {
+    const g: GoalState = {
       id: "g", objective: "o", status: "rejected", rejectedCount: 2, startedAt: 1, updatedAt: 1, iteration: 0,
       finalFeedback: { report: "终审未通过报告", rejectedCount: 2, createdAt: 1 },
-    } as LoopGoal;
+    } as GoalState;
     const block = buildCheckFeedbackBlock(g);
     expect(block).toContain('<check_feedback type="final" rejectedCount="2">');
     expect(block).toContain("终审未通过报告");
   });
 
   test("无任何反馈：不生成空 block", () => {
-    const g: LoopGoal = {
+    const g: GoalState = {
       id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
       plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
-    } as LoopGoal;
+    } as GoalState;
     expect(buildCheckFeedbackBlock(g)).toBe("");
   });
 
   test("final 优先：resume 后 active 但 finalFeedback 仍在，注入 final 而非 phase", () => {
-    const g: LoopGoal = {
+    const g: GoalState = {
       id: "g", objective: "o", status: "active", rejectedCount: 0, startedAt: 1, updatedAt: 1, iteration: 0,
       plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
       phaseFeedbackById: { "1": { phaseId: 1, report: "phase 报告", createdAt: 1 } },
       finalFeedback: { report: "终审报告（resume 后继续修）", rejectedCount: 3, createdAt: 1 },
-    } as LoopGoal;
+    } as GoalState;
     const block = buildCheckFeedbackBlock(g);
     expect(block).toContain('type="final"');
     expect(block).not.toContain('type="phase"');

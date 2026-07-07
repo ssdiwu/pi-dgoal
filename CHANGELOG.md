@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-06
+
+### Added
+
+- **`dgoal_propose` 计划就绪度自检**：启动闸门确认 UI 现在展示 plan 级 L0-L3 就绪度等级与缺口提示，优先暴露 `non-goals` 边界不足。`dgoal_propose` 新增可选 `nonGoals` / `guardrails` / `budget` 字段作为 plan 级信号；确认后边界持久化到 `GoalState`，并在执行期 system prompt 注入 `<dgoal_boundaries>` block。就绪度评估是计划提交前的评估，不是运行时自主权档位，也不引入项目级 `loop-audit` / badge。
+- **`dgoal_done` 可核对完成文本**：`dgoal_done` 新增可选 `whatChanged`（改动清单）与 `userReview`（仍需用户核对）字段；完成回复信号从笼统宣布“已完成”升级为结构化的可核对文本（目标 / 完成总结 / 验证证据 / 改了什么 / 仍需你核对 / 审核结论）。终审任务输入也包含改动清单，方便审核器核验。对应三债模型：理解债靠 agent 解释恢复，意图债 agent 还不了（`userReview` 提示人核对）。
+
+### Changed
+
+- **loop 命名清理**：按“goal/loop 不分，对外用 goal/dgoal”的概念决定，统一清理残留 `loop` 命名。类型名 `LoopGoal`→`GoalState`、`LoopStatus`→`GoalStatus`、`LoopContext`→`DgoalContext`、`LoopStateEntryData`→`DgoalStateEntryData`；函数名 `isLooping`→`isGoalRunning`、`handleLoopCommand`→`handleDgoalCommand`；prompt 注入标签 `<loop_*>`→`<dgoal_*>`。代码、测试与当前权威文档均已同步；归档与决策档案保留原历史命名，不追溯。
+
+### Fixed
+
+- **`dgoal_done` 成功路径不再内联完整审核报告**：完成回复信号此前会把终审原始长报告拼进给主模型的信号文本，导致最终回复容易撞 maximum output token limit 被截断。现改为只保留审核结论，不内联报告原文。
+
 ## [0.5.3] - 2026-06-29
 
 ### Added

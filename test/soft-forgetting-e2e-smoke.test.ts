@@ -9,11 +9,11 @@ import {
   buildPlanContextBlock,
   proposalToPlan,
   setPhaseCompleted,
-  type LoopGoal,
+  type GoalState,
   type PlanProposal,
 } from "../index.ts";
 
-function baseGoal(plan: LoopGoal["plan"]): LoopGoal {
+function baseGoal(plan: GoalState["plan"]): GoalState {
   return {
     id: "smoke-1",
     objective: "软遗忘 smoke 目标",
@@ -25,7 +25,7 @@ function baseGoal(plan: LoopGoal["plan"]): LoopGoal {
   };
 }
 
-function taskId(goal: LoopGoal, phaseIdx: number, taskIdx: number): number {
+function taskId(goal: GoalState, phaseIdx: number, taskIdx: number): number {
   return goal.plan!.phases[phaseIdx].tasks[taskIdx].id;
 }
 

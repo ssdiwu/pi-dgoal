@@ -12,7 +12,7 @@
   ↓
 dgoal_propose execute:存参数 + 触发确认 UI
   ↓
-弹 ctx.ui.select 确认 UI(默认只列 goal + verification + phases + task 数量;用户可点入口查看 task 明细):
+弹 ctx.ui.select 确认 UI(默认列 goal + verification + readiness + 边界/缺口提示 + phases + task 数量;用户可点入口查看 task 明细):
   ├─ 确认 → 写入 goal(pending→active),发 START prompt 进 loop
   ├─ 拒绝 → 中止,不进 loop
   └─ 输入反馈(ctx.ui.editor)→ 反馈喂回主代理 → 重新整理 → 再弹确认
@@ -32,6 +32,8 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 ### 为什么是启动闸门(不是纯自主)
 
 纯自主模式(agent 直接进 loop 自建 plan)的失败是 plan 跑偏在 loop 内不可见,用户只能等结束或中途打断才发现--南辕北辙往往体现在步骤拆解里。启动闸门用一次人工确认把这个成本前置付掉。
+
+本轮改动起，启动闸门不只展示“做什么”（goal / verification / phases），还展示 **plan 级就绪度自检**：至少到 L2（目标 + 验收口 + 阶段计划），若 `nonGoals` / `guardrails` / `budget` 缺失，则在确认框里显式暴露缺口，尤其是 `non-goals` 边界不足。
 
 ### 为什么用工具回调(不用文本解析)
 
@@ -65,7 +67,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 ### 建检反馈的可见性边界（v0.5.2）
 
 - 原始建检/终审失败报告会通过 system prompt 的 `<check_feedback>` block 注入给主 agent，作为后续修复输入。
-- 注入顺序：`<loop_goal>` → `<loop_context>` → `<loop_plan>` → `<check_feedback>` → 循环规则。
+- 注入顺序：`<dgoal_goal>` → `<dgoal_context>` → `<dgoal_plan>` → `<check_feedback>` → 循环规则。
 - **用户侧 TUI 不复读报告正文**：aboveEditor 浮层、`/dgoal s` modal、底部状态栏都不渲染 `report`，避免把 agent-facing 修复材料变成持续 UI 噪音。
 - 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running` / `idle Ns/120s`），但这仍属于运行时状态，不是报告正文。
 

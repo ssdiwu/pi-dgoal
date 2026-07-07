@@ -31,7 +31,7 @@ pi install npm:pi-dgoal
 
 如果前文里已经把目标对齐清楚，也可以直接用裸 `/dgoal` 承接前文共识进入启动闸门；如果当前没有可承接的前文，dgoal 不会硬启动，而是提示改用 `/dgoal <objective>`。看状态统一用显式 `/dgoal s`，不再复用裸 `/dgoal`。
 
-启动闸门对话框默认只展示阶段级摘要（goal + verification + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。
+启动闸门对话框默认展示阶段级摘要（goal + verification + readiness + 边界信号/缺口提示 + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。
 
 dgoal 执行中：
 
@@ -51,7 +51,7 @@ dgoal 执行中：
 
 声明完成（触发终审）：
 
-agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，dgoal 执行停止。
+agent 调 `dgoal_done(summary, verification, whatChanged?, userReview?)`。完成回复会产出结构化的可核对文本（改了什么 / 怎么验证 / 仍需你核对），而不是笼统宣布“已完成”。终审通过则 goal 关闭，dgoal 执行停止。
 
 ## 工具
 
@@ -60,7 +60,7 @@ agent 调 `dgoal_done(summary, verification)`。终审通过则 goal 关闭，dg
 | `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks，用户确认后才开始执行 dgoal |
 | `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
 | `dgoal_check` | phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具）；即使是最后一个 phase，也只负责该 phase 建检 |
-| `dgoal_done` | 在所有 phase 都通过 `dgoal_check` 后声明 goal 完成，内部触发 goal 级终审，是关闭 goal 的唯一方式 |
+| `dgoal_done` | 在所有 phase 都通过 `dgoal_check` 后声明 goal 完成，内部触发 goal 级终审，是关闭 goal 的唯一方式。产出结构化的可核对完成文本（改了什么 / 怎么验证 / 仍需用户核对） |
 
 ## 设计边界
 
@@ -148,7 +148,7 @@ pi-dgoal/
 │   ├── 90-归档/                   ← 历史归档
 │   └── 决策档案/                  ← 架构决策记录
 ├── package.json
-├── index.ts                       ← 单文件扩展（约 3040 行）
+├── index.ts                       ← 单文件扩展（入口实现）
 └── test/
     ├── command-aliases.test.ts
     ├── context-input-cap.test.ts
