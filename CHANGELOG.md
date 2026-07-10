@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **阶段与目标审核器独立选模**：新增 `phaseAuditorModel` / `goalAuditorModel`，分别供 `dgoal_check` 阶段建检和 `dgoal_done` 目标终审使用；值支持 Pi 原生 `provider/model[:thinking]`，具体值是不会随主会话换模或 Pi 重载漂移的持久化专用设置。旧 `auditorModel` 保留为共享兼容回退，且解析严格保持受信任项目级 > 全局的来源优先级。
+- **审核器选模模板初始化**：首次实际独立审核发现全局和受信任项目级的 `pi-dgoal.json` 文件都不存在时，原子创建全局模板；模板以两个范围字段的 `null` 显式表示继承当前会话模型，并在当前范围未填真实模型时每个 Pi 进程首次审核继续提示选模入口。不会覆盖已有文件；已有坏 JSON 或不可读文件只告警降级，写入失败仍回退当前会话模型并不中断审核。这是对 v0.5.3 不自动建文件边界的有意反转，详见 ADR 0014。
+
 ## [0.5.6] - 2026-07-07
 
 ### Fixed

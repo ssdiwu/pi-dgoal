@@ -7,7 +7,7 @@
 1. `README.md`（功能、安装、使用、完成审核机制、设计边界——必读）
 2. `doc/术语表.md`（含建检循环第一性原理 + 全部术语定义）
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
-4. `doc/决策档案/`（架构决策记录 0001-0012；0006 是建检循环基本盘，0008 是 `/dgoal s` modal 选型，0011/0012 是 v0.5.2 基本盘）
+4. `doc/决策档案/`（架构决策记录 0001-0014；0006 是建检循环基本盘，0008 是 `/dgoal s` modal 选型，0011/0012 是 v0.5.2 基本盘，0013/0014 是审核器配置落点与双范围专用模型初始化）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
 6. `index.ts`（扩展入口，单文件实现）
 
@@ -24,10 +24,12 @@ pi-dgoal/
 │   ├── 30-路线图/                    ← 实现切片排期
 │   ├── 40-版本实施方案/              ← 版本级方案（惰性）
 │   ├── 90-归档/                      ← 拷问过程等历史
-│   └── 决策档案/                     ← 架构决策记录（0001-0012）
-├── test/
+│   └── 决策档案/                     ← 架构决策记录（0001-0014）
+├── test/                            ← 测试目录；完整地图与命令见 test/README.md
+│   ├── *.test.ts                     ← Bun 单元 / 集成测试
 │   ├── test-extension-rpc.py         ← RPC 加载与命令注册测试
-│   └── context-input-cap.test.ts     ← 启动背景固化测试
+│   ├── test-ai-smoke-runtime.py      ← 宿主 Pi 选择的确定性测试
+│   └── test-ai-smoke.py              ← 真实模型端到端 smoke
 └── package.json
 ```
 
@@ -40,7 +42,7 @@ pi-dgoal/
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
 - **背景固化是补充**：启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点。
-- **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `auditorModel` 为独立审核子进程单独选模。项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。
+- **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModel` / `goalAuditorModel`，以 `provider/model[:thinking]` 分别配置阶段建检与目标终审。具体值是持久化的专用设置，不随主会话换模或 Pi 重载漂移；`null` 显式继承当次会话模型。旧 `auditorModel` 仅作共享兼容回退；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。
 - 不硬编码密钥、token、私有路径。
 
 ## TUI 边界防护
@@ -60,7 +62,7 @@ npm run test:context  # 启动背景固化逻辑（bun test）
 npm test              # 全量 bun test
 ```
 
-**AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用 `pi -ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展（`-ne` 禁扩展发现、`-ns/-np` 禁 skill/prompt 发现），让主模型真实跑一个多 phase dgoal，覆盖 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。⚠️ 消耗真实 token，需网络与已配置 provider。关键约束：启动闸门与建检依赖 `ui.select` 确认，纯 `-p`/`--mode json` 下 UI 方法是 no-op 会跑不通，必须用 `--mode rpc` + driver 注入确认响应；隔离扩展发现用 `-ne -ns -np`，**不要**设空 `PI_CODING_AGENT_DIR`（会把 provider 凭据一起隔离，pi 拿不到 API key 卡在网络层），凭据靠继承真实配置保留。
+**AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用宿主 Pi 的 `-ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展（`-ne` 禁扩展发现、`-ns/-np` 禁 skill/prompt 发现），让主模型真实跑一个多 phase dgoal，覆盖 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。driver 会跳过 npm 注入的项目 local `node_modules/.bin/pi`（避免其版本落后于用户模型注册表）；可用 `PI_DGOAL_SMOKE_PI` 显式覆盖，`npm run test:smoke:runtime` 验证选择逻辑。⚠️ 消耗真实 token，需网络与已配置 provider。关键约束：启动闸门与建检依赖 `ui.select` 确认，纯 `-p`/`--mode json` 下 UI 方法是 no-op 会跑不通，必须用 `--mode rpc` + driver 注入确认响应；隔离扩展发现用 `-ne -ns -np`，**不要**设空 `PI_CODING_AGENT_DIR`（会把 provider 凭据一起隔离，pi 拿不到 API key 卡在网络层），凭据靠继承真实配置保留。
 
 **人工 TUI smoke（仍不可省）**：浮层/overlay/modal 渲染、启动闸门确认 UI 的真实交互、终审 rejected 回环等纯渲染与交互行为，仍需在 Pi TUI 用真实模型做人工 smoke test。
 
@@ -87,7 +89,7 @@ npm test              # 全量 bun test
 
 - `doc/术语表.md` — 术语精确定义
 - `doc/90-归档/Task-Plan设计底稿-拷问过程.md` — 507-grill 拷问全过程（1-25 轮，历史追溯）
-- `doc/决策档案/` — 架构决策记录（0001-0012）
+- `doc/决策档案/` — 架构决策记录（0001-0014）
 
 详见 [`doc/README.md`](./doc/README.md) 的阅读地图。
 

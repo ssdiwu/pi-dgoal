@@ -4,7 +4,9 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **v0.5.3**：独立审核器选模配置（`pi-dgoal.json`）+ 穷举式审核 prompt + 重审反馈注入。详见 `CHANGELOG.md`。（v0.5.2：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动，见 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。）
+> **Unreleased**：`pi-dgoal.json` 已支持阶段建检与目标终审分别选模，`null` 显式继承当前会话模型，并在首次审核安全初始化模板。详见 `CHANGELOG.md`。
+>
+> **v0.5.3**：独立审核器选模配置（`pi-dgoal.json`）+ 穷举式审核 prompt + 重审反馈注入。（v0.5.2：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动，见 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。）
 
 ## 安装
 
@@ -93,14 +95,28 @@ pending ──→ active ──→ done                # 正常路径
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
-可通过 `pi-dgoal.json` 给审核子进程单独选模：
+首次审核时，若全局和受信任项目级的 `pi-dgoal.json` 文件都不存在，dgoal 会自动创建全局模板：
+
+```json
+// ~/.pi/agent/pi-dgoal.json
+{
+  "$comment": "将各字段填为 provider/model[:thinking]；保持 null 则继承当前会话模型。",
+  "phaseAuditorModel": null,
+  "goalAuditorModel": null
+}
+```
+
+阶段建检与目标终审可分别选模；填入具体值后它们是持久化的专用设置，不随之后主会话换模或 Pi 重载漂移；末尾 Pi 标准思考后缀（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）用于选等级，模型 ID 本身可含 `/` 或 `:` 以支持 custom/gateway 模型。dgoal 拒绝畸形 provider 前缀、内嵌空白/控制字符和空路径/tag 段，模型可用性仍由 Pi 解析：
 
 ```json
 // ~/.pi/agent/pi-dgoal.json 或 .pi/pi-dgoal.json
 {
-  "auditorModel": "openai/gpt-5"
+  "phaseAuditorModel": "openai-codex/gpt-5.6-sol:medium",
+  "goalAuditorModel": "openai-codex/gpt-5.6-sol:xhigh"
 }
 ```
+
+旧 `auditorModel` 字段继续作为两个审核范围的共享兼容回退。
 
 解析优先级：
 
@@ -108,7 +124,9 @@ pending ──→ active ──→ done                # 正常路径
 2. 全局 `~/.pi/agent/pi-dgoal.json`
 3. 回退到当前会话模型
 
-如果文件缺失、不可读，或 `auditorModel` 非法，dgoal 会回退到当前会话模型，审核流程不中断。该文件不会被自动创建；首次审核时若没有任何 `pi-dgoal.json`，dgoal 会一次性提示全局路径，之后保持静默。提示文案在安装 `pi-di18n` 时跟随 locale。
+每个配置来源内，当前范围字段优先于旧 `auditorModel`；解析时先比较来源优先级，再比较字段。
+
+全局和受信任项目级配置都缺失时，dgoal 会在首次审核原子创建全局模板，且绝不覆盖已有文件。某个范围的值为 `null` 时，显式表示该范围继承当前会话模型。文件不可读或模型值非法时同样继续按配置优先级降级（同来源旧 `auditorModel` → 另一来源），全链都无有效值才回退当前会话模型，审核流程不中断；当前范围未配置或值为 `null` 且无其他配置问题时，每个 Pi 进程首次审核会提示一次选模入口；存在配置问题时只发出对应的告警，不再额外提示选模入口。提示文案在安装 `pi-di18n` 时跟随 locale。
 
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
@@ -144,26 +162,17 @@ pi-dgoal/
 │   ├── 10-架构与运行/             ← 当前实现
 │   ├── 20-能力参考/               ← 调研参考
 │   ├── 30-路线图/                 ← 路线图
-│   ├── 40-版本实施方案/           ← 当前版本
+│   ├── 40-版本实施方案/           ← 版本实施方案
 │   ├── 90-归档/                   ← 历史归档
 │   └── 决策档案/                  ← 架构决策记录
 ├── package.json
 ├── index.ts                       ← 单文件扩展（入口实现）
-└── test/
-    ├── command-aliases.test.ts
-    ├── context-input-cap.test.ts
-    ├── task-plan-data-model.test.ts
-    ├── dgoal-plan-reducer.test.ts
-    ├── plan-overlay-render.test.ts
-    ├── plan-status-pure.test.ts
-    ├── plan-status-dialog.test.ts
-    ├── show-status.test.ts
-    ├── startup-gate.test.ts
-    ├── state-machine-and-prompt.test.ts
-    ├── e2e-integration.test.ts
-    ├── tool-execute-integration.test.ts
-    ├── subprocess-supervision.test.ts
-    └── test-extension-rpc.py
+└── test/                          ← 测试地图与命令：见 test/README.md
+    ├── README.md
+    ├── *.test.ts                   ← Bun 单元 / 集成测试
+    ├── test-extension-rpc.py       ← 扩展加载与命令注册
+    ├── test-ai-smoke-runtime.py    ← 宿主 Pi 选择的确定性测试
+    └── test-ai-smoke.py            ← 真实模型端到端 smoke
 ```
 
 ## 文档

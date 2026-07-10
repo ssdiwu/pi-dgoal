@@ -4,7 +4,9 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.5.3**: independent auditor model selection via `pi-dgoal.json` + exhaustive audit prompts + previous-feedback injection for re-audits. See `CHANGELOG.md` for details. (v0.5.2: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover, see `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.)
+> **Unreleased**: configure phase and goal auditors independently in `pi-dgoal.json`, with explicit `null` inheritance and safe first-audit template initialization. See `CHANGELOG.md` for details.
+>
+> **v0.5.3**: independent auditor model selection via `pi-dgoal.json` + exhaustive audit prompts + previous-feedback injection for re-audits. (v0.5.2: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover, see `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.)
 
 ## Install
 
@@ -97,14 +99,28 @@ See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the re
 --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash
 ```
 
-You can override the auditor subprocess model with `pi-dgoal.json`:
+On the first audit when neither the global nor trusted project `pi-dgoal.json` file exists, dgoal creates this global template:
+
+```json
+// ~/.pi/agent/pi-dgoal.json
+{
+  "$comment": "Set each value to provider/model[:thinking]. Keep null to inherit the current session model.",
+  "phaseAuditorModel": null,
+  "goalAuditorModel": null
+}
+```
+
+Configure the phase and goal auditors independently; concrete values are persistent dedicated settings and do not follow later main-session model changes or Pi reloads. A final standard Pi thinking suffix (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) selects thinking; model IDs themselves may contain `/` or `:` for custom or gateway models. dgoal rejects malformed provider prefixes, embedded whitespace/control characters, and empty path/tag segments, while Pi resolves model availability:
 
 ```json
 // ~/.pi/agent/pi-dgoal.json or .pi/pi-dgoal.json
 {
-  "auditorModel": "openai/gpt-5"
+  "phaseAuditorModel": "openai-codex/gpt-5.6-sol:medium",
+  "goalAuditorModel": "openai-codex/gpt-5.6-sol:xhigh"
 }
 ```
+
+The legacy `auditorModel` key remains supported as a shared fallback for both audit scopes.
 
 Resolution order:
 
@@ -112,7 +128,9 @@ Resolution order:
 2. Global `~/.pi/agent/pi-dgoal.json`
 3. Fallback to the current session model
 
-If the file is missing, unreadable, or `auditorModel` is invalid, dgoal falls back to the current session model and keeps the audit running. The config file is never auto-created; the first time an audit runs with no `pi-dgoal.json` anywhere, dgoal shows a one-time hint pointing to the global path, then stays silent. User-facing hints and warnings follow `pi-di18n` when installed.
+Within each source, the matching scoped key takes precedence over legacy `auditorModel`; source precedence is evaluated first.
+
+A missing global and trusted project config causes dgoal to atomically create the global template on the first audit; it never overwrites an existing file. A scoped value of `null` explicitly inherits the current session model. Unreadable files and invalid values also continue down the config precedence (legacy `auditorModel` in the same source → the other source), only falling back to the current session model when no valid override remains, without interrupting the audit. While the effective scoped value is unset or `null` and there are no other config issues, dgoal shows the selection hint once per Pi process; when config issues exist, only the corresponding warnings are shown. User-facing hints and warnings follow `pi-di18n` when installed.
 
 - Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
 - Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.
@@ -148,26 +166,17 @@ pi-dgoal/
 │   ├── 10-架构与运行/             ← current implementation
 │   ├── 20-能力参考/               ← research references
 │   ├── 30-路线图/                 ← roadmap
-│   ├── 40-版本实施方案/           ← active versions
+│   ├── 40-版本实施方案/           ← version implementation plans
 │   ├── 90-归档/                   ← historical
 │   └── 决策档案/                  ← architecture decision records
 ├── package.json
 ├── index.ts                       ← single-file extension (entry point)
-└── test/
-    ├── command-aliases.test.ts
-    ├── context-input-cap.test.ts
-    ├── task-plan-data-model.test.ts
-    ├── dgoal-plan-reducer.test.ts
-    ├── plan-overlay-render.test.ts
-    ├── plan-status-pure.test.ts
-    ├── plan-status-dialog.test.ts
-    ├── show-status.test.ts
-    ├── startup-gate.test.ts
-    ├── state-machine-and-prompt.test.ts
-    ├── e2e-integration.test.ts
-    ├── tool-execute-integration.test.ts
-    ├── subprocess-supervision.test.ts
-    └── test-extension-rpc.py
+└── test/                          ← test map + commands: see test/README.md
+    ├── README.md
+    ├── *.test.ts                   ← Bun unit / integration tests
+    ├── test-extension-rpc.py       ← extension loading + command registration
+    ├── test-ai-smoke-runtime.py    ← deterministic host-Pi selection checks
+    └── test-ai-smoke.py            ← real-model end-to-end smoke
 ```
 
 ## Documentation

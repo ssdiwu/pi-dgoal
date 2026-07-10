@@ -7,7 +7,8 @@ pi-dgoal 的测试。两类：背景固化逻辑测试（bun test）和扩展加
 ```bash
 npm run test:context   # bun test test/context-input-cap.test.ts
 npm run test:rpc       # python3 test/test-extension-rpc.py
-npm run test:smoke     # python3 test/test-ai-smoke.py（AI 驱动 smoke，消耗真实 token）
+npm run test:smoke:runtime # python3 test/test-ai-smoke-runtime.py（smoke 的 Pi 运行时选择，不消耗 token）
+npm run test:smoke         # python3 test/test-ai-smoke.py（AI 驱动 smoke，消耗真实 token）
 npm test               # bun test（全量，跑所有 *.test.ts）
 ```
 
@@ -23,7 +24,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
 | `startup-gate.test.ts` | 切片4：启动闸门纯函数—— `validateProposalInput`、`formatProposalForConfirm`、`buildProposalConfirmationOptions`、确认 UI 摘要/明细切换。 |
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=120`、`isAuditorError` 三态判定、`runCheckWithRetry` 透明重试（approved/rejected 不重试、auditor_error 3 次）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
-| `auditor-config.test.ts` | v0.5.3 审核器选模配置：`getDgoalConfigPaths` 路径解析、`loadDgoalConfig` 项目级（仅 trusted）> 全局 > 回退、`auditorModel` 非法降级、无配置时一次性提示、`normalizeAuditorModelId` 格式校验。 |
+| `auditor-config.test.ts` | 审核器选模配置：项目级（仅 trusted）> 全局来源优先级、`phaseAuditorModel` / `goalAuditorModel` 跨主会话换模保持独立、范围 `null` 回退、旧 `auditorModel` 兼容回退、custom/gateway 多段路径与 tag 模型 ID、provider 边界与控制字符校验、字段级非法提示去重与 issue 抑制 hint、首次审核创建双 `null` 模板及确定性写入失败降级、`ui.notify` 抛错容错。 |
 | `auditor-workspace-cwd.test.ts` | 审核子进程工作目录推断：优先覆盖当前轮文件工具调用，再回退到会话里的最近文件工具调用；同仓库保持 `ctx.cwd`，并覆盖 goal 结束后不要把旧 worktree 泄漏到下一个 goal。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
@@ -33,7 +34,8 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `context-input-cap.test.ts` | 启动背景固化的文本截断 / 摘要逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、`buildContextSummarizerTask`、`isRetryableSubprocessError`。纯逻辑测试，不依赖 Pi。 |
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
-| `test-ai-smoke.py` | AI 驱动 smoke：`pi -ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |
+| `test-ai-smoke-runtime.py` | AI smoke 的 Pi 运行时选择：模拟 npm PATH（路径）含项目旧 `node_modules/.bin/pi` 时跳过它并选择宿主 Pi；`PI_DGOAL_SMOKE_PI` 覆盖优先。 |
+| `test-ai-smoke.py` | AI 驱动 smoke：跳过 npm 注入的项目 local Pi，使用宿主 Pi（可用 `PI_DGOAL_SMOKE_PI` 覆盖）；以 `-ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |
 
 ## 边界
 

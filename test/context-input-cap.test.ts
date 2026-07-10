@@ -154,14 +154,14 @@ describe("summarizeCheckProgress", () => {
 describe("acceptance check alignment", () => {
   test("buildCheckCliArgs uses fresh acceptance subprocess settings", () => {
     const args = buildCheckCliArgs({
-      modelId: "openai/gpt-5",
+      modelId: "openai-codex/gpt-5.6-sol:xhigh",
       systemPrompt: "system",
       task: "task",
     });
 
     expect(args).toEqual([
       "--mode", "json", "-p", "--no-session", "--no-extensions", "--no-skills", "--tools", "read,grep,find,ls,bash",
-      "--model", "openai/gpt-5",
+      "--model", "openai-codex/gpt-5.6-sol:xhigh",
       "--system-prompt", "system",
       "task",
     ]);

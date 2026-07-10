@@ -26,15 +26,16 @@
 
 这说明 dgoal 已经不是“主 agent 自己说完成就完成”，而是**把完成判定外包给隔离审核子进程**。
 
-### 2.2 审核模型已支持独立配置，但默认仍继承主模型
+### 2.2 审核模型支持独立持久配置；未设置才继承主模型
 
-当前 `index.ts` 已把 `runIsolatedCheck()` 的选模入口改为 `resolveAuditorModelId(ctx)`：
+当前 `index.ts` 由 `runIsolatedCheck()` 按审核范围调用 `resolveAuditorModelId(ctx, { scope })`：
 
 - 默认仍回退到 `ctx.model`（主线程模型）
-- 可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `auditorModel` 为审核子进程单独选模
-- 项目级配置只在 `ctx.isProjectTrusted()` 为真时生效
+- `phaseAuditorModel` 供 `dgoal_check` 阶段建检使用，`goalAuditorModel` 供 `dgoal_done` 目标终审使用
+- 两者均支持 Pi 原生 `provider/model[:thinking]`；具体值是持久化专用设置，`null` 显式继承当次 `ctx.model`，字段缺失或非法时继续按配置优先级降级（同来源旧 `auditorModel` → 另一来源），全链都无有效值才回退当前会话模型；旧 `auditorModel` 作为共享兼容回退
+- 项目级配置只在 `ctx.isProjectTrusted()` 为真时生效，且来源优先级高于字段专用性
 
-所以 dgoal 现在已经从“独立审核上下文”进一步升级到了**“默认继承主模型、可按配置切换审核模型”**。这和 Claude Code / Codex 的 per-agent model（按 agent 单独指定模型）能力对齐得更近，但仍保持了最小边界：先只拆 `auditorModel`，不把 planner / executor / summarizer 一起做成多模型全家桶。
+所以 dgoal 现在已经从“独立审核上下文”进一步升级到了**“默认继承主模型、两级审核可分别选择模型与思考等级”**。这和 Claude Code / Codex 的 per-agent model（按 agent 单独指定模型）能力对齐得更近，但仍保持最小边界：只拆审核器，不把 planner / executor / summarizer 一起做成多模型全家桶。
 
 ### 2.3 Claude Code：subagent（子代理）支持独立模型、独立工具、独立 memory（记忆）
 
@@ -145,20 +146,21 @@ Aider 的 `/architect` 模式不是独立子会话编排，而是：
 
 ### 3.3 候选（值得吸收）
 
-**候选 1：给 auditor 单独配置模型 —— 已落地，后续看是否继续细化。**
+**候选 1：给两级 auditor 分别配置模型与思考等级 —— 已落地。**
 
-这条增强现已通过 `pi-dgoal.json` 落地为最小实现：
+这条增强现已通过 `pi-dgoal.json` 落地：
 
-- `index.ts`：`buildCheckCliArgs()`、`runIsolatedCheck()`、`runCompletionAuditor()`、`runPhaseCheck()`
-- 新增配置来源：项目设置 / 扩展设置 / 环境变量（三选一或组合）
+- `index.ts`：`phaseAuditorModel` → `runPhaseCheck()`，`goalAuditorModel` → `runCompletionAuditor()`，共享 `runIsolatedCheck()`
+- 配置来源：受信任项目 `.pi/pi-dgoal.json` > 全局 `~/.pi/agent/pi-dgoal.json`；旧 `auditorModel` 兼容共享回退
+- 值形态：Pi 原生 `provider/model[:thinking]`；具体值不随主会话换模或 Pi 重载变化，`null` 显式继承会话模型
+- 首次实际审核仅在两级配置文件都不存在时以 `wx` 原子创建双 `null` 模板；已有坏配置只告警降级
 - 文档同步：`README.md`、`doc/10-架构与运行/12-工具命令与数据模型.md`
 
-建议边界：
+边界：
 
-- 先只拆 `auditorModel`
-- 不要一步拆 `plannerModel` / `executorModel` / `summarizerModel` 全家桶
+- 只拆 phase / goal 两级 auditor，不拆 `plannerModel` / `executorModel` / `summarizerModel` 全家桶
 - 默认仍 inherit（继承主模型），有配置时再覆盖
-- 后续若继续演进，优先补文档、测试和配置校验，再讨论 phase/final 分模型
+- 不做自动换模型 / 备用模型
 
 **候选 2：把 auditor 从“闸门型 reject”增强成“穷举型 review” —— 最高优先级。**
 
@@ -267,15 +269,6 @@ Codex auto-review 有 rejection circuit breaker；dgoal 目前只有：
 
 ## 5. 决策记录
 
-本次先不新增 ADR（架构决策记录）。
+ADR 0013 决定审核器选模使用 dgoal 专属 `pi-dgoal.json`，不借道 Pi 的 `settings.json`。ADR 0014 记录后续反转“不自动创建”边界：首次审核安全初始化模板，并将配置面扩展为 `phaseAuditorModel` / `goalAuditorModel` 两级专用范围，复用 Pi 原生 `provider/model[:thinking]`。
 
-原因：
-
-- “独立审核存在且方向正确”已经被 ADR 0006 / ADR 0012 的建检循环与闸门锁定覆盖。
-- “auditor 模型可切换”与“审核一次尽量提全”目前还属于**候选增强**，尚未做出不可逆架构承诺。
-- 只有当后续决定：
-  - 正式引入 `auditorModel` 配置面，或
-  - 把 feedback（反馈）从纯文本升级成结构化 findings，或
-  - 在启动闸门中加入新的 plan reviewer（计划审查者）环节
-
-才值得补新的 ADR。
+“独立审核存在且方向正确”继续由 ADR 0006 / ADR 0012 的建检循环与闸门锁定覆盖；feedback 结构化或新增 plan reviewer 若落地，再按不可逆性另判是否新增 ADR。

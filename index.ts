@@ -15,6 +15,11 @@ const REJECTED_MARKER = "<REJECTED>";
 // 审核跑在隔离子进程里，可读文件也可执行验证命令；仍无主会话上下文。
 const AUDITOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const DGOAL_CONFIG_FILE_NAME = "pi-dgoal.json";
+const DGOAL_CONFIG_TEMPLATE = `${JSON.stringify({
+  $comment: "Set each value to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model.",
+  phaseAuditorModel: null,
+  goalAuditorModel: null,
+}, null, 2)}\n`;
 const notifiedDgoalConfigKeys = new Set<string>();
 
 type GoalStatus = "pending" | "active" | "rejected" | "paused" | "done";
@@ -64,8 +69,14 @@ interface Task {
 }
 
 export interface DgoalConfig {
-  auditorModel?: string;
+  // Legacy shared override for both audit scopes. Scoped keys take precedence within the same config source.
+  auditorModel?: string | null;
+  // null is an explicit project/global override to inherit the current session model for this scope.
+  phaseAuditorModel?: string | null;
+  goalAuditorModel?: string | null;
 }
+
+type AuditorScope = "phase" | "goal";
 
 export interface DgoalConfigIssue {
   key: string;
@@ -261,11 +272,12 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
       "notify.continuationFailed": "Dgoal 续跑失败：{error}",
       "notify.auditFailurePaused": "Dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
-      "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需单独选模，可在 {globalPath} 配置 \"auditorModel\"（格式 provider/model），不配则不变。",
+      "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需分别选模，可在 {globalPath} 将 phaseAuditorModel / goalAuditorModel 填为 provider/model[:thinking]；保持 null 则继承当前会话模型。",
+      "notify.dgoalConfigTemplateWriteFailed": "无法创建审核器配置模板 {path}：{error}；已继续使用当前会话模型。",
       "notify.dgoalConfigUnreadable": "无法读取 {path}：{error}",
       "notify.dgoalConfigBadJson": "{path} 不是合法 JSON：{error}",
       "notify.dgoalConfigNotObject": "{path} 顶层必须是 JSON object，已忽略。",
-      "notify.auditorModelInvalid": "{path} 的 auditorModel 必须是 provider/model 格式字符串，已回退到当前会话模型。",
+      "notify.auditorModelInvalid": "{path} 的 {field} 必须是 provider/model[:thinking] 格式字符串或 null；已忽略并按配置优先级回退。",
       "check.liveness.starting": "启动中",
       "check.liveness.thinking": "思考中",
       "check.liveness.tool_running": "调工具中",
@@ -415,11 +427,12 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
       "notify.continuationFailed": "Dgoal continuation failed: {error}",
       "notify.auditFailurePaused": "Dgoal paused ({reason}). Run /dgoal resume to continue.",
-      "notify.auditorModelHint": "The auditor uses the current session model by default. To pick a separate model, set \"auditorModel\" (provider/model) in {globalPath}; otherwise it stays unchanged.",
+      "notify.auditorModelHint": "Auditors use the current session model by default. To configure them separately, set phaseAuditorModel / goalAuditorModel to provider/model[:thinking] in {globalPath}; keep null to inherit the current session model.",
+      "notify.dgoalConfigTemplateWriteFailed": "Cannot create auditor config template {path}: {error}; continuing with the current session model.",
       "notify.dgoalConfigUnreadable": "Cannot read {path}: {error}",
       "notify.dgoalConfigBadJson": "{path} is not valid JSON: {error}",
       "notify.dgoalConfigNotObject": "{path} must be a JSON object at the top level; ignored.",
-      "notify.auditorModelInvalid": "auditorModel in {path} must be a provider/model string; falling back to the current session model.",
+      "notify.auditorModelInvalid": "{field} in {path} must be a provider/model[:thinking] string or null; ignored and falling back through normal config precedence.",
       "check.liveness.starting": "starting",
       "check.liveness.thinking": "thinking",
       "check.liveness.tool_running": "tool running",
@@ -2648,11 +2661,27 @@ export function getDgoalConfigPaths(cwd: string, agentDir = getAgentDir()) {
   };
 }
 
+const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F-\u009F]/;
+
 export function normalizeAuditorModelId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
+  // Pi 的 model id 是传给 API 的自由标识：provider 之后允许路径和 tag（/、:）。
+  // 仅拒绝会破坏 provider/model 边界或让 child_process.spawn 抛错的结构性输入。
+  if (!trimmed || /\s/.test(trimmed) || CONTROL_CHARACTERS.test(trimmed)) return undefined;
   const slashIndex = trimmed.indexOf("/");
-  if (!trimmed || slashIndex <= 0 || slashIndex >= trimmed.length - 1) return undefined;
+  if (slashIndex <= 0 || slashIndex >= trimmed.length - 1) return undefined;
+  const provider = trimmed.slice(0, slashIndex);
+  const modelId = trimmed.slice(slashIndex + 1);
+  if (
+    provider.includes(":")
+    || modelId.startsWith("/")
+    || modelId.endsWith("/")
+    || modelId.includes("//")
+    || modelId.startsWith(":")
+    || modelId.endsWith(":")
+    || modelId.includes("::")
+  ) return undefined;
   return trimmed;
 }
 
@@ -2691,38 +2720,73 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
 
   const issues: DgoalConfigIssue[] = [];
   const config: DgoalConfig = {};
-  const auditorModel = (parsed as DgoalConfig).auditorModel;
-  if (auditorModel !== undefined) {
-    const normalized = normalizeAuditorModelId(auditorModel);
-    if (normalized) config.auditorModel = normalized;
-    else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath } });
+  const parsedConfig = parsed as DgoalConfig;
+  const modelFields: (keyof DgoalConfig)[] = ["auditorModel", "phaseAuditorModel", "goalAuditorModel"];
+  for (const field of modelFields) {
+    if (!Object.prototype.hasOwnProperty.call(parsedConfig, field)) continue;
+    const value = parsedConfig[field];
+    if (value === null) {
+      config[field] = null;
+      continue;
+    }
+    const normalized = normalizeAuditorModelId(value);
+    if (normalized) config[field] = normalized;
+    else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath, field } });
   }
 
   return { config, issues, existed: true };
 }
 
+interface LoadedDgoalConfig {
+  // Keep sources separate: effective selection must apply source precedence before field precedence.
+  globalConfig: DgoalConfig;
+  projectConfig: DgoalConfig;
+  issues: DgoalConfigIssue[];
+  anyConfigFileExists: boolean;
+}
+
 export async function loadDgoalConfig(
   ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
   options: { agentDir?: string } = {},
-): Promise<{ config: DgoalConfig; issues: DgoalConfigIssue[]; anyConfigFileExists: boolean }> {
+): Promise<LoadedDgoalConfig> {
   const { globalPath, projectPath } = getDgoalConfigPaths(ctx.cwd, options.agentDir);
   const globalResult = await readDgoalConfigFile(globalPath);
   const projectResult = ctx.isProjectTrusted() ? await readDgoalConfigFile(projectPath) : { config: {}, issues: [], existed: false };
   return {
-    config: {
-      ...globalResult.config,
-      ...projectResult.config,
-    },
+    globalConfig: globalResult.config,
+    projectConfig: projectResult.config,
     issues: [...globalResult.issues, ...projectResult.issues],
     anyConfigFileExists: globalResult.existed || projectResult.existed,
   };
 }
 
-// 配置提示去重：同一类 issue.key 只通知一次，避免每次审核都刷屏。
+async function createDgoalConfigTemplate(configPath: string): Promise<{ created: boolean; issue?: DgoalConfigIssue }> {
+  try {
+    await fs.promises.mkdir(path.dirname(configPath), { recursive: true });
+    await fs.promises.writeFile(configPath, DGOAL_CONFIG_TEMPLATE, { encoding: "utf-8", mode: 0o600, flag: "wx" });
+    return { created: true };
+  } catch (error) {
+    const code = typeof error === "object" && error !== null && "code" in error ? String((error as { code?: unknown }).code) : undefined;
+    if (code === "EEXIST") return { created: false };
+    return {
+      created: false,
+      issue: { key: "notify.dgoalConfigTemplateWriteFailed", params: { path: configPath, error: error instanceof Error ? error.message : String(error) } },
+    };
+  }
+}
+
+// 配置提示按消息类型、配置文件和字段去重：保留不同字段的诊断，同时避免重复审核刷屏。
+function getDgoalConfigNotificationId(item: { key: string; params?: Record<string, string | number> }): string {
+  const path = item.params?.path ?? "";
+  const field = item.params?.field ?? "";
+  return `${item.key}:${path}:${field}`;
+}
+
 function notifyDgoalConfigOnce(ctx: Pick<ExtensionContext, "ui">, notifications: { key: string; params?: Record<string, string | number>; level: "info" | "warning" }[]) {
   for (const item of notifications) {
-    if (notifiedDgoalConfigKeys.has(item.key)) continue;
-    notifiedDgoalConfigKeys.add(item.key);
+    const notificationId = getDgoalConfigNotificationId(item);
+    if (notifiedDgoalConfigKeys.has(notificationId)) continue;
+    notifiedDgoalConfigKeys.add(notificationId);
     try {
       ctx.ui.notify(t(item.key, item.params), item.level);
     } catch {
@@ -2731,20 +2795,47 @@ function notifyDgoalConfigOnce(ctx: Pick<ExtensionContext, "ui">, notifications:
   }
 }
 
+function hasDgoalConfigField(config: DgoalConfig, field: keyof DgoalConfig): boolean {
+  return Object.prototype.hasOwnProperty.call(config, field);
+}
+
+function selectAuditorModelOverride(loaded: LoadedDgoalConfig, scope: AuditorScope): string | null | undefined {
+  const scopedField: keyof DgoalConfig = scope === "phase" ? "phaseAuditorModel" : "goalAuditorModel";
+  // Source precedence comes first: a project-level shared override must beat a global scoped override.
+  for (const config of [loaded.projectConfig, loaded.globalConfig]) {
+    if (hasDgoalConfigField(config, scopedField)) return config[scopedField];
+    if (hasDgoalConfigField(config, "auditorModel")) return config.auditorModel;
+  }
+  return undefined;
+}
+
 export async function resolveAuditorModelId(
   ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model" | "ui">,
-  options: { agentDir?: string } = {},
+  options: { agentDir?: string; scope?: AuditorScope } = {},
 ): Promise<string | undefined> {
   const fallbackModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
   const { globalPath } = getDgoalConfigPaths(ctx.cwd, options.agentDir);
-  const { config, issues, anyConfigFileExists } = await loadDgoalConfig(ctx, options);
-  if (issues.length > 0) {
-    notifyDgoalConfigOnce(ctx, issues.map((issue) => ({ ...issue, level: "warning" as const })));
-  } else if (!anyConfigFileExists) {
-    // 首次审核且无任何 pi-dgoal.json：一次性提示可单独选模，不自动生成文件。
+  let loaded = await loadDgoalConfig(ctx, options);
+
+  if (!loaded.anyConfigFileExists) {
+    const templateResult = await createDgoalConfigTemplate(globalPath);
+    if (templateResult.created) {
+      loaded = await loadDgoalConfig(ctx, options);
+    } else if (templateResult.issue) {
+      loaded.issues = [...loaded.issues, templateResult.issue];
+    } else {
+      // 另一个进程可能刚好创建了文件；重新读取，绝不覆盖它。
+      loaded = await loadDgoalConfig(ctx, options);
+    }
+  }
+
+  const modelOverride = selectAuditorModelOverride(loaded, options.scope ?? "phase");
+  if (loaded.issues.length > 0) {
+    notifyDgoalConfigOnce(ctx, loaded.issues.map((issue) => ({ ...issue, level: "warning" as const })));
+  } else if (modelOverride == null) {
     notifyDgoalConfigOnce(ctx, [{ key: "notify.auditorModelHint", params: { globalPath }, level: "info" }]);
   }
-  return config.auditorModel ?? fallbackModelId;
+  return modelOverride ?? fallbackModelId;
 }
 
 export function buildCheckCliArgs(args: {
@@ -2764,11 +2855,12 @@ export function buildCheckCliArgs(args: {
 // 两个调用点：runCompletionAuditor（终审全 goal）、runPhaseCheck（阶段建检单 phase）——真接缝，抽出复用。
 async function runIsolatedCheck(args: {
   ctx: ExtensionContext;
+  scope: AuditorScope;
   systemPrompt: string;
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
-  const { ctx, systemPrompt, task } = args;
-  const modelId = await resolveAuditorModelId(ctx);
+  const { ctx, scope, systemPrompt, task } = args;
+  const modelId = await resolveAuditorModelId(ctx, { scope });
   const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
   const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
@@ -2966,6 +3058,7 @@ async function runCompletionAuditor(args: {
 }): Promise<AuditorResult> {
   return runIsolatedCheck({
     ctx: args.ctx,
+    scope: "goal",
     systemPrompt: AUDITOR_SYSTEM_PROMPT,
     task: buildAuditorTask(args.goal, args.summary, args.verification, args.whatChanged, args.userReview),
     idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
@@ -3019,6 +3112,7 @@ async function runPhaseCheck(args: {
 }): Promise<AuditorResult> {
   return runIsolatedCheck({
     ctx: args.ctx,
+    scope: "phase",
     systemPrompt: PHASE_CHECK_SYSTEM_PROMPT,
     task: buildPhaseCheckTask(args.goal, args.phase),
     idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,

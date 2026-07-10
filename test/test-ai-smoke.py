@@ -14,6 +14,7 @@ AI 驱动 smoke：真实模型 × 隔离环境跑通多 phase dgoal 全工具链
   1. dgoal_propose / dgoal_plan / dgoal_check / dgoal_done 均被调用且 isError=false
   2. 目标文件产物（hello.txt）存在且内容正确
   3. 启动闸门 select 被正确回复（goal 进入 active）
+  4. dgoal_done 终审 approved（result.details.audited=true）；rejected/aborted 同样 isError=false，不算通过
 
 用法：
   python3 test/test-ai-smoke.py
@@ -24,6 +25,7 @@ from __future__ import annotations
 import json
 import os
 import select
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -34,6 +36,30 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 EXT_PATH = ROOT / "index.ts"
+
+
+def resolve_pi_executable(root: Path = ROOT, env: dict[str, str] | None = None) -> str:
+    """Pick the host Pi runtime rather than npm's potentially stale local dev dependency.
+
+    Returns an absolute path when a host `pi` is found; raises if neither an
+    override nor a host `pi` is available, so we never silently fall back to the
+    stale `node_modules/.bin/pi` that npm injects into PATH.
+    """
+    source_env = os.environ if env is None else env
+    override = source_env.get("PI_DGOAL_SMOKE_PI", "").strip()
+    if override:
+        return override
+
+    local_bin = (root / "node_modules" / ".bin").resolve()
+    path_entries = source_env.get("PATH", "").split(os.pathsep)
+    host_path = os.pathsep.join(entry for entry in path_entries if Path(entry or ".").resolve() != local_bin)
+    resolved = shutil.which("pi", path=host_path)
+    if not resolved:
+        raise RuntimeError(
+            "未找到宿主 Pi 运行时（已排除项目 node_modules/.bin/pi）。“"
+            "请用 PI_DGOAL_SMOKE_PI 显式指定，或确保宿主 pi 在 PATH 中。"
+        )
+    return resolved
 
 # 不需要回复的 fire-and-forget UI 方法（rpc.md:996）
 UI_NO_REPLY_METHODS = {"notify", "setStatus", "setWidget", "setTitle", "set_editor_text"}
@@ -77,6 +103,7 @@ class SmokeResult:
     file_content: str | None = None
     agent_ends: int = 0
     events_seen: int = 0
+    done_audited: bool = False  # dgoal_done 终审 approved（details.audited=true）
     error: str | None = None
     stderr_tail: str = ""
 
@@ -90,7 +117,7 @@ class SmokeResult:
         return self.file_exists and self.file_content == EXPECTED_CONTENT
 
     def passed(self) -> bool:
-        return self.error is None and self.goal_activated and self.required_tools_ok() and self.file_ok()
+        return self.error is None and self.goal_activated and self.required_tools_ok() and self.file_ok() and self.done_audited
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +141,7 @@ class SmokeResult:
             },
             "agent_ends": self.agent_ends,
             "events_seen": self.events_seen,
+            "done_audited": self.done_audited,
             "stderr_tail": self.stderr_tail[-2000:],
         }
 
@@ -138,7 +166,7 @@ class RpcSession:
 
         proc = subprocess.Popen(
             # -ne 禁用扩展发现 + -e 只加载本扩展；-ns/-np 禁用 skill/prompt 发现 → 真隔离
-            ["pi", "-ne", "-e", str(EXT_PATH), "-ns", "-np", "--mode", "rpc", "--no-session"],
+            [resolve_pi_executable(), "-ne", "-e", str(EXT_PATH), "-ns", "-np", "--mode", "rpc", "--no-session"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -213,7 +241,7 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any], result: SmokeR
 def run_smoke(session: RpcSession, result: SmokeResult) -> None:
     deadline = time.time() + TOTAL_TIMEOUT
     last_agent_end_at: float | None = None
-    done_ok = False  # dgoal_done isError=false —— 不可逆成功信号
+    done_ok = False  # dgoal_done 终审 approved（details.audited=true）——不可逆成功信号
 
     session.send({"id": "smoke-prompt", "type": "prompt", "message": f"/dgoal {SMOKE_GOAL}"})
 
@@ -255,9 +283,16 @@ def run_smoke(session: RpcSession, result: SmokeResult) -> None:
                 # dgoal_plan 成功 ⟺ goal 已 active（index.ts 硬约束：plan 只在 active 后工作）
                 if name == "dgoal_plan" and not is_err:
                     result.goal_activated = True
-                # dgoal_done 成功是不可逆完成信号：terminate:true 必然紧随 agent_end
+                # dgoal_done 需终审 approved（details.audited=true）才算成功；
+                # rejected / aborted / auditError 同样 isError=false，不能误判为通过。
                 if name == "dgoal_done" and not is_err:
-                    done_ok = True
+                    details = (event.get("result") or {}).get("details") or {}
+                    if details.get("audited") is True:
+                        done_ok = True
+                        result.done_audited = True
+                        result.error = None  # 清掉之前可能的 rejected 记录
+                    elif not result.error:
+                        result.error = f"dgoal_done 终审未通过（未收到 audited:true，details={details}）"
             continue
 
         if etype == "agent_end":
@@ -279,6 +314,7 @@ def run_smoke(session: RpcSession, result: SmokeResult) -> None:
 def main() -> int:
     work_dir = tempfile.mkdtemp(prefix="pi-dgoal-ai-smoke-work.")
     print(f"[smoke] 隔离工作目录: {work_dir}", file=sys.stderr, flush=True)
+    print(f"[smoke] Pi 运行时: {resolve_pi_executable()}（可用 PI_DGOAL_SMOKE_PI 覆盖）", file=sys.stderr, flush=True)
     print(f"[smoke] 目标: /dgoal {SMOKE_GOAL}", file=sys.stderr, flush=True)
     print(f"[smoke] ⚠️ 消耗真实 token（主 agent + 每次建检/终审子进程均调模型），需网络与已配置 provider", file=sys.stderr, flush=True)
 
