@@ -2914,7 +2914,7 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
   const issues: DgoalConfigIssue[] = [];
   const config: DgoalConfig = {};
   const parsedConfig = parsed as DgoalConfig;
-  const modelFields: (keyof DgoalConfig)[] = ["auditorModel", "phaseAuditorModel", "goalAuditorModel"];
+  const modelFields: Array<"auditorModel" | "phaseAuditorModel" | "goalAuditorModel"> = ["auditorModel", "phaseAuditorModel", "goalAuditorModel"];
   for (const field of modelFields) {
     if (!Object.prototype.hasOwnProperty.call(parsedConfig, field)) continue;
     const value = parsedConfig[field];
@@ -2927,7 +2927,7 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
     else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath, field } });
   }
 
-  const candidateFields: (keyof DgoalConfig)[] = ["phaseAuditorModels", "goalAuditorModels"];
+  const candidateFields: Array<"phaseAuditorModels" | "goalAuditorModels"> = ["phaseAuditorModels", "goalAuditorModels"];
   for (const field of candidateFields) {
     if (!Object.prototype.hasOwnProperty.call(parsedConfig, field)) continue;
     const value = parsedConfig[field];
