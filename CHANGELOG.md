@@ -7,11 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.7] - 2026-07-12
+
+### Fixed
+
+- **paused 状态被误报为无目标**：goal 存在但处于 `paused` 时，`dgoal_plan` / `dgoal_check` / `dgoal_done` 此前统一返回“没有进行中的 /dgoal 目标”，掩盖了暂停事实。现区分可读判定（`isGoalReadable`，含 paused，用于只读入口）与可变更判定（`isGoalMutable`，仅 active/rejected，用于写入入口）：paused 下 `list` / `get` / `/dgoal status` 只读可用；`create` / `update` / `check` / `done` 返回结构化 paused 结果（含 `pauseReason` + `/dgoal resume` 指引），不再把“不能修改”混同为“目标不存在”。
+- **无进展续跑空转**：`agent_end` 对正常 `stopReason=stop` 无条件发 continuation（续跑），导致 agent 连续多轮只回复“未完成”仍烧 token。现用 `before_agent_start` 重置本轮工具调用标记、`tool_execution_start` 置位，连续 3 轮无工具调用自动暂停（`pauseReason=no_progress`）；发生工具调用或 plan/goal 状态推进时计数重置。计数在 startGoal / clearGoal / resyncGoalFromSession / finalizeGoal 时清零，不跨 goal/session 继承。
+- **pauseReason 写入遗漏**：`markGoalPaused` 在 `aborted` / `model_error` / `/dgoal pause` 三处调用此前未传 `pauseReason`，导致日志显示 `pausedReason=None`。现分别写入 `user_abort` / `model_error` / `user_abort`。
+- **新 plan phase ID 非连续**：`proposalToPlan` 此前让 task 与 phase 共用全局 `nextId`，导致新计划 phase ID 为 `#1/#4/#8/#12`（task 占用了后续 phase 的 ID）。现先给所有 phase 预分配连续 ID `1..N`，task 再用全局唯一 ID；旧 plan 保留原 ID 不迁移。
+- **phase 找不到无映射 + phaseId/phaseNumber 歧义**：phase 找不到时此前只返回“phase #N 不存在”，模型无法定位真实 ID。现返回完整阶段列表（阶段序号 + 真实 phaseId + 标题，当前 phase 高亮）。`dgoal_check` / `dgoal_plan` 新增 `phaseNumber`（阶段序号）参数，与 `phaseId` 二选一（同时提供被拒）；不把 `phaseId=2` 静默解释为第二阶段。
+- **审核器配额错误未触发候选回退**：provider 业务层配额耗尽（如 `Codex error: The usage limit has been reached`）以纯文本返回，既非结构化 HTTP 429 也非 network 错误，被归为 `unknown` → `retry_same_model` → 同模型重试 3 次后直接暂停，不切候选。现 `classifyAuditorFailure` 对明确配额文本（usage/plan/rate limit、quota exceeded、insufficient quota）触发 `fallback` 切下一候选；业务 `REJECTED`、HTTP 400、未知非配额错误（如 `context length exceeded`、`billing address invalid`、`credit card declined`、`quota field invalid`）保持原行为。
+
 ### Changed
 
 - **审核模型候选链与预检**：新增 `phaseAuditorModels` / `goalAuditorModels`，每个审核范围最多 3 个有序 `provider/model[:thinking]` 候选。项目级链整体优先于全局链、同来源复数 > 对应单值 > 旧 `auditorModel`，`null` 明确继承当前会话模型并阻断继续降级；旧单值配置不自动改写。解析会逐项告警非法/重复/超限项，并以审核 child 同隔离边界的 Pi `get_available_models` 结构化结果预检（完整模型 ID 优先、再识别末尾 thinking）；成功结果缓存到当前 Pi 进程，预检失败保留候选交给运行时。详见 ADR 0015。
 - **审核器选模模板初始化**：首次实际独立审核发现全局和受信任项目级的 `pi-dgoal.json` 文件都不存在时，原子创建只含两个复数字段 `null` 的全局模板；不会覆盖已有文件。已有坏 JSON 或不可读文件只告警降级，写入失败仍回退当前会话模型并不中断审核。
-- **审核器候选链运行时回退与部分输出续审**：审核器发生结构化技术异常（HTTP 401/403/404/408/429/5xx、网络错误、零输出超时）时按候选顺序切换下一模型；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换。有部分输出但缺终止标记时，同模型最多重试 3 次，把已有文本作为受限的 `<partial_audit_feedback>`（6000 字符上限、XML 转义）续审，仍无结论才携带部分文本切下一候选。全部候选耗尽进入 `audit_error` 暂停，绝不静默回退当前执行模型。工具进度 `onUpdate` 与最终 `details` 记录实际采用模型、配置/预检降级状态、每次尝试轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）与耗尽标志；轨迹不写入 `GoalState`，部分反馈不污染正式 `phaseFeedbackById` / `finalFeedback`。详见 ADR 0015。
+- **审核器候选链运行时回退与部分输出续审**：审核器发生结构化技术异常（HTTP 401/403/404/408/429/5xx、网络错误、零输出超时）或明确纯文本配额耗尽时按候选顺序切换下一模型；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换。有部分输出但缺终止标记时，同模型最多重试 3 次，把已有文本作为受限的 `<partial_audit_feedback>`（6000 字符上限、XML 转义）续审，仍无结论才携带部分文本切下一候选。全部候选耗尽进入 `audit_error` 暂停，绝不静默回退当前执行模型。工具进度 `onUpdate` 与最终 `details` 记录实际采用模型、配置/预检降级状态、每次尝试轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）与耗尽标志；轨迹不写入 `GoalState`，部分反馈不污染正式 `phaseFeedbackById` / `finalFeedback`。详见 ADR 0015。
 
 ## [0.5.6] - 2026-07-07
 
