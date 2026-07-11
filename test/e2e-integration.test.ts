@@ -91,6 +91,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(goal.plan!.phases).toHaveLength(2);
     expect(goal.plan!.phases[0].tasks).toHaveLength(2);
     expect(goal.plan!.phases[1].tasks).toHaveLength(1);
+    // phaseCount=2，task 从 3 起分配，共 3 个 task，nextId=6
     expect(goal.plan!.nextId).toBe(6);
 
     // 4. 阶段A 的 task1 推进：pending → in_progress
@@ -111,7 +112,8 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(goal.plan!.phases[0].tasks[0].evidence).toBe("跑测试全过");
 
     // 6. task2 完成
-    const r3 = applyPlanUpdate(goal, { id: 3, status: "completed", evidence: "ok" });
+    const t2 = goal.plan!.phases[0].tasks[1];
+    const r3 = applyPlanUpdate(goal, { id: t2.id, status: "completed", evidence: "ok" });
     goal = r3.goal;
     api.appendEntry("dgoal-state", { goal });
     expect(goal.plan!.phases[0].tasks[1].status).toBe("completed");
@@ -128,12 +130,13 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(goal.plan!.phases[0].status).toBe("completed");
 
     // 8. 阶段B task3 完成
-    const r5 = applyPlanUpdate(goal, { id: 5, status: "completed", evidence: "ok" });
+    const t3 = goal.plan!.phases[1].tasks[0];
+    const r5 = applyPlanUpdate(goal, { id: t3.id, status: "completed", evidence: "ok" });
     goal = r5.goal;
     api.appendEntry("dgoal-state", { goal });
 
-    // 9. 阶段B 也全终态 → setPhaseCompleted
-    const r6 = setPhaseCompleted(goal, 4);
+    // 9. 阶段B 也全终态 → setPhaseCompleted（phase 2）
+    const r6 = setPhaseCompleted(goal, 2);
     goal = r6.goal;
     expect(goal.plan!.phases[1].status).toBe("completed");
 

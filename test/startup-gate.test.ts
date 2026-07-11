@@ -335,10 +335,11 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
       ],
     };
     const plan = proposalToPlan(proposal);
+    // phase ID 连续（1,2），task 从 phaseCount+1 起全局唯一。
     expect(plan.phases[0].id).toBe(1);
-    expect(plan.phases[0].tasks[0].id).toBe(2);
-    expect(plan.phases[0].tasks[1].id).toBe(3);
-    expect(plan.phases[1].id).toBe(4);
+    expect(plan.phases[1].id).toBe(2);
+    expect(plan.phases[0].tasks[0].id).toBe(3);
+    expect(plan.phases[0].tasks[1].id).toBe(4);
     expect(plan.phases[1].tasks[0].id).toBe(5);
     expect(plan.nextId).toBe(6);
   });
@@ -367,7 +368,7 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
       phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" }] }],
     };
     const plan = proposalToPlan(proposal);
-    // t2 局部索引 1 → 全局 id（t1=2, phase=1, t2=3），blockedBy 指向 t1 的全局 id 2
+    // phaseCount=1 → phaseId=1, t1=2, t2=3；t2 局部索引 1 → t1 全局 id 2
     expect(plan.phases[0].tasks[1].blockedBy).toEqual([2]);
   });
 });

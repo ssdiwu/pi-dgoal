@@ -37,7 +37,7 @@ function isDonePlanStatus(status: PlanStatus): boolean {
 }
 
 // goal 暂停原因，resume 时按此决定是否清零 rejectedCount（见 ADR 0004）。
-type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x";
+type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress";
 
 // 0.2.0 Task Plan：goal 层（冻结）下的执行脚手架，phase + task 两层（见 ADR 0006）。
 // 持久化复用 dgoal-state custom entry，与 goal 同源恢复。
@@ -261,6 +261,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
       "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，Dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
+      "notify.noProgressPaused": "连续 {max} 轮无工具调用，Dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
       "notify.noPriorDiscussionForBareStart": "无前文共识可承接。请用 /dgoal <objective> 提供目标，或先对齐后再裸 /dgoal。",
       "notify.summarizingContext": "正在从前文讨论固化启动背景…",
@@ -300,6 +301,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "check.activity.prefix": "建检活性",
       "check.activity.attempt": "第 {attempt}/{total} 次",
       "tool.done.noGoal": "当前没有 /dgoal 目标可完成。",
+      "tool.paused": "当前 /dgoal 目标已暂停（{reason}）。只读操作可用；修改、建检或完成请先运行 /dgoal resume。",
       "tool.done.gateJumping": "越终审推进：phase #{phaseId}（{phaseSubject}）尚未通过建检。必须先把所有 phase 通过 dgoal_check，才能调用 dgoal_done 进入终审。",
       "tool.done.runFailed": "审核运行失败，目标已暂停。运行 /dgoal resume 继续并重试完成。\n错误：{error}",
       "tool.done.auditPaused": "终审连续 {count} 次未通过，目标已暂停。\n\n审核报告：\n{report}",
@@ -318,6 +320,12 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.propose.submitted": "已提交计划提案（{count} 个 phase）。等待用户确认…",
       "tool.check.noGoal": "当前没有进行中的 /dgoal 目标或 plan，无法建检。",
       "tool.check.phaseNotFound": "phase #{phaseId} 不存在。",
+      "tool.check.availablePhases": "可用阶段（阶段序号 → phaseId）：",
+      "tool.check.currentMarker": " ← 当前",
+      "tool.check.phaseListItem": "{seq}. phaseId #{phaseId}：{subject}{currentMarker}",
+      "tool.check.missingPhaseIdentifier": "必须提供 phaseId 或 phaseNumber（阶段序号）之一。",
+      "tool.plan.missingPhaseIdentifier": "必须提供 phaseId 或 phaseNumber（阶段序号）之一。",
+      "tool.plan.ambiguousPhaseIdentifier": "phaseId 与 phaseNumber 不能同时提供，请只保留一个。",
       "tool.check.gateJumping": "越闸门推进：phase #{currentPhaseId}（{currentPhaseSubject}）尚未通过建检。必须先修好当前 phase 并通过 dgoal_check，才能对 phase #{attemptedPhaseId} 建检。",
       "tool.check.tasksNotTerminal": "phase #{phaseId} 的 task 未全部终态，不能建检。",
       "tool.check.subprocessError": "建检子进程出错：{error}",
@@ -425,6 +433,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
       "notify.modelPaused": "Model error persisted after {max} retries; Dgoal paused{detail}. Run /dgoal resume to continue.",
+      "notify.noProgressPaused": "No tool calls for {max} consecutive turns; Dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
       "notify.noPriorDiscussionForBareStart": "There is no prior aligned discussion to carry. Use /dgoal <objective>, or align first and then run bare /dgoal.",
       "notify.summarizingContext": "Persisting startup context from prior discussion…",
@@ -464,6 +473,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "check.activity.prefix": "Check activity",
       "check.activity.attempt": "attempt {attempt}/{total}",
       "tool.done.noGoal": "There is no /dgoal goal to complete.",
+      "tool.paused": "The current /dgoal goal is paused ({reason}). Read-only operations are available; to mutate, check, or complete, run /dgoal resume first.",
       "tool.done.gateJumping": "Gate-jumping finalization: phase #{phaseId} ({phaseSubject}) has not passed its check yet. You must pass dgoal_check for all phases before calling dgoal_done.",
       "tool.done.runFailed": "Audit execution failed; the goal is paused. Run /dgoal resume to continue and retry completion.\nError: {error}",
       "tool.done.auditPaused": "Final audit failed {count} times; the goal is now paused.\n\nAudit report:\n{report}",
@@ -482,6 +492,13 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.propose.submitted": "Submitted the plan proposal ({count} phases). Waiting for user confirmation…",
       "tool.check.noGoal": "There is no active /dgoal goal or plan; cannot run phase check.",
       "tool.check.phaseNotFound": "phase #{phaseId} does not exist.",
+      "tool.check.availablePhases": "Available phases (phase number → phaseId):",
+      "tool.check.currentMarker": " ← current",
+      "tool.check.phaseListItem": "{seq}. phaseId #{phaseId}: {subject}{currentMarker}",
+      "tool.check.missingPhaseIdentifier": "Must provide either phaseId or phaseNumber.",
+      "tool.check.ambiguousPhaseIdentifier": "phaseId and phaseNumber cannot be provided together; keep only one.",
+      "tool.plan.missingPhaseIdentifier": "Must provide either phaseId or phaseNumber.",
+      "tool.plan.ambiguousPhaseIdentifier": "phaseId and phaseNumber cannot be provided together; keep only one.",
       "tool.check.gateJumping": "Gate-jumping progression: phase #{currentPhaseId} ({currentPhaseSubject}) has not passed its check yet. You must fix the current phase and pass dgoal_check before checking phase #{attemptedPhaseId}.",
       "tool.check.tasksNotTerminal": "The tasks in phase #{phaseId} are not all terminal yet; cannot check this phase.",
       "tool.check.subprocessError": "Phase-check subprocess failed: {error}",
@@ -590,6 +607,23 @@ const STATUS_KEY = "dgoal";
 function isGoalRunning(status: GoalStatus | undefined): boolean {
   return status === "active" || status === "rejected";
 }
+// 存在但暂停：可读不可写。paused 下允许 list/get/status，拒绝 mutation/check/done。
+// 不能和 missing 混为一谈——存在但暂停不得误报为不存在。
+function isGoalReadable(status: GoalStatus | undefined): boolean {
+  return status === "active" || status === "rejected" || status === "paused";
+}
+// 可变更：只有 active / rejected 允许 mutation / check / done。
+function isGoalMutable(status: GoalStatus | undefined): boolean {
+  return status === "active" || status === "rejected";
+}
+// 工具结果：goal 存在但暂停，返回结构化 paused 信息而非 noGoal。
+function pausedGoalResult(goal: GoalState) {
+  const reason = goal.pauseReason ?? "unknown";
+  return {
+    content: [{ type: "text" as const, text: t("tool.paused", { reason }) }],
+    details: { error: "goal paused", goalStatus: "paused", pauseReason: reason },
+  };
+}
 const STATE_ENTRY_TYPE = "dgoal-state";
 const MAX_OBJECTIVE_LENGTH = 8_000;
 // v0.5.2 切片8：裸 /dgoal 承接前文启动时的占位 objective。pending 期间短暂存在，dgoal_propose 确认后被 propose.objective 覆盖。
@@ -611,7 +645,27 @@ const CONTINUATION_POLL_INTERVAL_MS = 250;
 let currentGoal: GoalState | undefined;
 // 连续模型错误计数：正常完成一轮后重置；累计到 MAX_ERROR_RETRIES 后暂停并清零。
 let consecutiveErrors = 0;
+// 连续无进展计数：正常结束一轮后若本轮没有任何工具调用，则加一；达到阈值暂停。
+export const MAX_NO_PROGRESS_TURNS = 3;
+let consecutiveNoProgressTurns = 0;
+let turnHadToolExecution = false;
 let api: ExtensionAPI | undefined;
+
+// 纯函数：判定本轮正常结束后是否因无进展而应暂停。
+export function decideNoProgressPause(state: {
+  hadToolExecution: boolean;
+  consecutiveNoProgress: number;
+}): { continue_: boolean; newCount: number; pause: boolean } {
+  if (state.hadToolExecution) {
+    return { continue_: true, newCount: 0, pause: false };
+  }
+  const newCount = state.consecutiveNoProgress + 1;
+  return {
+    continue_: newCount < MAX_NO_PROGRESS_TURNS,
+    newCount,
+    pause: newCount >= MAX_NO_PROGRESS_TURNS,
+  };
+}
 let pendingContinuation: { goalId: string; marker: string; sent: boolean } | undefined;
 let continuationDeliveryTimer: ReturnType<typeof setTimeout> | undefined;
 const cancelledMarkers = new Set<string>();
@@ -653,6 +707,17 @@ const dgoalDoneTool = defineTool({
           { type: "text", text: t("tool.done.noGoal") },
         ],
         details: { goal: undefined, summary: params.summary.trim(), verification: params.verification.trim() },
+        terminate: true,
+      };
+    }
+    if (completedGoal.status === "paused") {
+      return { ...pausedGoalResult(completedGoal), terminate: true };
+    }
+    if (!isGoalMutable(completedGoal.status)) {
+      // pending / done / 其他非 active-rejected 状态：不能完成。
+      return {
+        content: [{ type: "text", text: t("tool.done.noGoal") }],
+        details: { error: "goal not mutable", goalStatus: completedGoal.status },
         terminate: true,
       };
     }
@@ -859,7 +924,8 @@ const dgoalPlanTool = defineTool({
       [Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get")],
       { description: "create / update / list / get" },
     ),
-    phaseId: Type.Optional(Type.Number({ description: "create 时指定目标 phase；list 时过滤某 phase" })),
+    phaseId: Type.Optional(Type.Number({ description: "create 时指定目标 phase；list 时过滤某 phase（与 phaseNumber 二选一）" })),
+    phaseNumber: Type.Optional(Type.Number({ description: "create/list 时指定阶段序号（1-based，与 phaseId 二选一）" })),
     id: Type.Optional(Type.Number({ description: "task id（update/get 必填）" })),
     subject: Type.Optional(Type.String({ description: "task 短祈使句（create 必填）" })),
     description: Type.Optional(Type.String({ description: "task 长描述" })),
@@ -897,11 +963,43 @@ const dgoalPlanTool = defineTool({
   },
   async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
     const goal = currentGoal;
-    if (!goal || !isGoalRunning(goal.status)) {
+    if (!goal) {
       return {
         content: [{ type: "text", text: t("tool.plan.noGoal") }],
         details: { action: params.action, error: "no active goal" },
       };
+    }
+    // paused 存在但不可写：list/get 允许（isGoalReadable），create/update 拒绝并提示 resume。
+    if (goal.status === "paused") {
+      if (params.action === "list" || params.action === "get") {
+        // isGoalReadable(paused)=true，继续走后续 reducer 逻辑（不修改状态、不 persist），保持只读。
+      } else {
+        return { ...pausedGoalResult(goal), details: { action: params.action, ...pausedGoalResult(goal).details } };
+      }
+    } else if (!isGoalReadable(goal.status)) {
+      // 非 readable（pending/done/undefined）= 真正没有可操作的目标。
+      return {
+        content: [{ type: "text", text: t("tool.plan.noGoal") }],
+        details: { action: params.action, error: "no active goal" },
+      };
+    }
+    // 解析 phaseId / phaseNumber（阶段顺序防护需要真实 phaseId）。
+    if (params.phaseNumber !== undefined && params.phaseNumber !== null && params.phaseId !== undefined && params.phaseId !== null) {
+      return { content: [{ type: "text", text: t("tool.plan.ambiguousPhaseIdentifier") }], details: { action: params.action, error: "ambiguous phase identifier" } };
+    }
+    if (params.phaseNumber !== undefined && params.phaseNumber !== null) {
+      const id = phaseNumberToId(goal, Number(params.phaseNumber));
+      if (id === undefined) {
+        return formatPhaseNotFoundResult(goal, Number(params.phaseNumber));
+      }
+      params = { ...params, phaseId: id };
+    }
+    // create/list 的 phase 定位在 reducer 前结构化校验，避免依赖本地化错误文案正则。
+    if ((params.action === "create" || params.action === "list") && params.phaseId !== undefined && params.phaseId !== null) {
+      const phaseId = Number(params.phaseId);
+      if (!goal.plan?.phases.some((phase) => phase.id === phaseId)) {
+        return formatPhaseNotFoundResult(goal, phaseId);
+      }
     }
     // 阶段顺序执行防护：不允许在当前 phase 未完成时操作后续 phase 的 task。
     const phaseGuard = enforcePhaseOrder(goal, params.action as PlanAction, params as Record<string, unknown>);
@@ -913,6 +1011,10 @@ const dgoalPlanTool = defineTool({
     }
 
     const result = applyPlanMutation(goal, params.action as PlanAction, params as Record<string, unknown>);
+    if (result.op.kind === "error" && isPhaseNotFoundMessage(result.op.message)) {
+      const attemptedPhaseId = Number(params.phaseId);
+      if (Number.isFinite(attemptedPhaseId)) return formatPhaseNotFoundResult(goal, attemptedPhaseId);
+    }
     // 仅在非 error 且非纯读（list/get 不改状态）时 commit + persist
     if (result.op.kind !== "error" && (result.op.kind === "create" || result.op.kind === "update")) {
       currentGoal = result.goal;
@@ -1006,10 +1108,15 @@ const MAX_PROPOSAL_RETRIES = 2;
 let startGoalInProgress = false;
 
 // 把 proposal 转成 TaskPlan（分配 id，建 phase + 初始 task）。
+// v0.5.x 修复：先给所有 phase 预分配连续 id（1..N），task 再用全局唯一 id。
+// 这样用户阶段序号与 phaseId 一致，避免 task 占用 id 导致 #1/#4/#8/#12 的歧义。
+// 旧 plan 的 phase ID 保留原样，不做迁移。
 export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  let nextId = 1;
-  const phases: Phase[] = proposal.phases.map((ph) => {
-    const phaseId = nextId++;
+  const phaseCount = proposal.phases.length;
+  let nextId = phaseCount + 1;
+  const phaseIds = proposal.phases.map((_, index) => index + 1);
+  const phases: Phase[] = proposal.phases.map((ph, phaseIndex) => {
+    const phaseId = phaseIds[phaseIndex];
     const rawTasks = ph.tasks ?? [];
     const taskGlobalIds = rawTasks.map(() => nextId++);
     const tasks: Task[] = rawTasks.map((tt, idx) => {
@@ -1173,7 +1280,8 @@ const dgoalCheckTool = defineTool({
     "即使最后一个 phase 建检通过，也仍需在所有 phase 都通过后单独调用 dgoal_done，触发 goal 级终审并关闭 goal。",
   ],
   parameters: Type.Object({
-    phaseId: Type.Number({ description: "要建检的 phase id" }),
+    phaseId: Type.Optional(Type.Number({ description: "要建检的 phase id（与 phaseNumber 二选一）" })),
+    phaseNumber: Type.Optional(Type.Number({ description: "要建检的阶段序号（1-based，phaseId 的友好写法；与 phaseId 二选一）" })),
   }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const goal = currentGoal;
@@ -1185,16 +1293,32 @@ const dgoalCheckTool = defineTool({
       }
       onUpdate?.(update);
     };
-    if (!goal || !isGoalRunning(goal.status) || !goal.plan) {
+    if (!goal) {
       return {
         content: [{ type: "text", text: t("tool.check.noGoal") }],
         details: { error: "no active goal/plan" },
       };
     }
-    const phaseId = Number(params.phaseId);
+    if (goal.status === "paused") {
+      return { ...pausedGoalResult(goal), details: { phaseId: params.phaseId, ...pausedGoalResult(goal).details } };
+    }
+    if (!isGoalMutable(goal.status) || !goal.plan) {
+      return {
+        content: [{ type: "text", text: t("tool.check.noGoal") }],
+        details: { error: "no active goal/plan" },
+      };
+    }
+    if (params.phaseId !== undefined && params.phaseId !== null && params.phaseNumber !== undefined && params.phaseNumber !== null) {
+      return { content: [{ type: "text", text: t("tool.check.ambiguousPhaseIdentifier") }], details: { error: "ambiguous phase identifier" } };
+    }
+    const resolvedPhaseId = resolvePhaseIdentifier(goal, params.phaseId, params.phaseNumber);
+    if (resolvedPhaseId.error) {
+      return resolvedPhaseId.result;
+    }
+    const phaseId = resolvedPhaseId.id;
     const phase = goal.plan.phases.find((ph) => ph.id === phaseId);
     if (!phase) {
-      return { content: [{ type: "text", text: t("tool.check.phaseNotFound", { phaseId }) }], details: { error: "phase not found" } };
+      return formatPhaseNotFoundResult(goal, phaseId);
     }
     // v0.5.2 切片6：越闸门推进拦截。只允许对当前最早未完成的 phase 建检；
     // 对后续 phase 发起建检 = 越闸门推进，硬拒（与 dgoal_plan enforcePhaseOrder 同口径）。
@@ -1305,6 +1429,8 @@ export default function dgoal(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", (event) => {
     markContinuationDelivered(event.prompt);
+    // 新 agent turn 重置本轮工具调用标记。
+    turnHadToolExecution = false;
     // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
     if (!currentGoal || !isGoalRunning(currentGoal.status)) return;
 
@@ -1315,6 +1441,8 @@ export default function dgoal(pi: ExtensionAPI) {
 
   pi.on("tool_execution_start", (event, ctx) => {
     trackFileToolExecutionStart(event.toolCallId, event.toolName, event.args, ctx.cwd);
+    // 本轮有工具调用，说明有实际推进，不计入空转。
+    turnHadToolExecution = true;
   });
 
   // 切片3：plan 相关工具执行后刷新浮层（tool_execution_end 只读 currentGoal，不 replay）
@@ -1325,7 +1453,7 @@ export default function dgoal(pi: ExtensionAPI) {
     planOverlay?.update();
   });
 
-  pi.on("agent_end", async (event, ctx) => {
+  async function handleAgentEnd(event: { messages: unknown[] }, ctx: DgoalContext) {
     // 切片4：启动闸门阶段（goal pending）——主代理应调 dgoal_propose 提交计划。
     // startGoal 初始化期间（创建 pending → 投递 propose）跳过：被中断 turn 的 agent_end
     // 会看到 pending goal，不跳过会与 startGoal 自己的 propose 投递撞车（双发）。
@@ -1343,12 +1471,13 @@ export default function dgoal(pi: ExtensionAPI) {
     // 用户主动中断：不重试，直接暂停。
     if (finalAssistant?.stopReason === "aborted") {
       consecutiveErrors = 0;
-      currentGoal = markGoalPaused(currentGoal);
+      consecutiveNoProgressTurns = 0;
+      currentGoal = markGoalPaused(currentGoal, Date.now(), { pauseReason: "user_abort" });
       persistGoal(currentGoal);
       clearContinuation();
-      ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-      planOverlay?.update();
-      ctx.ui.notify(t("notify.abortedPaused", { detail: errorDetail }), "error");
+      safeSetDgoalStatus(ctx, formatStatus(currentGoal));
+      safeUpdatePlanOverlay();
+      safeNotify(ctx, t("notify.abortedPaused", { detail: errorDetail }), "error");
       return;
     }
 
@@ -1357,8 +1486,11 @@ export default function dgoal(pi: ExtensionAPI) {
     // sendContinuation 本身的 guard（pendingContinuation?.goalId === goal.id）会去重。
     if (finalAssistant?.stopReason === "error") {
       consecutiveErrors += 1;
+      // 模型错误打断“连续正常空转”序列：不是正常结束，重置无进展计数。
+      consecutiveNoProgressTurns = 0;
       if (consecutiveErrors <= MAX_ERROR_RETRIES) {
-        ctx.ui.notify(
+        safeNotify(
+          ctx,
           t("notify.modelRetry", { count: consecutiveErrors, max: MAX_ERROR_RETRIES, detail: errorDetail }),
           "warning",
         );
@@ -1366,26 +1498,55 @@ export default function dgoal(pi: ExtensionAPI) {
         return;
       }
       consecutiveErrors = 0;
-      currentGoal = markGoalPaused(currentGoal);
+      currentGoal = markGoalPaused(currentGoal, Date.now(), { pauseReason: "model_error" });
       persistGoal(currentGoal);
       clearContinuation();
-      ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-      planOverlay?.update();
-      ctx.ui.notify(
+      safeSetDgoalStatus(ctx, formatStatus(currentGoal));
+      safeUpdatePlanOverlay();
+      safeNotify(
+        ctx,
         t("notify.modelPaused", { max: MAX_ERROR_RETRIES, detail: errorDetail }),
         "warning",
       );
       return;
     }
 
-    // 正常完成一轮：重置错误计数，推进迭代。
+    // 只有 stop 才是“正常结束”；length/toolUse/缺失原因不计入正常空转。
+    // 保留原有续跑行为，但清零 no-progress 序列，避免误触发 no_progress。
+    if (finalAssistant?.stopReason !== "stop") {
+      consecutiveErrors = 0;
+      consecutiveNoProgressTurns = 0;
+      currentGoal = { ...currentGoal, iteration: currentGoal.iteration + 1, updatedAt: Date.now() };
+      persistGoal(currentGoal);
+      safeSetDgoalStatus(ctx, formatStatus(currentGoal));
+      await sendContinuation(pi, ctx, currentGoal);
+      return;
+    }
+
+    // 正常完成一轮：先判是否真正有推进。
     consecutiveErrors = 0;
+    const progress = decideNoProgressPause({
+      hadToolExecution: turnHadToolExecution,
+      consecutiveNoProgress: consecutiveNoProgressTurns,
+    });
+    consecutiveNoProgressTurns = progress.newCount;
+    if (progress.pause) {
+      currentGoal = markGoalPaused(currentGoal, Date.now(), { pauseReason: "no_progress" });
+      persistGoal(currentGoal);
+      clearContinuation();
+      safeSetDgoalStatus(ctx, formatStatus(currentGoal));
+      safeUpdatePlanOverlay();
+      safeNotify(ctx, t("notify.noProgressPaused", { max: MAX_NO_PROGRESS_TURNS, detail: buildNoProgressDetail(currentGoal) }), "warning");
+      return;
+    }
     currentGoal = { ...currentGoal, iteration: currentGoal.iteration + 1, updatedAt: Date.now() };
     persistGoal(currentGoal);
-    ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
+    safeSetDgoalStatus(ctx, formatStatus(currentGoal));
 
     await sendContinuation(pi, ctx, currentGoal);
-  });
+  }
+
+  pi.on("agent_end", handleAgentEnd);
 }
 
 async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: DgoalContext) {
@@ -1460,6 +1621,8 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   }
 
   consecutiveErrors = 0;
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   clearContinuation();
   // 暂停当前 LLM 工作，专注开启 dgoal（用户期望 /dgoal 立即接管，而非等当前 turn 跑完）。
   // 必须在设置 pending goal 前后用 startGoalInProgress 标志包住：被中断 turn 的 agent_end
@@ -1547,17 +1710,19 @@ function markGoalResumed(goal: GoalState, resumedAt = Date.now(), extra: Partial
 }
 
 function pauseGoal(ctx: DgoalContext) {
-  if (!currentGoal || currentGoal.status !== "active") return;
+  if (!currentGoal || !isGoalMutable(currentGoal.status)) return;
   cancelPendingContinuation();
-  currentGoal = markGoalPaused(currentGoal);
+  currentGoal = markGoalPaused(currentGoal, Date.now(), { pauseReason: "user_abort" });
   persistGoal(currentGoal);
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
-  planOverlay?.update();
+  safeSetDgoalStatus(ctx, formatStatus(currentGoal));
+  safeUpdatePlanOverlay();
 }
 
 async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   if (!currentGoal || currentGoal.status !== "paused") return;
   consecutiveErrors = 0;
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   // 切片6：resume 按 pauseReason 决定是否清零 rejectedCount（ADR 0004）。
   // audit_failed_3x：能力到顶，resume 清零给 agent 新机会；其他：瞬时故障，不清零。
   const clearRejected = currentGoal.pauseReason === "audit_failed_3x";
@@ -1696,6 +1861,63 @@ export function setFinalFeedback(goal: GoalState, report: string, rejectedCount:
 // 定位当前未 done 的 phase（注入时只取当前 phase 的阶段反馈）。
 export function currentUncheckedPhase(goal: GoalState): Phase | undefined {
   return goal.plan?.phases.find((ph) => !isDonePlanStatus(ph.status));
+}
+
+// 阶段序号（1-based）到真实 phaseId 的映射。旧 plan 可能非连续；新 plan 中序号 == phaseId。
+function phaseNumberToId(goal: GoalState, phaseNumber: number): number | undefined {
+  return goal.plan?.phases[phaseNumber - 1]?.id;
+}
+
+// 解析工具参数中的 phaseId / phaseNumber。若都未传或无效，返回错误结果。
+function resolvePhaseIdentifier(
+  goal: GoalState,
+  rawPhaseId: unknown,
+  rawPhaseNumber: unknown,
+): { id: number } | { error: true; result: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } } {
+  const hasPhaseId = rawPhaseId !== undefined && rawPhaseId !== null;
+  const hasPhaseNumber = rawPhaseNumber !== undefined && rawPhaseNumber !== null;
+  if (!hasPhaseId && !hasPhaseNumber) {
+    return {
+      error: true,
+      result: {
+        content: [{ type: "text", text: t("tool.check.missingPhaseIdentifier") }],
+        details: { error: "missing phase identifier" },
+      },
+    };
+  }
+  if (hasPhaseNumber) {
+    const phaseNumber = Number(rawPhaseNumber);
+    const id = phaseNumberToId(goal, phaseNumber);
+    if (id === undefined) {
+      return { error: true, result: formatPhaseNotFoundResult(goal, phaseNumber) };
+    }
+    return { id };
+  }
+  return { id: Number(rawPhaseId) };
+}
+
+function isPhaseNotFoundMessage(message: string): boolean {
+  return /phase\s+#?\d+.*(?:不存在|does not exist)/i.test(message);
+}
+
+// phase 找不到时返回完整的“阶段序号 → phaseId”映射，方便模型定位。
+function formatPhaseNotFoundResult(goal: GoalState, attemptedId: number) {
+  const lines: string[] = [];
+  lines.push(t("tool.check.phaseNotFound", { phaseId: attemptedId }));
+  if (goal.plan && goal.plan.phases.length > 0) {
+    const current = currentUncheckedPhase(goal);
+    lines.push("");
+    lines.push(t("tool.check.availablePhases"));
+    for (const [index, ph] of goal.plan.phases.entries()) {
+      const seq = index + 1;
+      const currentMarker = current && current.id === ph.id ? t("tool.check.currentMarker") : "";
+      lines.push(t("tool.check.phaseListItem", { seq, phaseId: ph.id, subject: ph.subject, currentMarker }));
+    }
+  }
+  return {
+    content: [{ type: "text" as const, text: lines.join("\n") }],
+    details: { error: "phase not found", attemptedPhaseId: attemptedId },
+  };
 }
 
 export function buildContextPreview(goal: Pick<GoalState, "contextSummary">, maxLines = 5): string {
@@ -2060,6 +2282,9 @@ export function resyncGoalFromSession(ctx: DgoalContext) {
   clearContinuation();
   clearCurrentCheckSnapshot();
   resetAuditorWorkspaceTracker();
+  // 加载新 goal 前清空无进展计数，避免跨 goal/session 继承旧计数。
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   currentGoal = loadGoal(ctx);
   try {
     ctx.ui.setStatus(STATUS_KEY, formatStatus(currentGoal));
@@ -2506,6 +2731,8 @@ function safeNotify(ctx: DgoalContext, message: string, level: "info" | "warning
 function clearActiveGoal(ctx: DgoalContext) {
   cancelPendingContinuation();
   consecutiveErrors = 0;
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   resetAuditorWorkspaceTracker();
   currentGoal = undefined;
   persistGoal(null);
@@ -2522,6 +2749,8 @@ function finalizeGoal(ctx: DgoalContext) {
   }
   cancelPendingContinuation();
   resetAuditorWorkspaceTracker();
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失。
   // UI 边界容错：planOverlay / ctx.ui 由主程序实现，TUI 渲染异常（如主程序 0.79.4 的
   // Spacer is not defined）不得阻断 goal 状态清空——状态机一致性优先于最终 UI 展示。
@@ -3483,8 +3712,28 @@ export function classifyAuditorFailure(result: AuditorResult): AuditorFailureDis
       return "fallback";
     }
   }
+  // 配额/用量上限类错误：provider 业务层配额耗尽（非 HTTP 429 结构化），
+  // 不是业务 REJECTED，换 provider 候选通常可绕过。必须放 HTTP 结构化判定之后、
+  // 未知兜底之前：只对明确的配额文本回退，其余未知错误仍留原模型。
+  if (hasQuotaErrorHint(result.error)) return "fallback";
   // 不能从 stderr/error 文本推断 HTTP 状态，未知或 HTTP 400 只保留原有同模型重试。
   return "retry_same_model";
+}
+
+// provider 配额/用量上限错误的文本启发式。只检测高置信的配额语义，
+// 不从任意人读文本猜 HTTP 状态；排除 context length exceeded / billing address / credit card 等非配额错误。
+// 命中即触发候选回退（换 provider 候选）。
+export function hasQuotaErrorHint(error: string | undefined): boolean {
+  if (!error) return false;
+  // 配置/字段/元数据上下文优先拒绝：避免“rate limit configuration invalid: too many fields”
+  // 这类文本把 unrelated 的 too many / exhausted 错配到 limit。
+  if (/\b(?:configuration|metadata|field|fields|invalid|missing|unavailable|setting|settings|param|option|budget)\b/i.test(error)) return false;
+  // 只有明确的耗尽/超限语义才回退；普通“rate limit is 100 requests/minute”不回退。
+  const exhaustion = "reached|exceeded|hit|exhausted|too many";
+  const limitExhausted = new RegExp(`(?:usage|plan|rate)[\\s_-]?limit.{0,40}(?:${exhaustion})`, "i").test(error)
+    || new RegExp(`(?:${exhaustion}).{0,40}(?:usage|plan|rate)[\\s_-]?limit`, "i").test(error);
+  const quotaExhausted = /quota[\s_-]?exceeded|insufficient[\s_-]?quota|too many requests/i.test(error);
+  return limitExhausted || quotaExhausted;
 }
 
 export function isAuditorError(result: AuditorResult): boolean {
@@ -3681,7 +3930,7 @@ export function buildPhaseCheckTask(goal: GoalState, phase: Phase) {
     ...previousFeedbackLines,
     "",
     "审核要求：",
-    "1. 把 phase 下每个 task 视为至少一条验收条件，必要时从 phase subject/description 补充隐含验收条件。",
+    "1. 只核验当前 phase 的冻结 task 与显式验收条件；phase subject/description 只能用于解释已有条件，不得补充隐含验收条件或扩大完成契约。",
     "2. 用工具（read/grep/find/ls/bash）核验 task 的 evidence 是否站得住（命令/文件/测试结果是否真实）。",
     "3. 检查实现里的明显代码问题：逻辑错误、安全风险、性能陷阱、死代码、过高复杂度。",
     "4. 检查代码与文档一致性：相关 README / 文档 / 注释是否仍与当前 phase 成果匹配。",
@@ -3907,10 +4156,10 @@ export function buildAuditorTask(goal: GoalState, summary: string, verification:
     ...previousFeedbackLines,
     "",
     "审核要求：",
-    "1. 从目标和 verification 中抽出真实的成功标准（含质量 / 用户可感知结果，不只是“代码存在”）。",
-    "2. 用 read/grep/find/ls/bash 实地检查能证明或证伪这些标准的工件、输出、测试结果和文档。",
-    "3. 检查明显代码问题：逻辑错误、安全风险、性能陷阱、死代码、过高复杂度。",
-    "4. 检查代码和文档是否一致，特别是 README、相关说明文档、注释、验收说明。",
+    "1. 只从目标、verification、nonGoals/guardrails/budget 中核验已冻结的成功标准与边界；不得补充隐含验收条件或扩大完成契约。",
+    "2. 用 read/grep/find/ls/bash 实地检查能证明或证伪这些冻结标准的工件、输出、测试结果和文档。",
+    "3. 检查冻结契约范围内的明显代码问题：逻辑错误、安全风险、性能陷阱、死代码、过高复杂度。",
+    "4. 检查冻结契约相关的代码与文档是否一致，特别是 README、相关说明文档、注释、验收说明。",
     "5. agent 声称跑过测试或搜索过引用时，必须独立复核；声明不是证明。",
     "6. 解释任何缺失或弱的证据，特别是“脚手架 vs 最终交付”的质量落差。",
     "",
@@ -4035,6 +4284,9 @@ export function __resetGoalForTest() {
   currentGoal = undefined;
   currentCheckSnapshot = undefined;
   i18nApi = undefined;
+  consecutiveErrors = 0;
+  consecutiveNoProgressTurns = 0;
+  turnHadToolExecution = false;
   resetAuditorWorkspaceTracker();
 }
 
@@ -4101,6 +4353,16 @@ export function __finalizeGoalForTest(ctx: DgoalContext) {
   finalizeGoal(ctx);
 }
 
+// 测试专用：暴露 clearActiveGoal，验证无进展计数在 goal 清除时重置。
+export function __clearActiveGoalForTest(ctx: DgoalContext) {
+  clearActiveGoal(ctx);
+}
+
+// 测试专用：验证 active/rejected 均可被用户显式暂停。
+export function __pauseGoalForTest(ctx: DgoalContext) {
+  pauseGoal(ctx);
+}
+
 // 测试专用：暴露 /dgoal s 的 UI 路径，覆盖空状态 / overlay 参数 / 同步 throw / async reject。
 export function __showStatusForTest(ctx: DgoalContext) {
   showStatus(ctx);
@@ -4136,7 +4398,7 @@ export function __executeDgoalProposeForTest(
 }
 
 export function __executeDgoalCheckForTest(
-  params: { phaseId: number },
+  params: { phaseId?: number; phaseNumber?: number },
   ctx: Partial<DgoalContext> = {},
   onUpdate?: (update: ToolCallUpdate) => void,
 ) {
@@ -4255,14 +4517,11 @@ export function detectPlanCycle(allTasks: readonly Task[], taskId: number, newBl
   return false;
 }
 
-// task 状态变化后，重算所属 phase 的聚合状态（ADR 0006：phase 由 task 聚合）。
+// task 状态变化后，重算所属 phase 的中间聚合状态（ADR 0006）。
 // - 有 in_progress task → in_progress
-// - 全终态（completed/blocked）→ completed（注意：phase completed 的最终确认走 dgoal_check，
-//   这里只做聚合初算；真正的 completed 标记由 dgoal_check 通过 setPhaseCompleted 显式触发）
 // - 有 blocked 且无 in_progress → blocked
+// - 全 task 终态只表示具备 dgoal_check 条件；phase done 必须由 setPhaseCompleted 显式写入
 // - 空 phase（无 task）保持原状（空 phase 可直接 blocked）
-// 聚合得到 completed 时，本函数暂不上调——phase completed 必须由 dgoal_check 显式触发。
-// 这里只在 task 变化后同步 phase 的 in_progress/blocked 中间态。
 function recomputePhaseStatus(phase: Phase): PlanStatus {
   if (phase.tasks.length === 0) return phase.status; // 空 phase 不聚合
   const hasInProgress = phase.tasks.some((t) => t.status === "in_progress");
@@ -4270,8 +4529,7 @@ function recomputePhaseStatus(phase: Phase): PlanStatus {
   const hasBlocked = phase.tasks.some((t) => t.status === "blocked");
   const allTerminal = phase.tasks.every((t) => isDonePlanStatus(t.status) || t.status === "blocked");
   if (allTerminal && hasBlocked) return "blocked";
-  // 全 completed（无 blocked）→ 聚合应为 completed，但 phase completed 由 dgoal_check 显式触发，
-  // 聚合这里保持 in_progress 以外的状态由 dgoal_check 接管。返回当前 status 不主动升 completed。
+  // 全 completed（无 blocked）只满足建检条件；返回当前 status，不主动升为 done。
   return phase.status;
 }
 
@@ -4500,7 +4758,7 @@ interface RenderPlanOptions {
 }
 
 // 渲染计划浮层为字符串行数组。纯函数：不读模块状态，不调 setWidget。
-// 返回空数组表示应隐藏浮层（无 plan / 无可见 phase / goal 不活跃）。
+// 返回空数组表示应隐藏浮层（无 plan / pending / 已 clear）；paused goal 仍展示冻结 plan。
 function shouldExpandTasksInPersistentOverlay(status: Phase["status"]): boolean {
   return status === "pending" || status === "in_progress";
 }
@@ -4836,6 +5094,18 @@ export class PlanOverlay {
 
 // 模块级 overlay 实例（dgoal() 内 session_start 构造）
 let planOverlay: PlanOverlay | undefined;
+
+function buildNoProgressDetail(goal: GoalState | undefined): string {
+  if (!goal || !goal.plan) return "";
+  const phase = currentUncheckedPhase(goal);
+  if (!phase) return "";
+  const currentTask = phase.tasks.find((t) => t.status === "in_progress")
+    ?? phase.tasks.find((t) => t.status === "pending")
+    ?? phase.tasks[0];
+  const phasePart = `（当前 phase #${phase.id}：${phase.subject}）`;
+  const taskPart = currentTask ? `，当前 task #${currentTask.id}：${currentTask.subject}` : "";
+  return `${phasePart}${taskPart}`;
+}
 
 function formatStatus(goal: GoalState | undefined) {
   if (!goal) return undefined;
