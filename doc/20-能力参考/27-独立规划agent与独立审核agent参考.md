@@ -26,16 +26,18 @@
 
 这说明 dgoal 已经不是“主 agent 自己说完成就完成”，而是**把完成判定外包给隔离审核子进程**。
 
-### 2.2 审核模型支持独立持久配置；未设置才继承主模型
+### 2.2 审核模型支持独立持久配置与候选链回退；未设置才继承主模型
 
-当前 `index.ts` 由 `runIsolatedCheck()` 按审核范围调用 `resolveAuditorModelId(ctx, { scope })`：
+当前 `index.ts` 由 `runAuditorWithCandidates()` 按审核范围调用 `resolveAuditorModelCandidates(ctx, { scope })`：
 
 - 默认仍回退到 `ctx.model`（主线程模型）
-- `phaseAuditorModel` 供 `dgoal_check` 阶段建检使用，`goalAuditorModel` 供 `dgoal_done` 目标终审使用
-- 两者均支持 Pi 原生 `provider/model[:thinking]`；具体值是持久化专用设置，`null` 显式继承当次 `ctx.model`，字段缺失或非法时继续按配置优先级降级（同来源旧 `auditorModel` → 另一来源），全链都无有效值才回退当前会话模型；旧 `auditorModel` 作为共享兼容回退
+- `phaseAuditorModels` 供 `dgoal_check` 阶段建检使用，`goalAuditorModels` 供 `dgoal_done` 目标终审使用，各最多 3 个有序 `provider/model[:thinking]` 候选
+- 项目候选链整体优先、不混合来源；同来源复数字段 > 对应单值字段 > 旧 `auditorModel`，`null` 显式继承当次 `ctx.model` 并阻断继续降级；旧 `phaseAuditorModel` / `goalAuditorModel` / `auditorModel` 保持单候选兼容
+- 候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，预检失败保留候选交运行时判定
+- 审核器发生技术异常（HTTP 401/403/404/408/429/5xx、网络、零输出超时）时按候选顺序回退；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换；候选耗尽进入 `audit_error` 暂停，不静默回退执行模型
 - 项目级配置只在 `ctx.isProjectTrusted()` 为真时生效，且来源优先级高于字段专用性
 
-所以 dgoal 现在已经从“独立审核上下文”进一步升级到了**“默认继承主模型、两级审核可分别选择模型与思考等级”**。这和 Claude Code / Codex 的 per-agent model（按 agent 单独指定模型）能力对齐得更近，但仍保持最小边界：只拆审核器，不把 planner / executor / summarizer 一起做成多模型全家桶。
+所以 dgoal 现在已经从“独立审核上下文”进一步升级到了**“默认继承主模型、两级审核可配置候选链并在技术异常时回退”**。这和 Claude Code / Codex 的 per-agent model（按 agent 单独指定模型）能力对齐得更近，但仍保持最小边界：只拆审核器，不把 planner / executor / summarizer 一起做成多模型全家桶。
 
 ### 2.3 Claude Code：subagent（子代理）支持独立模型、独立工具、独立 memory（记忆）
 
@@ -150,10 +152,12 @@ Aider 的 `/architect` 模式不是独立子会话编排，而是：
 
 这条增强现已通过 `pi-dgoal.json` 落地：
 
-- `index.ts`：`phaseAuditorModel` → `runPhaseCheck()`，`goalAuditorModel` → `runCompletionAuditor()`，共享 `runIsolatedCheck()`
-- 配置来源：受信任项目 `.pi/pi-dgoal.json` > 全局 `~/.pi/agent/pi-dgoal.json`；旧 `auditorModel` 兼容共享回退
-- 值形态：Pi 原生 `provider/model[:thinking]`；具体值不随主会话换模或 Pi 重载变化，`null` 显式继承会话模型
-- 首次实际审核仅在两级配置文件都不存在时以 `wx` 原子创建双 `null` 模板；已有坏配置只告警降级
+- `index.ts`：`phaseAuditorModels` → `runPhaseCheck()`，`goalAuditorModels` → `runCompletionAuditor()`，共享 `runAuditorWithCandidates()` 与 `runCheckWithRetry()`
+- 配置来源：受信任项目 `.pi/pi-dgoal.json` > 全局 `~/.pi/agent/pi-dgoal.json`；旧 `phaseAuditorModel` / `goalAuditorModel` / `auditorModel` 兼容单候选回退
+- 值形态：Pi 原生 `provider/model[:thinking]`；具体值不随主会话换模或 Pi 重载变化，`null` 显式继承会话模型并阻断继续降级
+- 预检：与审核 child 同隔离边界的 Pi `get_available_models` 结构化结果；成功缓存、失败保留候选
+- 回退：仅技术异常（401/403/404/408/429/5xx、网络、零输出超时）切候选；部分输出同模型 3 次续审后跨候选携带；耗尽 `audit_error` 暂停
+- 首次实际审核仅在两级配置文件都不存在时以 `wx` 原子创建双 `null` 复数字段模板；已有坏配置只告警降级
 - 文档同步：`README.md`、`doc/10-架构与运行/12-工具命令与数据模型.md`
 
 边界：
@@ -269,6 +273,6 @@ Codex auto-review 有 rejection circuit breaker；dgoal 目前只有：
 
 ## 5. 决策记录
 
-ADR 0013 决定审核器选模使用 dgoal 专属 `pi-dgoal.json`，不借道 Pi 的 `settings.json`。ADR 0014 记录后续反转“不自动创建”边界：首次审核安全初始化模板，并将配置面扩展为 `phaseAuditorModel` / `goalAuditorModel` 两级专用范围，复用 Pi 原生 `provider/model[:thinking]`。
+ADR 0013 决定审核器选模使用 dgoal 专属 `pi-dgoal.json`，不借道 Pi 的 `settings.json`。ADR 0014 记录后续反转“不自动创建”边界：首次审核安全初始化模板，并将配置面扩展为 `phaseAuditorModel` / `goalAuditorModel` 两级专用范围，复用 Pi 原生 `provider/model[:thinking]`。ADR 0015 再次反转“不做备用模型”边界：扩展为有序候选链 `phaseAuditorModels` / `goalAuditorModels`（最多 3 个），并定义运行时技术异常回退、部分输出续审与可追溯轨迹。
 
 “独立审核存在且方向正确”继续由 ADR 0006 / ADR 0012 的建检循环与闸门锁定覆盖；feedback 结构化或新增 plan reviewer 若落地，再按不可逆性另判是否新增 ADR。

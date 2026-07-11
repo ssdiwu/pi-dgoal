@@ -100,37 +100,43 @@ pending ──→ active ──→ done                # 正常路径
 ```json
 // ~/.pi/agent/pi-dgoal.json
 {
-  "$comment": "将各字段填为 provider/model[:thinking]；保持 null 则继承当前会话模型。",
-  "phaseAuditorModel": null,
-  "goalAuditorModel": null
+  "$comment": "将各候选列表按回退顺序填为 provider/model[:thinking]；保持 null 则继承当前会话模型。",
+  "phaseAuditorModels": null,
+  "goalAuditorModels": null
 }
 ```
 
-阶段建检与目标终审可分别选模；填入具体值后它们是持久化的专用设置，不随之后主会话换模或 Pi 重载漂移；末尾 Pi 标准思考后缀（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）用于选等级，模型 ID 本身可含 `/` 或 `:` 以支持 custom/gateway 模型。dgoal 拒绝畸形 provider 前缀、内嵌空白/控制字符和空路径/tag 段，模型可用性仍由 Pi 解析：
+阶段建检与目标终审可分别配置最多 3 个有序候选；具体项是持久化的专用设置，不随之后主会话换模或 Pi 重载漂移。末尾 Pi 标准思考后缀（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`）用于选等级，模型 ID 本身可含 `/` 或 `:` 以支持 custom/gateway 模型：
 
 ```json
 // ~/.pi/agent/pi-dgoal.json 或 .pi/pi-dgoal.json
 {
-  "phaseAuditorModel": "openai-codex/gpt-5.6-sol:medium",
-  "goalAuditorModel": "openai-codex/gpt-5.6-sol:xhigh"
+  "phaseAuditorModels": [
+    "openai-codex/gpt-5.6-sol:medium",
+    "minimax-cn/MiniMax-M3:high"
+  ],
+  "goalAuditorModels": [
+    "openai-codex/gpt-5.6-sol:xhigh",
+    "minimax-cn/MiniMax-M3:high"
+  ]
 }
 ```
 
-旧 `auditorModel` 字段继续作为两个审核范围的共享兼容回退。
+旧单值 `phaseAuditorModel`、`goalAuditorModel` 与共享 `auditorModel` 字段继续兼容，dgoal 不会自动改写用户已有文件。
 
 解析优先级：
 
-1. 项目 `.pi/pi-dgoal.json`（仅项目已 trusted 时生效）
+1. 项目 `.pi/pi-dgoal.json`（仅项目已 trusted 时生效，候选链整体使用）
 2. 全局 `~/.pi/agent/pi-dgoal.json`
-3. 回退到当前会话模型
+3. 仅在配置没有可用候选时回退当前会话模型
 
-每个配置来源内，当前范围字段优先于旧 `auditorModel`；解析时先比较来源优先级，再比较字段。
+每个配置来源内，当前范围的复数字段优先于对应单值字段，单值字段再优先于旧 `auditorModel`；解析时先比较来源优先级，不混合两个来源的候选链。复数字段为 `null` 时，显式继承当前会话模型并阻断继续降级。空数组非法；非法或重复项会按下标告警并跳过，只保留前 3 个合法且首次出现的候选。
 
-全局和受信任项目级配置都缺失时，dgoal 会在首次审核原子创建全局模板，且绝不覆盖已有文件。某个范围的值为 `null` 时，显式表示该范围继承当前会话模型。文件不可读或模型值非法时同样继续按配置优先级降级（同来源旧 `auditorModel` → 另一来源），全链都无有效值才回退当前会话模型，审核流程不中断；当前范围未配置或值为 `null` 且无其他配置问题时，每个 Pi 进程首次审核会提示一次选模入口；存在配置问题时只发出对应的告警，不再额外提示选模入口。提示文案在安装 `pi-di18n` 时跟随 locale。
+每次审核开始前，dgoal 会查询与审核 child 同隔离边界的 Pi `get_available_models` 结构化注册表：先完整匹配模型 ID，再识别末尾标准 thinking 后缀；查不到的候选会跳过。成功查询结果缓存到当前 Pi 进程，`/reload` 后重建；预检查询失败时保留候选链，交由运行时继续判断，不误删配置。文件不可读或模型值非法时继续按配置优先级降级。全局和受信任项目级配置都缺失时，dgoal 会在首次审核原子创建全局模板，且绝不覆盖已有文件。没有可用配置候选且无其他配置问题时，每个 Pi 进程首次审核会提示一次选模入口；存在配置问题时只发出对应告警。提示文案在安装 `pi-di18n` 时跟随 locale。
 
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
-- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`），工具内部先透明重试最多 3 次；仍失败才安全暂停，`/dgoal resume` 继续
+- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个已配置候选在同模型上最多重试 3 次；结构化技术错误（HTTP 401/403/404/408/429/5xx、网络、零输出超时）切下一候选，HTTP 400、明确 `<REJECTED>` 与用户中断不切换。缺终止标记的部分输出作为受限的 `<partial_audit_feedback>` 在同模型重试与跨候选间携带。全部候选耗尽才安全暂停，`/dgoal resume` 继续；绝不静默回退执行模型。
 - 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` / `idle Ns/120s` 等活性信息；即使中途停下，也会尽量返回部分审核输出
 - 审核报告更接近验收单：GWT 风格的 PASS / FAIL / BLOCKER 条目，加代码与文档一致性检查
 - 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核（仅调试）

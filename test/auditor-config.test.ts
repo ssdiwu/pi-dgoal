@@ -4,10 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  __resetAuditorModelRegistryCacheForTest,
   __resetDgoalConfigNotifiedForTest,
+  getAuditorModelRegistryForPreflight,
   getDgoalConfigPaths,
   loadDgoalConfig,
   normalizeAuditorModelId,
+  preflightAuditorModelCandidates,
+  resolveAuditorModelCandidates,
   resolveAuditorModelId,
 } from "../index.ts";
 
@@ -29,10 +33,180 @@ afterEach(() => {
     const root = tmpRoots.pop();
     if (root) rmSync(root, { recursive: true, force: true });
   }
+  __resetAuditorModelRegistryCacheForTest();
   __resetDgoalConfigNotifiedForTest();
 });
 
 describe("dgoal auditor config", () => {
+  test("matches candidates against structured Pi model entries, including custom IDs and thinking suffixes", () => {
+    const result = preflightAuditorModelCandidates(
+      [
+        "custom/org/name:tag",
+        "custom/org/name:tag:high",
+        "minimax-cn/MiniMax-M3:low",
+        "missing/model:high",
+      ],
+      [
+        { provider: "custom", id: "org/name:tag" },
+        { provider: "minimax-cn", id: "MiniMax-M3" },
+      ],
+    );
+
+    expect(result.confirmed).toEqual([
+      "custom/org/name:tag",
+      "custom/org/name:tag:high",
+      "minimax-cn/MiniMax-M3:low",
+    ]);
+    expect(result.unavailable).toEqual(["missing/model:high"]);
+  });
+
+  test("caches successful isolated registry reads but retries after a preflight error", async () => {
+    let calls = 0;
+    const loadModels = async () => {
+      calls += 1;
+      return [{ provider: "openai", id: "gpt-5" }];
+    };
+
+    expect(await getAuditorModelRegistryForPreflight("/repo", loadModels)).toEqual([{ provider: "openai", id: "gpt-5" }]);
+    expect(await getAuditorModelRegistryForPreflight("/repo", loadModels)).toEqual([{ provider: "openai", id: "gpt-5" }]);
+    expect(calls).toBe(1);
+
+    __resetAuditorModelRegistryCacheForTest();
+    await expect(getAuditorModelRegistryForPreflight("/repo", async () => {
+      throw new Error("registry unavailable");
+    })).rejects.toThrow("registry unavailable");
+    expect(await getAuditorModelRegistryForPreflight("/repo", loadModels)).toEqual([{ provider: "openai", id: "gpt-5" }]);
+    expect(calls).toBe(2);
+  });
+
+  test("uses registry-confirmed candidates and falls through when a configured chain is unavailable", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["missing/primary:high", "custom/org/name:tag:medium"],
+      phaseAuditorModel: "legacy/phase:low",
+    }));
+
+    const resolution = await resolveAuditorModelCandidates(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      {
+        agentDir,
+        scope: "phase",
+        loadModels: async () => [{ provider: "custom", id: "org/name:tag" }],
+      },
+    );
+
+    expect(resolution.modelIds).toEqual(["custom/org/name:tag:medium"]);
+    expect(resolution.unavailableCandidates).toEqual(["missing/primary:high"]);
+    expect(resolution.preflightFailed).toBe(false);
+    expect(resolution.configDegraded).toBe(false);
+  });
+
+  test("retains every candidate when the structured registry preflight fails", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["custom/primary:high", "custom/backup:medium"],
+    }));
+
+    const resolution = await resolveAuditorModelCandidates(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      {
+        agentDir,
+        scope: "phase",
+        loadModels: async () => { throw new Error("registry unavailable"); },
+      },
+    );
+
+    expect(resolution.modelIds).toEqual(["custom/primary:high", "custom/backup:medium"]);
+    expect(resolution.preflightFailed).toBe(true);
+    expect(resolution.configDegraded).toBe(false);
+  });
+
+  test("treats an empty candidate list as invalid and falls back to the scoped legacy field", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: [],
+      phaseAuditorModel: "custom/legacy-phase:high",
+    }));
+
+    const loaded = await loadDgoalConfig({ cwd, isProjectTrusted: () => true }, { agentDir });
+    expect(loaded.globalConfig).toEqual({ phaseAuditorModel: "custom/legacy-phase:high" });
+    expect(loaded.issues).toEqual([
+      { key: "notify.auditorModelCandidatesInvalid", params: { path: join(agentDir, "pi-dgoal.json"), field: "phaseAuditorModels" } },
+    ]);
+    expect(await resolveAuditorModelId(
+      { cwd, isProjectTrusted: () => true, model: { provider: "openai", id: "gpt-5" } as any, ui: { notify: () => {} } as any },
+      { agentDir, scope: "phase" },
+    )).toBe("custom/legacy-phase:high");
+  });
+
+  test("only falls through to the next source after every higher-priority override is unavailable", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["global/backup:high"],
+    }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["project/primary:high"],
+      phaseAuditorModel: "project/single:medium",
+      auditorModel: "project/legacy:low",
+    }));
+
+    const resolution = await resolveAuditorModelCandidates(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      { agentDir, scope: "phase", loadModels: async () => [{ provider: "global", id: "backup" }] },
+    );
+
+    expect(resolution.modelIds).toEqual(["global/backup:high"]);
+    expect(resolution.unavailableCandidates).toEqual([
+      "project/primary:high",
+      "project/single:medium",
+      "project/legacy:low",
+    ]);
+    expect(resolution.configDegraded).toBe(true);
+  });
+
+  test("plural null inherits the session model without querying or falling through", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({ phaseAuditorModels: null }));
+    let queries = 0;
+
+    const resolution = await resolveAuditorModelCandidates(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      {
+        agentDir,
+        scope: "phase",
+        loadModels: async () => {
+          queries += 1;
+          return [{ provider: "global", id: "backup" }];
+        },
+      },
+    );
+
+    expect(resolution.modelIds).toEqual(["openai/gpt-5"]);
+    expect(resolution.configDegraded).toBe(false);
+    expect(queries).toBe(0);
+  });
+
   test("computes global and project config paths", () => {
     const paths = getDgoalConfigPaths("/repo/app", "/Users/demo/.pi/agent");
 
@@ -92,6 +266,114 @@ describe("dgoal auditor config", () => {
     expect(await resolveAuditorModelId(reloadedCtx, { agentDir, scope: "phase" })).toBe("openai-codex/gpt-5.6-sol:medium");
     expect(await resolveAuditorModelId(reloadedCtx, { agentDir, scope: "goal" })).toBe("openai-codex/gpt-5.6-sol:xhigh");
     expect(notifications).toEqual([]);
+  });
+
+  test("prefers plural candidate chains, filters invalid entries, and caps valid candidates", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: [
+        "custom/org/name:tag",
+        "bad-model",
+        "custom/org/name:tag",
+        "minimax-cn/MiniMax-M3:high",
+        "ollama/qwen2.5-coder:7b",
+        "openrouter/anthropic/claude-sonnet-4",
+      ],
+      phaseAuditorModel: "single/phase:medium",
+      auditorModel: "legacy/shared:high",
+      goalAuditorModels: ["openai-codex/gpt-5.6-sol:xhigh"],
+    }));
+
+    const loaded = await loadDgoalConfig({ cwd, isProjectTrusted: () => true }, { agentDir });
+    expect(loaded.globalConfig).toEqual({
+      phaseAuditorModels: [
+        "custom/org/name:tag",
+        "minimax-cn/MiniMax-M3:high",
+        "ollama/qwen2.5-coder:7b",
+      ],
+      phaseAuditorModel: "single/phase:medium",
+      auditorModel: "legacy/shared:high",
+      goalAuditorModels: ["openai-codex/gpt-5.6-sol:xhigh"],
+    });
+    expect(loaded.issues).toEqual([
+      { key: "notify.auditorModelCandidateInvalid", params: { path: join(agentDir, "pi-dgoal.json"), field: "phaseAuditorModels", index: 1 } },
+      { key: "notify.auditorModelCandidateDuplicate", params: { path: join(agentDir, "pi-dgoal.json"), field: "phaseAuditorModels", index: 2 } },
+      { key: "notify.auditorModelCandidatesTruncated", params: { path: join(agentDir, "pi-dgoal.json"), field: "phaseAuditorModels", max: 3 } },
+    ]);
+
+    const ctx = {
+      cwd,
+      isProjectTrusted: () => true,
+      model: { provider: "openai", id: "gpt-5" } as any,
+      ui: { notify: () => {} } as any,
+    };
+    expect(await resolveAuditorModelId(ctx, { agentDir, scope: "phase" })).toBe("custom/org/name:tag");
+    expect(await resolveAuditorModelId(ctx, { agentDir, scope: "goal" })).toBe("openai-codex/gpt-5.6-sol:xhigh");
+  });
+
+  test("plural null explicitly inherits the session model and blocks legacy overrides", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: null,
+      phaseAuditorModel: "single/phase:medium",
+      auditorModel: "legacy/shared:high",
+    }));
+
+    const modelId = await resolveAuditorModelId(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      { agentDir, scope: "phase" },
+    );
+
+    expect(modelId).toBe("openai/gpt-5");
+  });
+
+  test("keeps a trusted project candidate chain whole instead of merging global candidates", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["global/primary:high", "global/backup:medium"],
+    }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["project/primary:xhigh", "project/backup:high"],
+    }));
+
+    const modelId = await resolveAuditorModelId(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      { agentDir, scope: "phase" },
+    );
+
+    expect(modelId).toBe("project/primary:xhigh");
+  });
+
+  test("project plural null blocks global candidates", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      phaseAuditorModels: ["global/primary:high"],
+    }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "pi-dgoal.json"), JSON.stringify({ phaseAuditorModels: null }));
+
+    const modelId = await resolveAuditorModelId(
+      {
+        cwd,
+        isProjectTrusted: () => true,
+        model: { provider: "openai", id: "gpt-5" } as any,
+        ui: { notify: () => {} } as any,
+      },
+      { agentDir, scope: "phase" },
+    );
+
+    expect(modelId).toBe("openai/gpt-5");
   });
 
   test("warns once for each invalid config field", async () => {
@@ -230,11 +512,14 @@ describe("dgoal auditor config", () => {
 
     expect(await resolveAuditorModelId(ctx, { agentDir })).toBe("openai/gpt-5");
     expect(existsSync(configPath)).toBe(true);
-    expect(JSON.parse(readFileSync(configPath, "utf-8"))).toMatchObject({
-      phaseAuditorModel: null,
-      goalAuditorModel: null,
+    const template = JSON.parse(readFileSync(configPath, "utf-8"));
+    expect(template).toMatchObject({
+      phaseAuditorModels: null,
+      goalAuditorModels: null,
       $comment: expect.any(String),
     });
+    expect(template).not.toHaveProperty("phaseAuditorModel");
+    expect(template).not.toHaveProperty("goalAuditorModel");
     expect(notifications).toHaveLength(1);
     expect(notifications[0].level).toBe("info");
     expect(notifications[0].message).toContain("pi-dgoal.json");

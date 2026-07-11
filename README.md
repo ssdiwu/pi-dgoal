@@ -4,7 +4,7 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **Unreleased**: configure phase and goal auditors independently in `pi-dgoal.json`, with explicit `null` inheritance and safe first-audit template initialization. See `CHANGELOG.md` for details.
+> **Unreleased**: configure ordered phase and goal auditor candidate chains in `pi-dgoal.json`, with structured isolated-registry preflight, explicit `null` inheritance, and safe first-audit template initialization. See `CHANGELOG.md` for details.
 >
 > **v0.5.3**: independent auditor model selection via `pi-dgoal.json` + exhaustive audit prompts + previous-feedback injection for re-audits. (v0.5.2: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover, see `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.)
 
@@ -104,37 +104,43 @@ On the first audit when neither the global nor trusted project `pi-dgoal.json` f
 ```json
 // ~/.pi/agent/pi-dgoal.json
 {
-  "$comment": "Set each value to provider/model[:thinking]. Keep null to inherit the current session model.",
-  "phaseAuditorModel": null,
-  "goalAuditorModel": null
+  "$comment": "Set each list in fallback order to provider/model[:thinking]. Keep null to inherit the current session model.",
+  "phaseAuditorModels": null,
+  "goalAuditorModels": null
 }
 ```
 
-Configure the phase and goal auditors independently; concrete values are persistent dedicated settings and do not follow later main-session model changes or Pi reloads. A final standard Pi thinking suffix (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) selects thinking; model IDs themselves may contain `/` or `:` for custom or gateway models. dgoal rejects malformed provider prefixes, embedded whitespace/control characters, and empty path/tag segments, while Pi resolves model availability:
+Configure the phase and goal auditors independently with ordered lists of at most three candidates. Concrete entries are persistent dedicated settings and do not follow later main-session model changes or Pi reloads. A final standard Pi thinking suffix (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`) selects thinking; model IDs themselves may contain `/` or `:` for custom or gateway models:
 
 ```json
 // ~/.pi/agent/pi-dgoal.json or .pi/pi-dgoal.json
 {
-  "phaseAuditorModel": "openai-codex/gpt-5.6-sol:medium",
-  "goalAuditorModel": "openai-codex/gpt-5.6-sol:xhigh"
+  "phaseAuditorModels": [
+    "openai-codex/gpt-5.6-sol:medium",
+    "minimax-cn/MiniMax-M3:high"
+  ],
+  "goalAuditorModels": [
+    "openai-codex/gpt-5.6-sol:xhigh",
+    "minimax-cn/MiniMax-M3:high"
+  ]
 }
 ```
 
-The legacy `auditorModel` key remains supported as a shared fallback for both audit scopes.
+Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically.
 
 Resolution order:
 
-1. Project `.pi/pi-dgoal.json` (only when the project is trusted)
+1. Project `.pi/pi-dgoal.json` (only when the project is trusted; its candidate chain is kept whole)
 2. Global `~/.pi/agent/pi-dgoal.json`
-3. Fallback to the current session model
+3. Fallback to the current session model only when configuration provides no usable candidate
 
-Within each source, the matching scoped key takes precedence over legacy `auditorModel`; source precedence is evaluated first.
+Within each source, the matching plural scoped key takes precedence over its single scoped key, which takes precedence over legacy `auditorModel`; source precedence is evaluated first and chains from different sources are never merged. A plural value of `null` explicitly inherits the current session model and stops further fallback. Empty lists are invalid; invalid or duplicate entries are warned and skipped, and only the first three valid unique candidates are retained.
 
-A missing global and trusted project config causes dgoal to atomically create the global template on the first audit; it never overwrites an existing file. A scoped value of `null` explicitly inherits the current session model. Unreadable files and invalid values also continue down the config precedence (legacy `auditorModel` in the same source → the other source), only falling back to the current session model when no valid override remains, without interrupting the audit. While the effective scoped value is unset or `null` and there are no other config issues, dgoal shows the selection hint once per Pi process; when config issues exist, only the corresponding warnings are shown. User-facing hints and warnings follow `pi-di18n` when installed.
+Before an audit starts, dgoal queries the isolated auditor's structured Pi `get_available_models` registry. It matches a full model ID first, then recognizes a final standard thinking suffix; unavailable candidates are skipped. Successful registry results are cached for the current Pi process and reset on `/reload`; if the query fails, dgoal retains the configured chain for runtime handling rather than deleting candidates. Unreadable files and malformed values continue through normal configuration precedence. A missing global and trusted project config creates the template atomically without overwriting an existing file. While no usable configured candidate exists and there are no other config issues, dgoal shows the selection hint once per Pi process; otherwise it emits only the relevant warnings. User-facing hints and warnings follow `pi-di18n` when installed.
 
 - Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
 - Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.
-- Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`) after up to 3 transparent retries; the goal is then safely paused and `/dgoal resume` continues.
+- Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`). Each configured candidate retries up to 3 times on the same model; structured technical failures (HTTP 401/403/404/408/429/5xx, network, zero-output timeout) switch to the next candidate, while HTTP 400, explicit `<REJECTED>`, and user interruption do not switch. Partial output that lacks a termination marker is carried as bounded `<partial_audit_feedback>` across same-model retries and then to the next candidate. When all candidates are exhausted the goal is safely paused and `/dgoal resume` continues; dgoal never silently falls back to the execution model.
 - Audit progress is streamed back through the tool call, including liveness updates such as `thinking`, `tool_running`, and `idle Ns/120s`; if the check stops mid-way, partial output is still returned.
 - Audit reports use a stricter acceptance style: GWT-like PASS / FAIL / BLOCKER items plus a code-and-doc consistency section.
 - Escape hatch: `PI_DGOAL_NO_AUDIT=1` skips the audit (debugging only).

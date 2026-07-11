@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **阶段与目标审核器独立选模**：新增 `phaseAuditorModel` / `goalAuditorModel`，分别供 `dgoal_check` 阶段建检和 `dgoal_done` 目标终审使用；值支持 Pi 原生 `provider/model[:thinking]`，具体值是不会随主会话换模或 Pi 重载漂移的持久化专用设置。旧 `auditorModel` 保留为共享兼容回退，且解析严格保持受信任项目级 > 全局的来源优先级。
-- **审核器选模模板初始化**：首次实际独立审核发现全局和受信任项目级的 `pi-dgoal.json` 文件都不存在时，原子创建全局模板；模板以两个范围字段的 `null` 显式表示继承当前会话模型，并在当前范围未填真实模型时每个 Pi 进程首次审核继续提示选模入口。不会覆盖已有文件；已有坏 JSON 或不可读文件只告警降级，写入失败仍回退当前会话模型并不中断审核。这是对 v0.5.3 不自动建文件边界的有意反转，详见 ADR 0014。
+- **审核模型候选链与预检**：新增 `phaseAuditorModels` / `goalAuditorModels`，每个审核范围最多 3 个有序 `provider/model[:thinking]` 候选。项目级链整体优先于全局链、同来源复数 > 对应单值 > 旧 `auditorModel`，`null` 明确继承当前会话模型并阻断继续降级；旧单值配置不自动改写。解析会逐项告警非法/重复/超限项，并以审核 child 同隔离边界的 Pi `get_available_models` 结构化结果预检（完整模型 ID 优先、再识别末尾 thinking）；成功结果缓存到当前 Pi 进程，预检失败保留候选交给运行时。详见 ADR 0015。
+- **审核器选模模板初始化**：首次实际独立审核发现全局和受信任项目级的 `pi-dgoal.json` 文件都不存在时，原子创建只含两个复数字段 `null` 的全局模板；不会覆盖已有文件。已有坏 JSON 或不可读文件只告警降级，写入失败仍回退当前会话模型并不中断审核。
+- **审核器候选链运行时回退与部分输出续审**：审核器发生结构化技术异常（HTTP 401/403/404/408/429/5xx、网络错误、零输出超时）时按候选顺序切换下一模型；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换。有部分输出但缺终止标记时，同模型最多重试 3 次，把已有文本作为受限的 `<partial_audit_feedback>`（6000 字符上限、XML 转义）续审，仍无结论才携带部分文本切下一候选。全部候选耗尽进入 `audit_error` 暂停，绝不静默回退当前执行模型。工具进度 `onUpdate` 与最终 `details` 记录实际采用模型、配置/预检降级状态、每次尝试轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）与耗尽标志；轨迹不写入 `GoalState`，部分反馈不污染正式 `phaseFeedbackById` / `finalFeedback`。详见 ADR 0015。
 
 ## [0.5.6] - 2026-07-07
 

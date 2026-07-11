@@ -61,7 +61,7 @@
 
 ### 3.2 同思路印证
 
-**maker/checker split applied to the stop condition。** Addy 一句话点透 dgoal 建检循环核心——"停止条件本身套用制作器/检验器分离，判定完成的全新模型，不是写代码的那个"。dgoal 已落成 `dgoal_check` 独立子进程，且比内建 `/goal` 更深：全新上下文 + 受限核验工具 + phase 完成唯一入口 + 建检闸门锁定。关键辨析："fresh" 指上下文不是模型——dgoal 可继承主模型，也可通过 `phaseAuditorModel` / `goalAuditorModel` 固定两级审核的专用模型与思考等级；`null` 显式回到当次会话模型，字段缺失或非法时继续按配置优先级降级，全链都无有效值才回退。关键仍是上下文隔离。印证 ADR 0006 + 22-ADaPT 参考。
+**maker/checker split applied to the stop condition。** Addy 一句话点透 dgoal 建检循环核心——“停止条件本身套用制作器/检验器分离，判定完成的全新模型，不是写代码的那个”。dgoal 已落成 `dgoal_check` 独立子进程，且比内建 `/goal` 更深：全新上下文 + 受限核验工具 + phase 完成唯一入口 + 建检闸门锁定。关键辨析：“fresh” 指上下文不是模型——dgoal 可继承主模型，也可通过 `phaseAuditorModels` / `goalAuditorModels` 配置候选链（最多 3 个有序 `provider/model[:thinking]`）；`null` 显式回到当次会话模型并阻断继续降级，旧单值字段保持兼容。审核器发生技术异常时按候选顺序回退，候选耗尽暂停而非静默回退执行模型。关键仍是上下文隔离。印证 ADR 0006 + 22-ADaPT 参考。
 
 **吴恩达三层 loop 定位锚。** dgoal 对应最内层（agentic coding loop，建检循环正是 agent 自写自测自改直到通过）；中间层（developer feedback loop）靠启动闸门 + 终审介入 + pause/resume 承载；外层不在范畴。吴恩达"上下文优势"印证 dgoal 不让 agent 自己定 goal，而是人通过启动闸门注入。
 

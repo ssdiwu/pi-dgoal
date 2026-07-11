@@ -24,7 +24,8 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
 | `startup-gate.test.ts` | 切片4：启动闸门纯函数—— `validateProposalInput`、`formatProposalForConfirm`、`buildProposalConfirmationOptions`、确认 UI 摘要/明细切换。 |
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=120`、`isAuditorError` 三态判定、`runCheckWithRetry` 透明重试（approved/rejected 不重试、auditor_error 3 次）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
-| `auditor-config.test.ts` | 审核器选模配置：项目级（仅 trusted）> 全局来源优先级、`phaseAuditorModel` / `goalAuditorModel` 跨主会话换模保持独立、范围 `null` 回退、旧 `auditorModel` 兼容回退、custom/gateway 多段路径与 tag 模型 ID、provider 边界与控制字符校验、字段级非法提示去重与 issue 抑制 hint、首次审核创建双 `null` 模板及确定性写入失败降级、`ui.notify` 抛错容错。 |
+| `auditor-config.test.ts` | 审核器候选配置与预检：受信任项目链整体 > 全局链、同来源复数字段 > 单值字段 > 旧 `auditorModel`、`phaseAuditorModels` / `goalAuditorModels` 的 `null` 阻断、空/非法/重复/超限候选、custom/gateway 多段路径和 thinking 后缀、隔离 child 的结构化 Pi 注册表匹配、成功缓存/失败重试、预检不可用的跨字段/来源降级与预检失败保留候选；同时覆盖首次双 `null` 模板及 `ui.notify` 抛错容错。 |
+| `auditor-fallback.test.ts` | 审核器候选链运行时回退：结构化错误分类（HTTP 401/403/404/408/429/5xx、网络、超时切候选；400/REJECTED/中断不切）、零输出技术失败逐项切下一候选、部分输出同模型 3 次续审后跨候选携带受限转义反馈、候选耗尽 `audit_error` 与 `buildAuditorResultDetails()` 轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）。 |
 | `auditor-workspace-cwd.test.ts` | 审核子进程工作目录推断：优先覆盖当前轮文件工具调用，再回退到会话里的最近文件工具调用；同仓库保持 `ctx.cwd`，并覆盖 goal 结束后不要把旧 worktree 泄漏到下一个 goal。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + active goal 调 `dgoal_` 工具 execute，验证 `currentGoal` 真实变化 + `persist` 调用。不依赖终审 spawn。 |
@@ -36,6 +37,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
 | `test-ai-smoke-runtime.py` | AI smoke 的 Pi 运行时选择：模拟 npm PATH（路径）含项目旧 `node_modules/.bin/pi` 时跳过它并选择宿主 Pi；`PI_DGOAL_SMOKE_PI` 覆盖优先。 |
 | `test-ai-smoke.py` | AI 驱动 smoke：跳过 npm 注入的项目 local Pi，使用宿主 Pi（可用 `PI_DGOAL_SMOKE_PI` 覆盖）；以 `-ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |
+| `test-auditor-fallback-smoke.py` | 真实模型候选链运行时回退 smoke：候选链位于临时受信任项目 `.pi/pi-dgoal.json`；临时认证副本仅将 ZAI 主候选 key 置为无效，主 agent 固定有效 MiniMax。预检识别两候选后，主候选真实 HTTP 401 → `auditorAttempts` 记录 `fallback` → MiniMax 备用候选完成 phase check / goal audit。断言 `tool_execution_update` 的 `candidate_fallback`、最终 attempts、备用模型和文件产物；认证与工作目录退出即清理。⚠️ 消耗真实 token，不进 CI。 |
 
 ## 边界
 

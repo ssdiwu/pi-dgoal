@@ -15,10 +15,11 @@ const REJECTED_MARKER = "<REJECTED>";
 // 审核跑在隔离子进程里，可读文件也可执行验证命令；仍无主会话上下文。
 const AUDITOR_TOOLS = ["read", "grep", "find", "ls", "bash"];
 const DGOAL_CONFIG_FILE_NAME = "pi-dgoal.json";
+const MAX_AUDITOR_MODEL_CANDIDATES = 3;
 const DGOAL_CONFIG_TEMPLATE = `${JSON.stringify({
-  $comment: "Set each value to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model.",
-  phaseAuditorModel: null,
-  goalAuditorModel: null,
+  $comment: "Set each list in fallback order to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model.",
+  phaseAuditorModels: null,
+  goalAuditorModels: null,
 }, null, 2)}\n`;
 const notifiedDgoalConfigKeys = new Set<string>();
 
@@ -71,9 +72,12 @@ interface Task {
 export interface DgoalConfig {
   // Legacy shared override for both audit scopes. Scoped keys take precedence within the same config source.
   auditorModel?: string | null;
-  // null is an explicit project/global override to inherit the current session model for this scope.
+  // Legacy single-candidate scoped overrides. null explicitly inherits the current session model.
   phaseAuditorModel?: string | null;
   goalAuditorModel?: string | null;
+  // Ordered scoped candidates. null explicitly inherits the current session model and blocks lower-priority sources.
+  phaseAuditorModels?: string[] | null;
+  goalAuditorModels?: string[] | null;
 }
 
 type AuditorScope = "phase" | "goal";
@@ -272,12 +276,18 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
       "notify.continuationFailed": "Dgoal 续跑失败：{error}",
       "notify.auditFailurePaused": "Dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
-      "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需分别选模，可在 {globalPath} 将 phaseAuditorModel / goalAuditorModel 填为 provider/model[:thinking]；保持 null 则继承当前会话模型。",
+      "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需分别配置候选链，可在 {globalPath} 填写 phaseAuditorModels / goalAuditorModels（每项为 provider/model[:thinking]）；保持 null 则继承当前会话模型。",
       "notify.dgoalConfigTemplateWriteFailed": "无法创建审核器配置模板 {path}：{error}；已继续使用当前会话模型。",
       "notify.dgoalConfigUnreadable": "无法读取 {path}：{error}",
       "notify.dgoalConfigBadJson": "{path} 不是合法 JSON：{error}",
       "notify.dgoalConfigNotObject": "{path} 顶层必须是 JSON object，已忽略。",
       "notify.auditorModelInvalid": "{path} 的 {field} 必须是 provider/model[:thinking] 格式字符串或 null；已忽略并按配置优先级回退。",
+      "notify.auditorModelCandidatesInvalid": "{path} 的 {field} 必须是非空的 provider/model[:thinking] 数组或 null；已忽略并按配置优先级回退。",
+      "notify.auditorModelCandidateInvalid": "{path} 的 {field}[{index}] 不是合法 provider/model[:thinking] 字符串，已忽略。",
+      "notify.auditorModelCandidateDuplicate": "{path} 的 {field}[{index}] 与更早候选重复，已忽略。",
+      "notify.auditorModelCandidatesTruncated": "{path} 的 {field} 最多保留 {max} 个候选，后续候选已忽略。",
+      "notify.auditorModelCandidateUnavailable": "{path} 的 {field}[{index}] 未在隔离审核器的 Pi 模型注册表中找到，已跳过。",
+      "notify.auditorModelRegistryUnavailable": "无法读取隔离审核器的 Pi 模型注册表；保留已配置候选并交由运行时判断。",
       "check.liveness.starting": "启动中",
       "check.liveness.thinking": "思考中",
       "check.liveness.tool_running": "调工具中",
@@ -318,10 +328,13 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.check.approved": "✓ phase #{phaseId} 建检通过，已标 done。{report}",
       "tool.check.rejected": "✗ phase #{phaseId} 建检未通过，phase 回 in_progress。请根据报告修正后重新建检。\n\n审核报告：\n{report}",
       "tool.check.retrying": "[审核器异常 · 第 {attempt}/{total} 次重试中] {error}",
+      "tool.check.partialRetrying": "[审核模型 {model} · 已有部分输出，续审第 {attempt}/{total} 次]",
+      "tool.check.candidateFallback": "[审核模型 {from} 因 {reason} 未完成，切换至 {to}]",
       "tool.done.noDecision": "审核未产出结论，目标已暂停（{reason}）。{report}",
       "tool.report.inline": "\n报告：{report}",
       "runtime.error.auditInterrupted": "审核被中断",
       "runtime.error.auditNoOutput": "审核无输出",
+      "runtime.error.auditCandidatesExhausted": "所有审核模型候选均未形成明确结论",
       "runtime.error.spawnFailed": "启动 pi 子进程失败",
       "runtime.error.contextSummaryTimeout": "背景固化超时（{ms}ms）",
       "runtime.error.piExitCode": "pi 退出码 {code}",
@@ -427,12 +440,18 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
       "notify.continuationFailed": "Dgoal continuation failed: {error}",
       "notify.auditFailurePaused": "Dgoal paused ({reason}). Run /dgoal resume to continue.",
-      "notify.auditorModelHint": "Auditors use the current session model by default. To configure them separately, set phaseAuditorModel / goalAuditorModel to provider/model[:thinking] in {globalPath}; keep null to inherit the current session model.",
+      "notify.auditorModelHint": "Auditors use the current session model by default. To configure ordered candidates separately, set phaseAuditorModels / goalAuditorModels in {globalPath} with provider/model[:thinking] entries; keep null to inherit the current session model.",
       "notify.dgoalConfigTemplateWriteFailed": "Cannot create auditor config template {path}: {error}; continuing with the current session model.",
       "notify.dgoalConfigUnreadable": "Cannot read {path}: {error}",
       "notify.dgoalConfigBadJson": "{path} is not valid JSON: {error}",
       "notify.dgoalConfigNotObject": "{path} must be a JSON object at the top level; ignored.",
       "notify.auditorModelInvalid": "{field} in {path} must be a provider/model[:thinking] string or null; ignored and falling back through normal config precedence.",
+      "notify.auditorModelCandidatesInvalid": "{field} in {path} must be a non-empty provider/model[:thinking] array or null; ignored and falling back through normal config precedence.",
+      "notify.auditorModelCandidateInvalid": "{field}[{index}] in {path} is not a valid provider/model[:thinking] string; ignored.",
+      "notify.auditorModelCandidateDuplicate": "{field}[{index}] in {path} duplicates an earlier candidate; ignored.",
+      "notify.auditorModelCandidatesTruncated": "{field} in {path} keeps at most {max} candidates; later candidates were ignored.",
+      "notify.auditorModelCandidateUnavailable": "{field}[{index}] in {path} is not in the isolated auditor Pi model registry; skipped.",
+      "notify.auditorModelRegistryUnavailable": "Could not read the isolated auditor Pi model registry; configured candidates were retained for runtime handling.",
       "check.liveness.starting": "starting",
       "check.liveness.thinking": "thinking",
       "check.liveness.tool_running": "tool running",
@@ -473,10 +492,13 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.check.approved": "✓ phase #{phaseId} check passed and is now done.{report}",
       "tool.check.rejected": "✗ phase #{phaseId} check failed; the phase moved back to in_progress. Fix the issues in the report and run dgoal_check again.\n\nAudit report:\n{report}",
       "tool.check.retrying": "[auditor error · retry {attempt}/{total}] {error}",
+      "tool.check.partialRetrying": "[auditor {model} · partial output, continuation retry {attempt}/{total}]",
+      "tool.check.candidateFallback": "[auditor {from} could not complete ({reason}); switching to {to}]",
       "tool.done.noDecision": "The audit produced no decision; the goal is paused ({reason}).{report}",
       "tool.report.inline": "\nReport: {report}",
       "runtime.error.auditInterrupted": "audit interrupted",
       "runtime.error.auditNoOutput": "audit produced no output",
+      "runtime.error.auditCandidatesExhausted": "all auditor model candidates exhausted without a clear decision",
       "runtime.error.spawnFailed": "failed to start pi subprocess",
       "runtime.error.contextSummaryTimeout": "context persistence timed out ({ms}ms)",
       "runtime.error.piExitCode": "pi exited with code {code}",
@@ -667,17 +689,13 @@ const dgoalDoneTool = defineTool({
 
     let audit;
     try {
-      // v0.5.2 切片5：终审也走 3 次透明重试（auditor_error 才重试，approved/rejected 不重试）
-      audit = await runCheckWithRetry({
-        run: () => runCompletionAuditor({
-          ctx: ctx as unknown as ExtensionContext,
-          goal: completedGoal,
-          summary,
-          verification,
-          whatChanged,
-          userReview,
-          onUpdate: emitCheckUpdate,
-        }),
+      audit = await runCompletionAuditor({
+        ctx: ctx as unknown as ExtensionContext,
+        goal: completedGoal,
+        summary,
+        verification,
+        whatChanged,
+        userReview,
         onUpdate: emitCheckUpdate,
       });
     } catch (error) {
@@ -694,8 +712,8 @@ const dgoalDoneTool = defineTool({
       };
     }
 
-    // 审核被用户中断（Esc）、空闲超时或没给出明确结论 → 同样安全暂停。
-    if (audit.aborted || (!audit.approved && !audit.output)) {
+    // 审核被用户中断、候选耗尽、空闲超时或没给出明确结论 → 同样安全暂停。
+    if (audit.aborted || audit.liveness === "auditor_error" || Boolean(audit.error) || (!audit.approved && !audit.output)) {
       const reason = audit.error ?? (audit.aborted ? t("runtime.error.auditInterrupted") : t("runtime.error.auditNoOutput"));
       pauseOnAuditFailure(ctx, reason);
       clearCurrentCheckSnapshot();
@@ -704,7 +722,7 @@ const dgoalDoneTool = defineTool({
         content: [
           { type: "text", text: t("tool.done.noDecision", { reason, report: audit.output ? t("tool.report.inline", { report: audit.output }) : "" }) },
         ],
-        details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditAborted: audit.aborted, auditError: audit.error, auditOutput: audit.output },
+        details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditAborted: audit.aborted, auditError: audit.error, auditOutput: audit.output, ...buildAuditorResultDetails(audit) },
         terminate: true,
       };
     }
@@ -719,6 +737,7 @@ const dgoalDoneTool = defineTool({
         whatChanged,
         userReview,
         auditOutput: audit.output,
+        auditorDetails: buildAuditorResultDetails(audit),
         ctx: ctx as unknown as DgoalContext,
       });
     }
@@ -730,7 +749,7 @@ const dgoalDoneTool = defineTool({
       content: [
         { type: "text", text: buildCompletionReplySignal({ goal: completedGoal, summary, verification, whatChanged, userReview, audited: true }) },
       ],
-      details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, audited: true, auditOutput: audit.output },
+      details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, audited: true, auditOutput: audit.output, ...buildAuditorResultDetails(audit) },
       terminate: false,
     };
   },
@@ -781,9 +800,10 @@ function handleFinalAuditRejected(args: {
   whatChanged?: string[];
   userReview?: string;
   auditOutput: string;
+  auditorDetails?: Record<string, unknown>;
   ctx: DgoalContext;
 }) {
-  const { completedGoal, summary, verification, whatChanged, userReview, auditOutput, ctx } = args;
+  const { completedGoal, summary, verification, whatChanged, userReview, auditOutput, auditorDetails, ctx } = args;
   // 切片6：终审不过 → 进 rejected + rejectedCount++（ADR 0004）。
   // 硬约束重回：goal 进 rejected，续跑 prompt 会钉着未过问题，agent 无法假装没看见。
   // rejectedCount ×3 → 转 paused(audit_failed_3x)，停止续跑（不烧 token），resume 清零重试。
@@ -802,7 +822,7 @@ function handleFinalAuditRejected(args: {
     safeNotify(ctx, t("notify.auditPaused", { count: newCount }), "warning");
     return {
       content: [{ type: "text", text: t("tool.done.auditPaused", { count: newCount, report: auditOutput }) }],
-      details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditRejected: true, auditPaused: true, auditOutput },
+      details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditRejected: true, auditPaused: true, auditOutput, ...auditorDetails },
       terminate: true,
     };
   }
@@ -815,7 +835,7 @@ function handleFinalAuditRejected(args: {
     content: [
       { type: "text", text: t("tool.done.auditRejected", { count: newCount, report: auditOutput }) },
     ],
-    details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditRejected: true, rejectedCount: newCount, auditOutput },
+    details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditRejected: true, rejectedCount: newCount, auditOutput, ...auditorDetails },
     terminate: false,
   };
 }
@@ -1193,12 +1213,7 @@ const dgoalCheckTool = defineTool({
 
     let result;
     try {
-      // v0.5.2 切片5：auditor_error 3 次透明重试。只有审核器异常才重试；approved/rejected 是正常业务结论，不重试。
-      // 重试对主 agent 透明，attempt 次数随 onUpdate 流出。3 次全失败才以 auditor_error 返回（isError:true）。
-      result = await runCheckWithRetry({
-        run: () => runPhaseCheck({ ctx: ctx as ExtensionContext, goal, phase, onUpdate: emitCheckUpdate }),
-        onUpdate: emitCheckUpdate,
-      });
+      result = await runPhaseCheck({ ctx: ctx as ExtensionContext, goal, phase, onUpdate: emitCheckUpdate });
     } catch (error) {
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
@@ -1214,7 +1229,7 @@ const dgoalCheckTool = defineTool({
       pauseOnAuditFailure(ctx as unknown as DgoalContext, reason);
       return {
         content: [{ type: "text", text: t("tool.check.auditorErrorPaused", { reason, report }) }],
-        details: { error: reason, output: result.output, aborted: result.aborted, liveness: "auditor_error" as const },
+        details: { error: reason, output: result.output, aborted: result.aborted, liveness: "auditor_error" as const, ...buildAuditorResultDetails(result) },
         isError: true,
         terminate: true,
       };
@@ -1229,7 +1244,7 @@ const dgoalCheckTool = defineTool({
       persistGoal(currentGoal);
       clearCurrentCheckSnapshot();
       planOverlay?.update();
-      return { content: [{ type: "text", text: t("tool.check.approved", { phaseId, report: result.output ? t("tool.check.reportSection", { report: result.output }) : "" }) }], details: { phaseId, approved: true, liveness: "approved" as const }, isError: false };
+      return { content: [{ type: "text", text: t("tool.check.approved", { phaseId, report: result.output ? t("tool.check.reportSection", { report: result.output }) : "" }) }], details: { phaseId, approved: true, liveness: "approved" as const, ...buildAuditorResultDetails(result) }, isError: false };
     }
     // 不通过：phase 回 in_progress（若已是 in_progress 保持），报告注入
     if (phase.status !== "in_progress") {
@@ -1244,7 +1259,7 @@ const dgoalCheckTool = defineTool({
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
     // rejected 保持 isError:false——正常业务结果，主 agent 继续修当前 phase
-    return { content: [{ type: "text", text: t("tool.check.rejected", { phaseId, report: result.output }) }], details: { phaseId, approved: false, liveness: "rejected" as const }, isError: false };
+    return { content: [{ type: "text", text: t("tool.check.rejected", { phaseId, report: result.output }) }], details: { phaseId, approved: false, liveness: "rejected" as const, ...buildAuditorResultDetails(result) }, isError: false };
   },
 });
 
@@ -1261,7 +1276,8 @@ export default function dgoal(pi: ExtensionAPI) {
     handler: (args, ctx) => handleDgoalCommand(args, pi, ctx),
   });
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
+    if (event.reason === "reload") clearAuditorModelRegistryCache();
     resyncGoalFromSession(ctx);
   });
 
@@ -2530,13 +2546,99 @@ function pauseOnAuditFailure(ctx: DgoalContext, reason: string) {
   safeNotify(ctx, t("notify.auditFailurePaused", { reason }), "warning");
 }
 
+export type AuditorErrorInfo =
+  | { kind: "http"; status: number }
+  | { kind: "network"; code?: string }
+  | { kind: "timeout" }
+  | { kind: "aborted" }
+  | { kind: "spawn" }
+  | { kind: "exit"; exitCode?: number | null }
+  | { kind: "unknown" };
+
+export type AuditorAttemptOutcome = "approved" | "rejected" | "fallback" | "partial_retry" | "retry_same_model" | "aborted";
+
+export interface AuditorAttemptTrace {
+  modelId?: string;
+  attempt: number;
+  outcome: AuditorAttemptOutcome;
+  failureKind?: AuditorErrorInfo["kind"];
+  httpStatus?: number;
+  networkCode?: string;
+  exitCode?: number | null;
+  error?: string;
+  hasPartialOutput: boolean;
+}
+
 export interface AuditorResult {
   approved: boolean;
   aborted: boolean;
   output: string;
   error?: string;
+  // 仅由 child JSON 事件或本地运行控制流产出的结构化错误；绝不从人读错误文本猜测回退资格。
+  errorInfo?: AuditorErrorInfo;
+  modelId?: string;
+  attempts?: AuditorAttemptTrace[];
+  exhausted?: boolean;
+  configDegraded?: boolean;
+  preflightFailed?: boolean;
+  unavailableCandidates?: string[];
   // v0.5.2：最终活性状态（收敛态 approved/rejected/auditor_error），供调用方结构化判断
   liveness?: CheckLivenessState;
+}
+
+const AUDITOR_NETWORK_ERROR_CODES = new Set([
+  "ECONNABORTED",
+  "ECONNREFUSED",
+  "ECONNRESET",
+  "EAI_AGAIN",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "ETIMEDOUT",
+]);
+
+function structuredHttpStatus(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) return value;
+  if (typeof value === "string" && /^\d{3}$/.test(value)) return Number(value);
+  return undefined;
+}
+
+// Pi 的 AssistantMessage diagnostics 是跨 child 边界仍保留的结构化错误载体；不检查 errorMessage 文本。
+function extractAuditorErrorInfo(diagnostics: unknown): AuditorErrorInfo | undefined {
+  if (!Array.isArray(diagnostics)) return undefined;
+  for (const diagnostic of [...diagnostics].reverse()) {
+    if (!diagnostic || typeof diagnostic !== "object") continue;
+    const { type, error, details } = diagnostic as {
+      type?: unknown;
+      error?: { code?: unknown };
+      details?: Record<string, unknown>;
+    };
+    const status = structuredHttpStatus(error?.code)
+      ?? structuredHttpStatus(details?.status)
+      ?? structuredHttpStatus(details?.statusCode)
+      ?? structuredHttpStatus(details?.httpStatus)
+      ?? structuredHttpStatus(details?.httpStatusCode);
+    if (status !== undefined) return { kind: "http", status };
+    const code = typeof error?.code === "string" ? error.code : undefined;
+    if (typeof type === "string" && type === "provider_transport_failure") return { kind: "network", code };
+    if (code && AUDITOR_NETWORK_ERROR_CODES.has(code)) return { kind: "network", code };
+  }
+  return undefined;
+}
+
+// Pi 的部分 provider 将 HTTP 状态规范化为 `401: {"code":"401",...}` errorMessage。
+// 只接受前缀与 JSON code 一致的严格结构化包；不从任意人读文本（如 `HTTP 429`）猜状态。
+function extractStructuredProviderErrorInfo(errorMessage: unknown): AuditorErrorInfo | undefined {
+  if (typeof errorMessage !== "string") return undefined;
+  const match = /^(\d{3}):\s*(\{.*\})$/s.exec(errorMessage.trim());
+  if (!match) return undefined;
+  try {
+    const payload = JSON.parse(match[2]) as { code?: unknown };
+    const status = structuredHttpStatus(match[1]);
+    return status !== undefined && structuredHttpStatus(payload.code) === status ? { kind: "http", status } : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // v0.5.2 建检活性状态（ADR 0012）：独立建检子进程的运行时状态投影。
@@ -2554,10 +2656,29 @@ type CheckLivenessState =
 // v0.5.2：事件→活性推导纯函数（ADR 0012）。从一条子进程 stdout 事件推导它代表的建检活性状态。
 // 抽成纯函数便于单测事件识别（thinking/toolcall/text 不再被误判为空闲超时的关键）。
 export function classifyCheckEvent(line: string):
-  | { liveness: CheckLivenessState; toolName?: string; delta?: string; isMessageEnd?: boolean; text?: string }
+  | {
+    liveness: CheckLivenessState;
+    toolName?: string;
+    delta?: string;
+    isMessageEnd?: boolean;
+    text?: string;
+    errorMessage?: string;
+    errorInfo?: AuditorErrorInfo;
+    aborted?: boolean;
+  }
   | null {
   if (!line.trim()) return null;
-  let event: { type?: string; assistantMessageEvent?: { type?: string; delta?: string; toolName?: string }; message?: { role?: string; content?: Array<{ type: string; text?: string }> } };
+  let event: {
+    type?: string;
+    assistantMessageEvent?: { type?: string; delta?: string; toolName?: string };
+    message?: {
+      role?: string;
+      content?: Array<{ type: string; text?: string }>;
+      stopReason?: string;
+      errorMessage?: string;
+      diagnostics?: unknown;
+    };
+  };
   try { event = JSON.parse(line); } catch { return null; }
   const evtType = event.assistantMessageEvent?.type;
   if (event.type === "message_update" && (evtType === "thinking_start" || evtType === "thinking_delta" || evtType === "thinking_end")) {
@@ -2574,7 +2695,16 @@ export function classifyCheckEvent(line: string):
     const text = (event.message.content ?? [])
       .filter((part) => part.type === "text" && typeof part.text === "string")
       .map((part) => part.text!).join("\n\n");
-    return { liveness: "report_streaming", isMessageEnd: true, text };
+    const aborted = event.message.stopReason === "aborted";
+    const errorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
+    return {
+      liveness: "report_streaming",
+      isMessageEnd: true,
+      text,
+      aborted,
+      errorMessage,
+      errorInfo: extractAuditorErrorInfo(event.message.diagnostics) ?? extractStructuredProviderErrorInfo(errorMessage),
+    };
   }
   return null;
 }
@@ -2685,6 +2815,69 @@ export function normalizeAuditorModelId(value: unknown): string | undefined {
   return trimmed;
 }
 
+export interface AuditorModelReference {
+  provider: string;
+  id: string;
+}
+
+export interface AuditorModelPreflight {
+  confirmed: string[];
+  unavailable: string[];
+}
+
+const AUDITOR_THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+let auditorModelRegistryCache: Promise<AuditorModelReference[]> | undefined;
+
+function candidateMatchesAuditorModel(candidate: string, model: AuditorModelReference): boolean {
+  const slashIndex = candidate.indexOf("/");
+  const provider = candidate.slice(0, slashIndex);
+  const configuredModelId = candidate.slice(slashIndex + 1);
+  if (provider !== model.provider) return false;
+  if (configuredModelId === model.id) return true;
+
+  const thinkingSeparator = configuredModelId.lastIndexOf(":");
+  if (thinkingSeparator <= 0) return false;
+  const modelId = configuredModelId.slice(0, thinkingSeparator);
+  const thinkingLevel = configuredModelId.slice(thinkingSeparator + 1);
+  return modelId === model.id && AUDITOR_THINKING_LEVELS.has(thinkingLevel);
+}
+
+// 只消费 RPC 返回的结构化 provider/id；绝不解析 `pi --list-models` 的人读表格。
+export function preflightAuditorModelCandidates(
+  candidates: readonly string[],
+  availableModels: readonly AuditorModelReference[],
+): AuditorModelPreflight {
+  const confirmed: string[] = [];
+  const unavailable: string[] = [];
+  for (const candidate of candidates) {
+    if (availableModels.some((model) => candidateMatchesAuditorModel(candidate, model))) confirmed.push(candidate);
+    else unavailable.push(candidate);
+  }
+  return { confirmed, unavailable };
+}
+
+function clearAuditorModelRegistryCache() {
+  auditorModelRegistryCache = undefined;
+}
+
+export function __resetAuditorModelRegistryCacheForTest() {
+  clearAuditorModelRegistryCache();
+}
+
+export async function getAuditorModelRegistryForPreflight(
+  cwd: string,
+  loadModels: (cwd: string) => Promise<AuditorModelReference[]> = queryIsolatedAuditorModelRegistry,
+): Promise<AuditorModelReference[]> {
+  if (!auditorModelRegistryCache) auditorModelRegistryCache = loadModels(cwd);
+  const pending = auditorModelRegistryCache;
+  try {
+    return await pending;
+  } catch (error) {
+    if (auditorModelRegistryCache === pending) auditorModelRegistryCache = undefined;
+    throw error;
+  }
+}
+
 async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalConfig; issues: DgoalConfigIssue[]; existed: boolean }> {
   let raw: string;
   try {
@@ -2734,6 +2927,41 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
     else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath, field } });
   }
 
+  const candidateFields: (keyof DgoalConfig)[] = ["phaseAuditorModels", "goalAuditorModels"];
+  for (const field of candidateFields) {
+    if (!Object.prototype.hasOwnProperty.call(parsedConfig, field)) continue;
+    const value = parsedConfig[field];
+    if (value === null) {
+      config[field] = null;
+      continue;
+    }
+    if (!Array.isArray(value) || value.length === 0) {
+      issues.push({ key: "notify.auditorModelCandidatesInvalid", params: { path: configPath, field } });
+      continue;
+    }
+
+    const candidates: string[] = [];
+    const seen = new Set<string>();
+    for (const [index, candidate] of value.entries()) {
+      const normalized = normalizeAuditorModelId(candidate);
+      if (!normalized) {
+        issues.push({ key: "notify.auditorModelCandidateInvalid", params: { path: configPath, field, index } });
+        continue;
+      }
+      if (seen.has(normalized)) {
+        issues.push({ key: "notify.auditorModelCandidateDuplicate", params: { path: configPath, field, index } });
+        continue;
+      }
+      seen.add(normalized);
+      candidates.push(normalized);
+    }
+    if (candidates.length > MAX_AUDITOR_MODEL_CANDIDATES) {
+      candidates.length = MAX_AUDITOR_MODEL_CANDIDATES;
+      issues.push({ key: "notify.auditorModelCandidatesTruncated", params: { path: configPath, field, max: MAX_AUDITOR_MODEL_CANDIDATES } });
+    }
+    if (candidates.length > 0) config[field] = candidates;
+  }
+
   return { config, issues, existed: true };
 }
 
@@ -2779,7 +3007,8 @@ async function createDgoalConfigTemplate(configPath: string): Promise<{ created:
 function getDgoalConfigNotificationId(item: { key: string; params?: Record<string, string | number> }): string {
   const path = item.params?.path ?? "";
   const field = item.params?.field ?? "";
-  return `${item.key}:${path}:${field}`;
+  const index = item.params?.index ?? "";
+  return `${item.key}:${path}:${field}:${index}`;
 }
 
 function notifyDgoalConfigOnce(ctx: Pick<ExtensionContext, "ui">, notifications: { key: string; params?: Record<string, string | number>; level: "info" | "warning" }[]) {
@@ -2799,24 +3028,25 @@ function hasDgoalConfigField(config: DgoalConfig, field: keyof DgoalConfig): boo
   return Object.prototype.hasOwnProperty.call(config, field);
 }
 
-function selectAuditorModelOverride(loaded: LoadedDgoalConfig, scope: AuditorScope): string | null | undefined {
-  const scopedField: keyof DgoalConfig = scope === "phase" ? "phaseAuditorModel" : "goalAuditorModel";
-  // Source precedence comes first: a project-level shared override must beat a global scoped override.
-  for (const config of [loaded.projectConfig, loaded.globalConfig]) {
-    if (hasDgoalConfigField(config, scopedField)) return config[scopedField];
-    if (hasDgoalConfigField(config, "auditorModel")) return config.auditorModel;
-  }
-  return undefined;
+interface AuditorModelOverride {
+  candidates: string[] | null;
+  field: keyof DgoalConfig;
+  path: string;
 }
 
-export async function resolveAuditorModelId(
-  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model" | "ui">,
-  options: { agentDir?: string; scope?: AuditorScope } = {},
-): Promise<string | undefined> {
-  const fallbackModelId = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+interface AuditorModelCandidateResolution {
+  modelIds: string[];
+  unavailableCandidates: string[];
+  preflightFailed: boolean;
+  configDegraded: boolean;
+}
+
+async function loadAuditorDgoalConfig(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted">,
+  options: { agentDir?: string },
+): Promise<{ loaded: LoadedDgoalConfig; globalPath: string }> {
   const { globalPath } = getDgoalConfigPaths(ctx.cwd, options.agentDir);
   let loaded = await loadDgoalConfig(ctx, options);
-
   if (!loaded.anyConfigFileExists) {
     const templateResult = await createDgoalConfigTemplate(globalPath);
     if (templateResult.created) {
@@ -2828,14 +3058,100 @@ export async function resolveAuditorModelId(
       loaded = await loadDgoalConfig(ctx, options);
     }
   }
+  return { loaded, globalPath };
+}
 
-  const modelOverride = selectAuditorModelOverride(loaded, options.scope ?? "phase");
+function listAuditorModelOverrides(loaded: LoadedDgoalConfig, scope: AuditorScope, cwd: string, agentDir?: string): AuditorModelOverride[] {
+  const { globalPath, projectPath } = getDgoalConfigPaths(cwd, agentDir);
+  const candidateField: keyof DgoalConfig = scope === "phase" ? "phaseAuditorModels" : "goalAuditorModels";
+  const scopedField: keyof DgoalConfig = scope === "phase" ? "phaseAuditorModel" : "goalAuditorModel";
+  const overrides: AuditorModelOverride[] = [];
+  // Source precedence comes first: a project-level shared override must beat a global scoped override.
+  for (const { config, path: configPath } of [
+    { config: loaded.projectConfig, path: projectPath },
+    { config: loaded.globalConfig, path: globalPath },
+  ]) {
+    for (const field of [candidateField, scopedField, "auditorModel" as const]) {
+      if (!hasDgoalConfigField(config, field)) continue;
+      const value = config[field];
+      overrides.push({
+        candidates: value === null ? null : (Array.isArray(value) ? value : [value]),
+        field,
+        path: configPath,
+      });
+    }
+  }
+  return overrides;
+}
+
+function fallbackAuditorModelIds(ctx: Pick<ExtensionContext, "model">): string[] {
+  return ctx.model ? [`${ctx.model.provider}/${ctx.model.id}`] : [];
+}
+
+export async function resolveAuditorModelCandidates(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model" | "ui">,
+  options: {
+    agentDir?: string;
+    scope?: AuditorScope;
+    preflight?: boolean;
+    loadModels?: (cwd: string) => Promise<AuditorModelReference[]>;
+  } = {},
+): Promise<AuditorModelCandidateResolution> {
+  const scope = options.scope ?? "phase";
+  const { loaded, globalPath } = await loadAuditorDgoalConfig(ctx, options);
+  const overrides = listAuditorModelOverrides(loaded, scope, ctx.cwd, options.agentDir);
+  const selectedOverride = overrides[0];
+  let configDegraded = loaded.issues.length > 0;
+  const unavailableCandidates: string[] = [];
+
   if (loaded.issues.length > 0) {
     notifyDgoalConfigOnce(ctx, loaded.issues.map((issue) => ({ ...issue, level: "warning" as const })));
-  } else if (modelOverride == null) {
+  } else if (!selectedOverride || selectedOverride.candidates === null) {
     notifyDgoalConfigOnce(ctx, [{ key: "notify.auditorModelHint", params: { globalPath }, level: "info" }]);
   }
-  return modelOverride ?? fallbackModelId;
+
+  let availableModels: AuditorModelReference[] | undefined;
+  for (const override of overrides) {
+    if (override.candidates === null) {
+      return { modelIds: fallbackAuditorModelIds(ctx), unavailableCandidates, preflightFailed: false, configDegraded };
+    }
+    if (options.preflight === false) {
+      return { modelIds: override.candidates, unavailableCandidates, preflightFailed: false, configDegraded };
+    }
+    if (!availableModels) {
+      try {
+        availableModels = await (options.loadModels ?? getAuditorModelRegistryForPreflight)(ctx.cwd);
+      } catch {
+        notifyDgoalConfigOnce(ctx, [{ key: "notify.auditorModelRegistryUnavailable", level: "warning" }]);
+        return { modelIds: override.candidates, unavailableCandidates, preflightFailed: true, configDegraded };
+      }
+    }
+
+    const preflight = preflightAuditorModelCandidates(override.candidates, availableModels);
+    if (preflight.unavailable.length > 0) {
+      unavailableCandidates.push(...preflight.unavailable);
+      const candidateIndexes = new Map(override.candidates.map((candidate, index) => [candidate, index]));
+      notifyDgoalConfigOnce(ctx, preflight.unavailable.map((candidate) => ({
+        key: "notify.auditorModelCandidateUnavailable",
+        params: { path: override.path, field: override.field, index: candidateIndexes.get(candidate) ?? 0 },
+        level: "warning" as const,
+      })));
+    }
+    if (preflight.confirmed.length > 0) {
+      return { modelIds: preflight.confirmed, unavailableCandidates, preflightFailed: false, configDegraded };
+    }
+    configDegraded = true;
+  }
+
+  return { modelIds: fallbackAuditorModelIds(ctx), unavailableCandidates, preflightFailed: false, configDegraded };
+}
+
+export async function resolveAuditorModelId(
+  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model" | "ui">,
+  options: { agentDir?: string; scope?: AuditorScope } = {},
+): Promise<string | undefined> {
+  const resolution = await resolveAuditorModelCandidates(ctx, { ...options, preflight: false });
+  return resolution.modelIds[0];
 }
 
 export function buildCheckCliArgs(args: {
@@ -2856,11 +3172,11 @@ export function buildCheckCliArgs(args: {
 async function runIsolatedCheck(args: {
   ctx: ExtensionContext;
   scope: AuditorScope;
+  modelId?: string;
   systemPrompt: string;
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
-  const { ctx, scope, systemPrompt, task } = args;
-  const modelId = await resolveAuditorModelId(ctx, { scope });
+  const { ctx, systemPrompt, task, modelId } = args;
   const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
   const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
@@ -2873,6 +3189,9 @@ async function runIsolatedCheck(args: {
     let finalReport = "";
     let partialReport = "";
     let stderrText = "";
+    let childError: string | undefined;
+    let childErrorInfo: AuditorErrorInfo | undefined;
+    let childAborted = false;
     let abortReason: "user" | "idle_timeout" | undefined;
     let buffer = "";
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
@@ -2962,9 +3281,14 @@ async function runIsolatedCheck(args: {
         emitProgress();
         return;
       }
-      if (classified.isMessageEnd && classified.text?.trim()) {
-        finalReport = classified.text;
-        partialReport = classified.text;
+      if (classified.isMessageEnd) {
+        if (classified.text?.trim()) {
+          finalReport = classified.text;
+          partialReport = classified.text;
+        }
+        if (classified.errorMessage) childError = classified.errorMessage;
+        if (classified.errorInfo) childErrorInfo = classified.errorInfo;
+        if (classified.aborted) childAborted = true;
         emitProgress(true);
         return;
       }
@@ -3012,18 +3336,40 @@ async function runIsolatedCheck(args: {
     proc.on("close", (code) => {
       if (buffer.trim()) processLine(buffer);
       const output = (finalReport || partialReport).trim();
-      if (abortReason === "user") {
-        finish({ approved: false, aborted: true, output, error: output ? undefined : t("runtime.error.auditInterrupted") });
+      if (abortReason === "user" || childAborted) {
+        finish({
+          approved: false,
+          aborted: true,
+          output,
+          error: output ? undefined : t("runtime.error.auditInterrupted"),
+          errorInfo: { kind: "aborted" },
+        });
         return;
       }
       if (abortReason === "idle_timeout") {
         const timeoutLabel = sawChildFeedback ? "审核空闲超时" : "审核启动超时";
         const timeoutDetail = sawChildFeedback ? "无新反馈" : "无首个反馈";
-        finish({ approved: false, aborted: false, output, error: `${timeoutLabel}（${args.idleTimeoutMs}ms ${timeoutDetail}）` });
+        finish({
+          approved: false,
+          aborted: false,
+          output,
+          error: `${timeoutLabel}（${args.idleTimeoutMs}ms ${timeoutDetail}）`,
+          errorInfo: { kind: "timeout" },
+        });
+        return;
+      }
+      if (childError) {
+        finish({ approved: false, aborted: false, output, error: childError, errorInfo: childErrorInfo ?? { kind: "unknown" } });
         return;
       }
       if (code !== 0 && !output) {
-        finish({ approved: false, aborted: false, output: "", error: truncate(stderrText) || t("runtime.error.piExitCode", { code }) });
+        finish({
+          approved: false,
+          aborted: false,
+          output: "",
+          error: truncate(stderrText) || t("runtime.error.piExitCode", { code }),
+          errorInfo: { kind: "exit", exitCode: code },
+        });
         return;
       }
       finish({ approved: parseAuditorDecision(output), aborted: false, output });
@@ -3031,7 +3377,7 @@ async function runIsolatedCheck(args: {
 
     proc.on("error", () => {
       if (abortReason) return;
-      finish({ approved: false, aborted: false, output: "", error: t("runtime.error.spawnFailed") });
+      finish({ approved: false, aborted: false, output: "", error: t("runtime.error.spawnFailed"), errorInfo: { kind: "spawn" } });
     });
 
     const killProc = (reason: "user" | "idle_timeout") => {
@@ -3046,7 +3392,35 @@ async function runIsolatedCheck(args: {
   });
 }
 
-// 终审：审全 goal（dgoal_done 内部调用）。瘦身复用 runIsolatedCheck。
+async function runAuditorWithCandidates(args: {
+  ctx: ExtensionContext;
+  scope: AuditorScope;
+  systemPrompt: string;
+  task: string;
+} & CheckRuntimeOptions): Promise<AuditorResult> {
+  const { ctx, scope, systemPrompt, task, ...runtimeOptions } = args;
+  const resolution = await resolveAuditorModelCandidates(ctx, { scope });
+  const result = await runCheckWithRetry({
+    modelIds: resolution.modelIds,
+    run: (modelId, partialFeedback) => runIsolatedCheck({
+      ctx,
+      scope,
+      modelId,
+      systemPrompt,
+      task: withPartialAuditFeedback(task, partialFeedback),
+      ...runtimeOptions,
+    }),
+    onUpdate: args.onUpdate,
+  });
+  return {
+    ...result,
+    configDegraded: resolution.configDegraded,
+    preflightFailed: resolution.preflightFailed,
+    unavailableCandidates: resolution.unavailableCandidates,
+  };
+}
+
+// 终审：审全 goal（dgoal_done 内部调用）。瘦身复用候选调度后的独立审核 child。
 async function runCompletionAuditor(args: {
   ctx: ExtensionContext;
   goal: GoalState;
@@ -3056,7 +3430,7 @@ async function runCompletionAuditor(args: {
   userReview?: string;
   onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
-  return runIsolatedCheck({
+  return runAuditorWithCandidates({
     ctx: args.ctx,
     scope: "goal",
     systemPrompt: AUDITOR_SYSTEM_PROMPT,
@@ -3067,39 +3441,178 @@ async function runCompletionAuditor(args: {
   });
 }
 
-// v0.5.2 切片5：auditor_error 3 次透明重试（ADR 0012）。
-// 只有审核器异常才重试；approved/rejected 是正常业务结论，不重试。
-// 重试对主 agent 透明，attempt 次数随 onUpdate 流出。3 次全失败才以 auditor_error 返回。
+// v0.5.2 切片5：同模型 auditor_error 透明重试（ADR 0012）。候选链扩展后，
+// 明确的零输出技术错误直接切下一个模型；业务结论、用户中断与 HTTP 400 不切换。
 const MAX_AUDITOR_RETRIES = 3;
 
+export type AuditorFailureDisposition = "decision" | "fallback" | "partial_retry" | "retry_same_model" | "stop";
+
+function hasExplicitAuditorDecision(output: string): boolean {
+  const approved = output.includes(APPROVED_MARKER);
+  const rejected = output.includes(REJECTED_MARKER);
+  return approved !== rejected;
+}
+
+export function classifyAuditorFailure(result: AuditorResult): AuditorFailureDisposition {
+  // 只有无歧义终止标记才是业务结论。普通文本是部分审核，不得写入正式反馈或当作 REJECTED。
+  if (result.approved || hasExplicitAuditorDecision(result.output)) return "decision";
+  if (result.aborted || result.errorInfo?.kind === "aborted") return "stop";
+  if (result.output) return "partial_retry";
+
+  const errorInfo = result.errorInfo;
+  if (errorInfo?.kind === "network" || errorInfo?.kind === "timeout") return "fallback";
+  if (errorInfo?.kind === "http") {
+    if (errorInfo.status === 401 || errorInfo.status === 403 || errorInfo.status === 404 || errorInfo.status === 408 || errorInfo.status === 429 || (errorInfo.status >= 500 && errorInfo.status <= 599)) {
+      return "fallback";
+    }
+  }
+  // 不能从 stderr/error 文本推断 HTTP 状态，未知或 HTTP 400 只保留原有同模型重试。
+  return "retry_same_model";
+}
+
 export function isAuditorError(result: AuditorResult): boolean {
-  // 有明确结论（approved 或有 output 的 rejected）不是 auditor_error
-  if (result.approved) return false;
-  if (!result.aborted && !result.error && result.output) return false; // rejected（有报告无 error）
-  return true;
+  return classifyAuditorFailure(result) !== "decision";
+}
+
+export const MAX_PARTIAL_AUDIT_FEEDBACK_CHARS = 6_000;
+
+export function appendPartialAuditFeedback(current: string, nextOutput: string): string {
+  const next = nextOutput.trim();
+  if (!next) return current;
+  const combined = current ? `${current}\n\n${next}` : next;
+  return combined.length <= MAX_PARTIAL_AUDIT_FEEDBACK_CHARS
+    ? combined
+    : `${combined.slice(0, MAX_PARTIAL_AUDIT_FEEDBACK_CHARS - 1)}…`;
+}
+
+export function withPartialAuditFeedback(task: string, partialFeedback?: string): string {
+  if (!partialFeedback?.trim()) return task;
+  return [
+    task,
+    "",
+    "<partial_audit_feedback>",
+    "以下是同一轮审核尚未形成终止标记的临时文本；续审时应复用已完成的检查，但必须独立完成判断。它不是正式 REJECTED 反馈。",
+    escapeXml(partialFeedback),
+    "</partial_audit_feedback>",
+  ].join("\n");
+}
+
+function formatAuditorFailureKind(errorInfo: AuditorErrorInfo | undefined): string {
+  if (!errorInfo) return "unknown";
+  if (errorInfo.kind === "http") return `http_${errorInfo.status}`;
+  if (errorInfo.kind === "network") return errorInfo.code ? `network_${errorInfo.code}` : "network";
+  return errorInfo.kind;
+}
+
+function attemptOutcome(result: AuditorResult, disposition: AuditorFailureDisposition): AuditorAttemptOutcome {
+  if (disposition === "decision") return result.approved ? "approved" : "rejected";
+  if (disposition === "fallback") return "fallback";
+  if (disposition === "partial_retry") return "partial_retry";
+  if (disposition === "stop") return "aborted";
+  return "retry_same_model";
 }
 
 export async function runCheckWithRetry(args: {
-  run: () => Promise<AuditorResult>;
+  modelIds?: readonly string[];
+  run: (modelId?: string, partialFeedback?: string) => Promise<AuditorResult>;
   onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
-  let lastResult: AuditorResult = { approved: false, aborted: false, output: "", error: t("runtime.error.auditNoOutput") };
-  for (let attempt = 1; attempt <= MAX_AUDITOR_RETRIES; attempt++) {
-    lastResult = await args.run();
-    // 正常结论（approved 或 rejected）立即返回，不重试
-    if (!isAuditorError(lastResult)) {
-      return lastResult;
+  const modelIds = args.modelIds?.length ? args.modelIds : [undefined];
+  const attempts: AuditorAttemptTrace[] = [];
+  let partialFeedback = "";
+  let lastResult: AuditorResult = {
+    approved: false,
+    aborted: false,
+    output: "",
+    error: t("runtime.error.auditNoOutput"),
+    errorInfo: { kind: "unknown" },
+  };
+
+  for (const [modelIndex, modelId] of modelIds.entries()) {
+    let lastDisposition: AuditorFailureDisposition = "retry_same_model";
+    for (let attempt = 1; attempt <= MAX_AUDITOR_RETRIES; attempt++) {
+      lastResult = await args.run(modelId, partialFeedback || undefined);
+      lastDisposition = classifyAuditorFailure(lastResult);
+      attempts.push({
+        modelId,
+        attempt,
+        outcome: attemptOutcome(lastResult, lastDisposition),
+        failureKind: lastResult.errorInfo?.kind,
+        ...(lastResult.errorInfo?.kind === "http" ? { httpStatus: lastResult.errorInfo.status } : {}),
+        ...(lastResult.errorInfo?.kind === "network" && lastResult.errorInfo.code ? { networkCode: lastResult.errorInfo.code } : {}),
+        ...(lastResult.errorInfo?.kind === "exit" ? { exitCode: lastResult.errorInfo.exitCode } : {}),
+        ...(lastResult.error ? { error: lastResult.error } : {}),
+        hasPartialOutput: Boolean(lastResult.output) && !hasExplicitAuditorDecision(lastResult.output),
+      });
+      const resultWithTrace = { ...lastResult, modelId, attempts: [...attempts] };
+      if (lastDisposition === "decision" || lastDisposition === "stop") return resultWithTrace;
+      if (lastDisposition === "fallback") break;
+      if (lastDisposition === "partial_retry") {
+        partialFeedback = appendPartialAuditFeedback(partialFeedback, lastResult.output);
+      }
+      if (attempt < MAX_AUDITOR_RETRIES && args.onUpdate) {
+        const text = lastDisposition === "partial_retry"
+          ? t("tool.check.partialRetrying", { model: modelId ?? "current session", attempt, total: MAX_AUDITOR_RETRIES })
+          : t("tool.check.retrying", { attempt, total: MAX_AUDITOR_RETRIES, error: lastResult.error ?? "" });
+        args.onUpdate({
+          content: [{ type: "text", text }],
+          details: {
+            partial: true,
+            attempt,
+            attemptTotal: MAX_AUDITOR_RETRIES,
+            liveness: "auditor_error" as const,
+            auditorModel: modelId,
+            auditorAttempts: [...attempts],
+          },
+        });
+      }
     }
-    // 仍有重试机会：透传 attempt 次数给 onUpdate，继续重试
-    if (attempt < MAX_AUDITOR_RETRIES && args.onUpdate) {
+
+    // 部分输出预算用尽和明确可回退错误才可以移动候选；HTTP 400/未知错误留在原模型并暂停。
+    const canMoveToNextCandidate = lastDisposition === "fallback" || lastDisposition === "partial_retry";
+    const nextModelId = modelIds[modelIndex + 1];
+    if (!canMoveToNextCandidate) {
+      return { ...lastResult, modelId, attempts, liveness: "auditor_error" };
+    }
+    if (nextModelId !== undefined && args.onUpdate) {
       args.onUpdate({
-        content: [{ type: "text", text: t("tool.check.retrying", { attempt, total: MAX_AUDITOR_RETRIES, error: lastResult.error ?? "" }) }],
-        details: { partial: true, attempt, attemptTotal: MAX_AUDITOR_RETRIES, liveness: "auditor_error" as const },
+        content: [{ type: "text", text: t("tool.check.candidateFallback", {
+          from: modelId ?? "current session",
+          reason: lastDisposition === "partial_retry" ? "partial output" : formatAuditorFailureKind(lastResult.errorInfo),
+          to: nextModelId,
+        }) }],
+        details: {
+          partial: true,
+          liveness: "auditor_error" as const,
+          auditorModel: modelId,
+          nextAuditorModel: nextModelId,
+          auditorAttempts: [...attempts],
+          transition: "candidate_fallback",
+        },
       });
     }
   }
-  // 3 次全失败：返回最后结果，带 attempt 元信息，调用方据此 paused(audit_error)
-  return { ...lastResult, liveness: "auditor_error" };
+
+  // 所有已配置候选均失败；调用方据此 paused(audit_error)，绝不改用执行模型。
+  return {
+    ...lastResult,
+    error: lastResult.error ?? t("runtime.error.auditCandidatesExhausted"),
+    modelId: lastResult.modelId ?? modelIds[modelIds.length - 1],
+    attempts,
+    exhausted: true,
+    liveness: "auditor_error",
+  };
+}
+
+export function buildAuditorResultDetails(result: AuditorResult): Record<string, unknown> {
+  return {
+    auditorModel: result.modelId,
+    auditorConfigDegraded: result.configDegraded ?? false,
+    auditorPreflightFailed: result.preflightFailed ?? false,
+    auditorUnavailableCandidates: result.unavailableCandidates ?? [],
+    auditorAttempts: result.attempts ?? [],
+    auditorCandidatesExhausted: result.exhausted ?? false,
+  };
 }
 
 // 切片 5：阶段建检——审单个 phase 的成果（dgoal_check 工具调用）。
@@ -3110,7 +3623,7 @@ async function runPhaseCheck(args: {
   phase: Phase;
   onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
-  return runIsolatedCheck({
+  return runAuditorWithCandidates({
     ctx: args.ctx,
     scope: "phase",
     systemPrompt: PHASE_CHECK_SYSTEM_PROMPT,
@@ -3208,12 +3721,91 @@ function canKillProcessGroup() {
   return process.platform !== "win32";
 }
 
-function spawnManagedSubprocess(command: string, args: string[], cwd: string) {
+function spawnManagedSubprocess(command: string, args: string[], cwd: string, stdin: "ignore" | "pipe" = "ignore") {
   return spawn(command, args, {
     cwd,
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: [stdin, "pipe", "pipe"],
     detached: canKillProcessGroup(),
+  });
+}
+
+const AUDITOR_MODEL_REGISTRY_REQUEST_ID = "dgoal-auditor-model-registry";
+const AUDITOR_MODEL_REGISTRY_TIMEOUT_MS = 10_000;
+
+function parseAuditorModelReferences(value: unknown): AuditorModelReference[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const models: AuditorModelReference[] = [];
+  for (const candidate of value) {
+    if (!candidate || typeof candidate !== "object") return undefined;
+    const { provider, id } = candidate as { provider?: unknown; id?: unknown };
+    if (typeof provider !== "string" || typeof id !== "string" || !provider || !id) return undefined;
+    models.push({ provider, id });
+  }
+  return models;
+}
+
+// 审核 child 同样禁用 extension / skill；这里通过其 RPC 的结构化模型结果预检，避免主进程动态 provider 造成假阳性。
+function queryIsolatedAuditorModelRegistry(cwd: string): Promise<AuditorModelReference[]> {
+  const invocation = getPiInvocation(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
+  return new Promise<AuditorModelReference[]>((resolve, reject) => {
+    const proc = spawnManagedSubprocess(invocation.command, invocation.args, cwd, "pipe");
+    let buffer = "";
+    let settled = false;
+    const timeout = setTimeout(() => finish(new Error("auditor model registry preflight timed out")), AUDITOR_MODEL_REGISTRY_TIMEOUT_MS);
+
+    const finish = (error?: Error, models?: AuditorModelReference[]) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      proc.stdout?.removeAllListeners();
+      proc.stderr?.removeAllListeners();
+      proc.removeAllListeners();
+      if (proc.exitCode === null && proc.signalCode === null) terminateManagedSubprocess(proc);
+      if (error) reject(error);
+      else resolve(models!);
+    };
+
+    const processLine = (line: string) => {
+      let message: unknown;
+      try {
+        message = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (!message || typeof message !== "object") return;
+      const response = message as {
+        type?: unknown;
+        id?: unknown;
+        command?: unknown;
+        success?: unknown;
+        error?: unknown;
+        data?: { models?: unknown };
+      };
+      if (response.type !== "response" || response.id !== AUDITOR_MODEL_REGISTRY_REQUEST_ID || response.command !== "get_available_models") return;
+      if (response.success !== true) {
+        finish(new Error(typeof response.error === "string" ? response.error : "auditor model registry preflight failed"));
+        return;
+      }
+      const models = parseAuditorModelReferences(response.data?.models);
+      if (!models) {
+        finish(new Error("auditor model registry preflight returned invalid structured data"));
+        return;
+      }
+      finish(undefined, models);
+    };
+
+    proc.stdout?.on("data", (data) => {
+      buffer = consumeBufferedLines(buffer, data.toString(), processLine);
+    });
+    proc.on("close", () => {
+      if (buffer.trim()) processLine(buffer);
+      if (!settled) finish(new Error("auditor model registry preflight exited before responding"));
+    });
+    proc.on("error", () => finish(new Error("auditor model registry preflight could not start")));
+    proc.stdin?.write(`${JSON.stringify({ id: AUDITOR_MODEL_REGISTRY_REQUEST_ID, type: "get_available_models" })}\n`, (error) => {
+      if (error) finish(new Error("auditor model registry preflight request failed"));
+    });
   });
 }
 

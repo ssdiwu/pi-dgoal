@@ -43,6 +43,32 @@ describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
     expect(r?.text).toContain("<APPROVED>");
   });
 
+  test("message_end 只从结构化 diagnostics 提取可回退错误，不猜 errorMessage 文本", () => {
+    const structured = classifyCheckEvent(JSON.stringify({
+      type: "message_end",
+      message: {
+        role: "assistant",
+        content: [],
+        stopReason: "error",
+        errorMessage: "upstream rate limited",
+        diagnostics: [{ type: "provider_failure", error: { code: 429 } }],
+      },
+    }));
+    expect(structured?.errorInfo).toEqual({ kind: "http", status: 429 });
+
+    const strictProviderEnvelope = classifyCheckEvent(JSON.stringify({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "401: {\"code\":\"401\",\"message\":\"invalid key\"}" },
+    }));
+    expect(strictProviderEnvelope?.errorInfo).toEqual({ kind: "http", status: 401 });
+
+    const textOnly = classifyCheckEvent(JSON.stringify({
+      type: "message_end",
+      message: { role: "assistant", content: [], stopReason: "error", errorMessage: "HTTP 429 rate limited" },
+    }));
+    expect(textOnly?.errorInfo).toBeUndefined();
+  });
+
   test("空行返回 null", () => {
     expect(classifyCheckEvent("")).toBeNull();
     expect(classifyCheckEvent("   ")).toBeNull();
@@ -82,9 +108,10 @@ describe("v0.5.2 · 超时秒单位与可见倍计时口径", () => {
 });
 
 describe("v0.5.2 · 结果三态与 auditor_error 重试", () => {
-  test("isAuditorError：approved 不是异常；有报告无 error 的 rejected 不是异常；aborted/error/无输出是异常", () => {
+  test("isAuditorError：approved 或明确 REJECTED 不是异常；缺终止标记的部分输出、aborted/error/无输出是异常", () => {
     expect(isAuditorError({ approved: true, aborted: false, output: "ok" })).toBe(false);
-    expect(isAuditorError({ approved: false, aborted: false, output: "## 报告" })).toBe(false);
+    expect(isAuditorError({ approved: false, aborted: false, output: "## 报告\n<REJECTED>" })).toBe(false);
+    expect(isAuditorError({ approved: false, aborted: false, output: "## 未完成报告" })).toBe(true);
     expect(isAuditorError({ approved: false, aborted: true, output: "" })).toBe(true);
     expect(isAuditorError({ approved: false, aborted: false, output: "", error: "timeout" })).toBe(true);
     expect(isAuditorError({ approved: false, aborted: false, output: "", error: "启动失败" })).toBe(true);
@@ -99,14 +126,14 @@ describe("v0.5.2 · 结果三态与 auditor_error 重试", () => {
     expect(result.approved).toBe(true);
   });
 
-  test("runCheckWithRetry：rejected 立即返回，不重试", async () => {
+  test("runCheckWithRetry：明确 rejected 立即返回，不重试", async () => {
     let calls = 0;
     const result = await runCheckWithRetry({
-      run: async () => { calls++; return { approved: false, aborted: false, output: "未通过报告" } as AuditorResult; },
+      run: async () => { calls++; return { approved: false, aborted: false, output: "未通过报告\n<REJECTED>" } as AuditorResult; },
     });
     expect(calls).toBe(1);
     expect(result.approved).toBe(false);
-    expect(result.output).toBe("未通过报告");
+    expect(result.output).toBe("未通过报告\n<REJECTED>");
   });
 
   test("runCheckWithRetry：auditor_error 重试 3 次全失败才返回，liveness=auditor_error", async () => {
