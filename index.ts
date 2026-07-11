@@ -3166,6 +3166,22 @@ export function buildCheckCliArgs(args: {
   return procArgs;
 }
 
+function bindAuditorAbort(signal: AbortSignal | undefined, onAbort: () => void): () => void {
+  if (!signal) return () => {};
+  if (signal.aborted) {
+    onAbort();
+    return () => {};
+  }
+  const listener = () => onAbort();
+  signal.addEventListener("abort", listener, { once: true });
+  return () => signal.removeEventListener("abort", listener);
+}
+
+// 测试专用：覆盖正常结束后解绑、已中断 signal 不注册两条路径。
+export function __bindAuditorAbortForTest(signal: AbortSignal | undefined, onAbort: () => void): () => void {
+  return bindAuditorAbort(signal, onAbort);
+}
+
 // 切片 5：公共独立审计子进程（completion auditor 和 phase check 共用）。
 // spawn pi --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash，fresh 上下文，用 APPROVED/REJECTED marker 判定。
 // 两个调用点：runCompletionAuditor（终审全 goal）、runPhaseCheck（阶段建检单 phase）——真接缝，抽出复用。
@@ -3202,6 +3218,7 @@ async function runIsolatedCheck(args: {
     let liveness: CheckLivenessState = "starting";
     let currentTool: string | undefined;
     let lastSnippet: string | undefined;
+    let removeAbortListener = () => {};
 
     const clearIdleTimer = () => {
       if (idleTimer) clearTimeout(idleTimer);
@@ -3299,6 +3316,7 @@ async function runIsolatedCheck(args: {
       clearIdleTimer();
       stopCountdownTicker();
       if (forceKillTimer) clearTimeout(forceKillTimer);
+      removeAbortListener();
       proc.removeAllListeners();
       proc.stdout?.removeAllListeners();
       proc.stderr?.removeAllListeners();
@@ -3385,10 +3403,9 @@ async function runIsolatedCheck(args: {
       abortReason = reason;
       forceKillTimer = terminateManagedSubprocess(proc);
     };
+    removeAbortListener = bindAuditorAbort(ctx.signal, () => killProc("user"));
     armIdleTimer();
     startCountdownTicker();
-    if (ctx.signal?.aborted) killProc("user");
-    else ctx.signal?.addEventListener("abort", () => killProc("user"), { once: true });
   });
 }
 

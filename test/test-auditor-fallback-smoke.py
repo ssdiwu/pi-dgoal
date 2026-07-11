@@ -217,9 +217,14 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
     start = time.time()
     try:
         source_auth = Path.home() / ".pi" / "agent" / "auth.json"
-        auth = json.loads(source_auth.read_text(encoding="utf-8"))
+        source_auth_data = json.loads(source_auth.read_text(encoding="utf-8"))
+        # 只给 smoke 所需的两个 provider 复制认证，避免异常终止时泄漏无关凭据。
+        auth = {provider: source_auth_data[provider] for provider in ("zai-coding-cn", "minimax-cn")}
         auth["zai-coding-cn"]["key"] = "invalid-smoke-key"
-        (Path(agent_dir) / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
+        auth_path = Path(agent_dir) / "auth.json"
+        auth_fd = os.open(auth_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(auth_fd, "w", encoding="utf-8") as auth_file:
+            json.dump(auth, auth_file)
         # 候选链放在临时受信任项目路径；agent dir 仅承载临时认证副本。
         project_pi_dir = Path(work_dir) / ".pi"
         project_pi_dir.mkdir(parents=True)
