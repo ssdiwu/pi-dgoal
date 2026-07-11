@@ -8,7 +8,7 @@
 
 真正值得吸收的不是 `.claude/agents/builder.md`、`.claude/commands/loop.md` 这些文件形态，而是两条工程纪律：**checker 报告必须原样保真传递**，以及**停止规则要识别“同一失败/无进展/回归”这类非全绿失败模式**。这两条可转化为 dgoal 的失败报告钉回和终审失败历史增强。
 
-> 2026-06 状态更新：候选 1（报告保真钉回）已落地为 ADR 0011（`phaseFeedbackById` + `finalFeedback` 持久化到 LoopGoal，原文不压缩、不二手转述）；候选 2（同源/无进展/回归自动判定）在 ADR 0011 里被显式搁置，dgoal 只负责把原始报告稳定交还主 agent，是否同源/无进展由主 agent 自行判断，不建自动判定器；候选 4 降级为观察项（核心痛点已由 ADR 0011 从根上解决，暂无 dgoal 自身 auditor 报告模糊的真实样例）。详见下方 3.3 各候选状态标注。
+> 2026-06 状态更新：候选 1（报告保真钉回）已落地为 ADR 0011（`phaseFeedbackById` + `finalFeedback` 持久化到 LoopGoal，原文不压缩、不二手转述）；候选 2（同源/无进展/回归自动判定）在 ADR 0011 里被显式搁置，dgoal 只负责把原始报告稳定交还主 agent，是否同源/无进展由主 agent 自行判断，不建**审核失败归因**自动判定器；候选 4 降级为观察项（核心痛点已由 ADR 0011 从根上解决，暂无 dgoal 自身 auditor 报告模糊的真实样例）。此结论不覆盖后续加入的运行时空转保护：`agent_end` 连续 3 轮正常结束且无工具调用时暂停（`no_progress`），它只判断宿主可观察的工具活动，不解释审核报告的失败同源性。详见下方 3.3 各候选状态标注。
 
 ## 2. 核心机制速览
 
@@ -82,7 +82,7 @@
 
 **候选 1：终审/阶段建检失败报告保真钉回 —— ✅ 已落地（ADR 0011，2026-06）。** 推文最强的工程教训是“不要总结 checker 报告，要原样转发”。dgoal 已在 ADR 0011 把建检反馈持久化进 `LoopGoal`：阶段建检反馈走 `phaseFeedbackById`（按 phaseId 定位，该 phase 通过后清除），终审反馈走 `finalFeedback`（终审通过或 goal 清除后结束，`audit_failed_3x` 暂停时仍保留）。报告保存 auditor/phase-check 原文，不再生成 summary、不压缩、不二手转述。当初假设的 `lastAuditReport` / `lastPhaseCheckReport` 轻量字段思路，已由这两个字段实现落地。
 
-**候选 2：失败模式从“3 次不过”细化到“同源失败/无进展/回归” —— ⚠️ 已显式搁置（ADR 0011，2026-06）。** dgoal 已有 3 次终审不过暂停，ADR 0011 明确决定**不建自动判定器**：dgoal 只负责把检查 agent 的原始报告稳定交还主 agent，是否同源失败 / 无进展 / 需要拆 task 或升级 blocked，由主 agent 基于报告自行判断。当初设想（auditor 输出 failure key + 轻量 fingerprint + `rejectedHistory`）作为有意不做的边界记录在案，除非未来出现“主 agent 反复在同源失败上空转且自身判断不出来”的真实样例。
+**候选 2：失败模式从“3 次不过”细化到“同源失败/无进展/回归” —— ⚠️ 已显式搁置（ADR 0011，2026-06）。** dgoal 已有 3 次终审不过暂停，ADR 0011 明确决定**不建审核失败归因自动判定器**：dgoal 只负责把检查 agent 的原始报告稳定交还主 agent，是否同源失败 / 无进展 / 需要拆 task 或升级 blocked，由主 agent 基于报告自行判断。当初设想（auditor 输出 failure key + 轻量 fingerprint + `rejectedHistory`）作为有意不做的边界记录在案，除非未来出现“主 agent 反复在同源失败上空转且自身判断不出来”的真实样例。这里不与运行时 `no_progress` 熔断冲突：后者只在连续 3 轮正常结束、无工具调用时保护 token，不分析审核报告。
 
 **候选 3：把 deterministic check 放在 auditor 判定的最后硬 gate。** 推文和 Sonar 文章都强调客观检查不能被 LLM 意见替代。dgoal 的 auditor 已能跑 `bash`，但 task evidence 还是自由文本。未来若真实痛点出现，可把 roadmap 里的 evidence 结构化增强落成 `{ command, expected, actual? }`，让 auditor 先复跑 deterministic evidence，再做语义验收。涉及：`Task.evidence` 数据结构、`dgoal_plan` schema、`buildPhaseCheckTask`、文档与迁移兼容。
 

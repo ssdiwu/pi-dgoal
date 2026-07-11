@@ -4,9 +4,9 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **Unreleased**: configure ordered phase and goal auditor candidate chains in `pi-dgoal.json`, with structured isolated-registry preflight, explicit `null` inheritance, and safe first-audit template initialization. See `CHANGELOG.md` for details.
+> **v0.5.7**: paused goals are distinguishable from missing goals, normal agent turns without tool activity pause after three turns, new plans assign consecutive phase IDs, and explicit auditor quota exhaustion can fall back to the next candidate. This release also includes ordered auditor candidate chains in `pi-dgoal.json`, structured isolated-registry preflight, explicit `null` inheritance, and safe first-audit template initialization. See `CHANGELOG.md` for details.
 >
-> **v0.5.3**: independent auditor model selection via `pi-dgoal.json` + exhaustive audit prompts + previous-feedback injection for re-audits. (v0.5.2: build-check feedback persistence + event-stream auditor liveness + transparent auditor retries + gate-lock progression guard + bare `/dgoal` startup carryover, see `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`.)
+> **Previous**: v0.5.3 added independent auditor model selection and previous-feedback injection; v0.5.2 added build-check feedback persistence, event-stream auditor liveness, transparent auditor retries, gate-lock progression guard, and bare `/dgoal` startup carryover.
 
 ## Install
 
@@ -49,7 +49,7 @@ During dgoal execution:
 Control the goal:
 
 ```text
-/dgoal status | s   # detailed query modal for full plan details, or an empty dgoal state when none is active
+/dgoal status | s   # detailed query modal for full plan details; missing goal shows empty state, paused goal remains read-only
 /dgoal pause  | p   # stop auto-continuation (keep goal)
 /dgoal resume | r   # resume paused goal
 /dgoal clear  | c   # remove goal from session
@@ -86,7 +86,7 @@ pending ──→ active ──→ done                # happy path
               │  │  ×3 final-audit failures
               ↓  ↓
             paused (audit_failed_3x) ──/dgoal resume──→ active
-            paused (user_abort / model_error / audit_error) ──/dgoal resume──→ active
+            paused (user_abort / model_error / audit_error / no_progress) ──/dgoal resume──→ active
 ```
 
 See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the rejected/paused contract, and `doc/10-架构与运行/` for the current implementation.
@@ -140,7 +140,7 @@ Before an audit starts, dgoal queries the isolated auditor's structured Pi `get_
 
 - Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
 - Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.
-- Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`). Each configured candidate retries up to 3 times on the same model; structured technical failures (HTTP 401/403/404/408/429/5xx, network, zero-output timeout) switch to the next candidate, while HTTP 400, explicit `<REJECTED>`, and user interruption do not switch. Partial output that lacks a termination marker is carried as bounded `<partial_audit_feedback>` across same-model retries and then to the next candidate. When all candidates are exhausted the goal is safely paused and `/dgoal resume` continues; dgoal never silently falls back to the execution model.
+- Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`). Each configured candidate retries up to 3 times on the same model; structured technical failures (HTTP 401/403/404/408/429/5xx, network, zero-output timeout) and explicit pure-text quota exhaustion (`usage/plan/rate limit` reached/exceeded/hit/exhausted, `quota exceeded`, `insufficient quota`) switch to the next candidate, while HTTP 400, explicit `<REJECTED>`, and user interruption do not switch. Partial output that lacks a termination marker is carried as bounded `<partial_audit_feedback>` across same-model retries and then to the next candidate. When all candidates are exhausted the goal is safely paused and `/dgoal resume` continues; dgoal never silently falls back to the execution model.
 - Audit progress is streamed back through the tool call, including liveness updates such as `thinking`, `tool_running`, and `idle Ns/120s`; if the check stops mid-way, partial output is still returned.
 - Audit reports use a stricter acceptance style: GWT-like PASS / FAIL / BLOCKER items plus a code-and-doc consistency section.
 - Escape hatch: `PI_DGOAL_NO_AUDIT=1` skips the audit (debugging only).

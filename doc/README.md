@@ -15,20 +15,21 @@
 7. `30-路线图/30-项目路线图.md` — 实现切片排期、待拷问项（已全部完成）、暂不做/不做边界
 8. `40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md` — v0.5.2 实施方案（9 个切片：反馈持久化、事件流活性、三态/重试、闸门锁定、prompt/UI 边界、裸 /dgoal 承接启动）
 9. `../index.ts` — 扩展入口，单文件实现
+10. `决策档案/README.md` — 决策档案索引；再按需深入对应 ADR（当前至 0016）
 
 需要了解设计依据和外部参考时：
 
-10. `决策档案/` — 架构决策记录，索引见 `决策档案/README.md`（0006 是基本盘，统领架构）
-11. `20-能力参考/20-范式对比-plan-mode-loop-goal.md` — 三范式对比，dgoal 为什么是 goal 范式
-12. `20-能力参考/21-rpiv-todo借鉴.md` — TUI 浮层/reducer/持久化借鉴
-13. `20-能力参考/22-ADaPT与建检模式.md` — 按需分解 + 独立验证的理论依据
-14. `20-能力参考/23-老金Goal×Loop搭配指南参考.md` — “愿望 vs 可验收 goal”用户教育参考（verification 必填的外部启发）
-15. `20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md` — Pi `ctx.ui.custom()` modal 选型调研
-16. `20-能力参考/25-dgoal-s-modal变体探索参考.md` — `/dgoal s` 三个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘
-17. `20-能力参考/26-Datawhale-LoopEngineering三文件循环参考.md` — Datawhale 推文三文件循环、图片机制核对与 dgoal 借鉴判断
-18. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
-19. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
-20. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
+11. `20-能力参考/` — 外部事实参考，不决定排期
+12. `20-能力参考/20-范式对比-plan-mode-loop-goal.md` — 三范式对比，dgoal 为什么是 goal 范式
+13. `20-能力参考/21-rpiv-todo借鉴.md` — TUI 浮层/reducer/持久化借鉴
+14. `20-能力参考/22-ADaPT与建检模式.md` — 按需分解 + 独立验证的理论依据
+15. `20-能力参考/23-老金Goal×Loop搭配指南参考.md` — “愿望 vs 可验收 goal”用户教育参考（verification 必填的外部启发）
+16. `20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md` — Pi `ctx.ui.custom()` modal 选型调研
+17. `20-能力参考/25-dgoal-s-modal变体探索参考.md` — `/dgoal s` 三个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘
+18. `20-能力参考/26-Datawhale-LoopEngineering三文件循环参考.md` — Datawhale 推文三文件循环、图片机制核对与 dgoal 借鉴判断
+19. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
+20. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
+21. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
 
 历史材料：
 
@@ -39,7 +40,7 @@
 | 目录 / 文件 | 职责 | 是否权威 |
 |---|---|---|
 | `术语表.md` | 项目语言、核心概念定义（含建检循环）、禁用同义词 | 是，命名权威 |
-| `决策档案/` | 架构决策记录；只收"难逆转、无上下文会困惑、有真实权衡"的决策 | 是，决策权威 |
+| `决策档案/` | 架构决策记录；入口为 `决策档案/README.md`，只收"难逆转、无上下文会困惑、有真实权衡"的决策 | 是，决策权威 |
 | `经验笔记.md` | 可改的做法与避坑经验（活页）；解决换 agent 会重走的坑时记 | 否，活页参考 |
 | `10-架构与运行/` | 当前架构：建检循环、状态机、工具命令、启动闸门、TUI 边界容错 | 是，当前实现权威 |
 | `20-能力参考/` | 范式对比、rpiv-todo 借鉴、ADaPT/建检模式调研 | 是，作为事实参考；不直接决定排期 |

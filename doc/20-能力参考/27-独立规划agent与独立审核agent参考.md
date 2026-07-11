@@ -34,7 +34,7 @@
 - `phaseAuditorModels` 供 `dgoal_check` 阶段建检使用，`goalAuditorModels` 供 `dgoal_done` 目标终审使用，各最多 3 个有序 `provider/model[:thinking]` 候选
 - 项目候选链整体优先、不混合来源；同来源复数字段 > 对应单值字段 > 旧 `auditorModel`，`null` 显式继承当次 `ctx.model` 并阻断继续降级；旧 `phaseAuditorModel` / `goalAuditorModel` / `auditorModel` 保持单候选兼容
 - 候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，预检失败保留候选交运行时判定
-- 审核器发生技术异常（HTTP 401/403/404/408/429/5xx、网络、零输出超时）时按候选顺序回退；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换；候选耗尽进入 `audit_error` 暂停，不静默回退执行模型
+- 审核器发生技术异常（HTTP 401/403/404/408/429/5xx、网络、零输出超时）或明确纯文本配额耗尽时按候选顺序回退；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换；候选耗尽进入 `audit_error` 暂停，不静默回退执行模型
 - 项目级配置只在 `ctx.isProjectTrusted()` 为真时生效，且来源优先级高于字段专用性
 
 所以 dgoal 现在已经从“独立审核上下文”进一步升级到了**“默认继承主模型、两级审核可配置候选链并在技术异常时回退”**。这和 Claude Code / Codex 的 per-agent model（按 agent 单独指定模型）能力对齐得更近，但仍保持最小边界：只拆审核器，不把 planner / executor / summarizer 一起做成多模型全家桶。
@@ -156,7 +156,7 @@ Aider 的 `/architect` 模式不是独立子会话编排，而是：
 - 配置来源：受信任项目 `.pi/pi-dgoal.json` > 全局 `~/.pi/agent/pi-dgoal.json`；旧 `phaseAuditorModel` / `goalAuditorModel` / `auditorModel` 兼容单候选回退
 - 值形态：Pi 原生 `provider/model[:thinking]`；具体值不随主会话换模或 Pi 重载变化，`null` 显式继承会话模型并阻断继续降级
 - 预检：与审核 child 同隔离边界的 Pi `get_available_models` 结构化结果；成功缓存、失败保留候选
-- 回退：仅技术异常（401/403/404/408/429/5xx、网络、零输出超时）切候选；部分输出同模型 3 次续审后跨候选携带；耗尽 `audit_error` 暂停
+- 回退：技术异常（401/403/404/408/429/5xx、网络、零输出超时）或明确纯文本配额耗尽切候选；部分输出同模型 3 次续审后跨候选携带；耗尽 `audit_error` 暂停
 - 首次实际审核仅在两级配置文件都不存在时以 `wx` 原子创建双 `null` 复数字段模板；已有坏配置只告警降级
 - 文档同步：`README.md`、`doc/10-架构与运行/12-工具命令与数据模型.md`
 

@@ -16,9 +16,9 @@
 
 ### 两种 paused 语义分离 + pauseReason 字段
 
-`LoopGoal` 加 `pauseReason?: "user_abort" | "model_error" | "audit_error" | "audit_failed_3x"`。resume 时按 reason 决定清不清零 rejected 计数：
+`LoopGoal` 加 `pauseReason?: "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress"`。resume 时按 reason 决定清不清零 rejected 计数：
 
-- 异常中断（user_abort / model_error / audit_error）：resume **不清零**（瞬时故障，重试合理，本就无 rejected 计数概念）。
+- 异常中断（user_abort / model_error / audit_error / no_progress）：resume **不清零**（瞬时故障或空转保护，重试合理，本就无 rejected 计数概念）。
 - 能力到顶（audit_failed_3x）：resume **清零** rejected 计数（用户主动再给 agent 一次机会）。
 
 ### 状态机全图
@@ -30,7 +30,7 @@ pending ──→ active ──→ done          (正常路径)
               │  │  ×3终审不过
               ↓  ↓
             paused (audit_failed_3x) ──resume清零──→ active
-            paused (user_abort/model_error/audit_error) ──resume不清零──→ active
+            paused (user_abort/model_error/audit_error/no_progress) ──resume不清零──→ active
 ```
 
 ## 为什么

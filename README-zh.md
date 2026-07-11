@@ -4,9 +4,9 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **Unreleased**：`pi-dgoal.json` 已支持阶段建检与目标终审分别选模，`null` 显式继承当前会话模型，并在首次审核安全初始化模板。详见 `CHANGELOG.md`。
+> **v0.5.7**：本版本区分 paused goal 与无目标、连续 3 轮正常结束却无工具调用时暂停、新 plan 连续分配 phase ID，并让明确的审核器配额耗尽错误回退下一候选；同时包含 `pi-dgoal.json` 审核候选链、隔离模型预检、`null` 继承和首次审核模板初始化。详见 `CHANGELOG.md`。
 >
-> **v0.5.3**：独立审核器选模配置（`pi-dgoal.json`）+ 穷举式审核 prompt + 重审反馈注入。（v0.5.2：建检反馈持久化 + 事件流化审核器活性 + 审核器透明重试 + 闸门锁定推进拦截 + 裸 `/dgoal` 承接启动，见 `doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md`。）
+> **此前版本**：v0.5.3 增加独立审核器选模与重审反馈注入；v0.5.2 增加建检反馈持久化、事件流化审核器活性、审核器透明重试、闸门锁定推进拦截和裸 `/dgoal` 承接启动。
 
 ## 安装
 
@@ -45,7 +45,7 @@ dgoal 执行中：
 控制目标：
 
 ```text
-/dgoal status | s   # 详细查询 Modal，查看完整 plan 细节；没有 active goal 时显示空 dgoal 状态
+/dgoal status | s   # 详细查询 Modal，查看完整 plan 细节；没有 goal 时显示空状态，paused goal 仍可只读查看
 /dgoal pause  | p   # 停止自动续跑（保留 goal）
 /dgoal resume | r   # 恢复暂停的 goal
 /dgoal clear  | c   # 清除当前 session 的 goal
@@ -82,7 +82,7 @@ pending ──→ active ──→ done                # 正常路径
               │  │  ×3 终审不过
               ↓  ↓
             paused (audit_failed_3x) ──/dgoal resume──→ active
-            paused (user_abort / model_error / audit_error) ──/dgoal resume──→ active
+            paused (user_abort / model_error / audit_error / no_progress) ──/dgoal resume──→ active
 ```
 
 状态定义见 `doc/术语表.md`，rejected/paused 契约见 `doc/决策档案/0004`，当前实现见 `doc/10-架构与运行/`。
@@ -136,7 +136,7 @@ pending ──→ active ──→ done                # 正常路径
 
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
-- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个已配置候选在同模型上最多重试 3 次；结构化技术错误（HTTP 401/403/404/408/429/5xx、网络、零输出超时）切下一候选，HTTP 400、明确 `<REJECTED>` 与用户中断不切换。缺终止标记的部分输出作为受限的 `<partial_audit_feedback>` 在同模型重试与跨候选间携带。全部候选耗尽才安全暂停，`/dgoal resume` 继续；绝不静默回退执行模型。
+- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个已配置候选在同模型上最多重试 3 次；结构化技术错误（HTTP 401/403/404/408/429/5xx、网络、零输出超时）及明确的纯文本配额耗尽（usage/plan/rate limit reached/exceeded/hit/exhausted、quota exceeded、insufficient quota）切下一候选，HTTP 400、明确 `<REJECTED>` 与用户中断不切换。缺终止标记的部分输出作为受限的 `<partial_audit_feedback>` 在同模型重试与跨候选间携带。全部候选耗尽才安全暂停，`/dgoal resume` 继续；绝不静默回退执行模型。
 - 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` / `idle Ns/120s` 等活性信息；即使中途停下，也会尽量返回部分审核输出
 - 审核报告更接近验收单：GWT 风格的 PASS / FAIL / BLOCKER 条目，加代码与文档一致性检查
 - 逃生通道：`PI_DGOAL_NO_AUDIT=1` 跳过审核（仅调试）

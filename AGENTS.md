@@ -7,7 +7,7 @@
 1. `README.md`（功能、安装、使用、完成审核机制、设计边界——必读）
 2. `doc/术语表.md`（含建检循环第一性原理 + 全部术语定义）
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
-4. `doc/决策档案/`（架构决策记录 0001-0015；0006 是建检循环基本盘，0008 是 `/dgoal s` modal 选型，0011/0012 是 v0.5.2 基本盘，0013-0015 是审核器配置落点、双范围专用模型与错误回退候选链）
+4. `doc/决策档案/`（架构决策记录 0001-0016；0006 是建检循环基本盘，0008 是 `/dgoal s` modal 选型，0011/0012 是 v0.5.2 基本盘，0013-0015 是审核器配置落点、双范围专用模型与错误回退候选链，0016 是独立验收条件与用户复核边界）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
 6. `index.ts`（扩展入口，单文件实现）
 
@@ -24,7 +24,7 @@ pi-dgoal/
 │   ├── 30-路线图/                    ← 实现切片排期
 │   ├── 40-版本实施方案/              ← 版本级方案（惰性）
 │   ├── 90-归档/                      ← 拷问过程等历史
-│   └── 决策档案/                     ← 架构决策记录（0001-0015）
+│   └── 决策档案/                     ← 架构决策记录（0001-0016）
 ├── test/                            ← 测试目录；完整地图与命令见 test/README.md
 │   ├── *.test.ts                     ← Bun 单元 / 集成测试
 │   ├── test-extension-rpc.py         ← RPC 加载与命令注册测试
@@ -64,7 +64,7 @@ npm test              # 全量 bun test
 
 **AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用宿主 Pi 的 `-ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展（`-ne` 禁扩展发现、`-ns/-np` 禁 skill/prompt 发现），让主模型真实跑一个多 phase dgoal，覆盖 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。driver 会跳过 npm 注入的项目 local `node_modules/.bin/pi`（避免其版本落后于用户模型注册表）；可用 `PI_DGOAL_SMOKE_PI` 显式覆盖，`npm run test:smoke:runtime` 验证选择逻辑。⚠️ 消耗真实 token，需网络与已配置 provider。关键约束：启动闸门与建检依赖 `ui.select` 确认，纯 `-p`/`--mode json` 下 UI 方法是 no-op 会跑不通，必须用 `--mode rpc` + driver 注入确认响应；隔离扩展发现用 `-ne -ns -np`，**不要**设空 `PI_CODING_AGENT_DIR`（会把 provider 凭据一起隔离，pi 拿不到 API key 卡在网络层），凭据靠继承真实配置保留。
 
-**人工 TUI smoke（仍不可省）**：浮层/overlay/modal 渲染、启动闸门确认 UI 的真实交互、终审 rejected 回环等纯渲染与交互行为，仍需在 Pi TUI 用真实模型做人工 smoke test。
+**人工 TUI smoke（用户复核项）**：浮层/overlay/modal 渲染、启动闸门确认 UI 的真实交互、终审 rejected 回环等纯渲染与交互行为，仍建议用户在 Pi TUI 用真实模型人工复核；除非在当前 goal 的冻结 verification 中明确列入，不作为 dgoal phase/goal 的自动完成门。依据 ADR 0016。
 
 ## 发版流程
 
@@ -89,7 +89,7 @@ npm test              # 全量 bun test
 
 - `doc/术语表.md` — 术语精确定义
 - `doc/90-归档/Task-Plan设计底稿-拷问过程.md` — 507-grill 拷问全过程（1-25 轮，历史追溯）
-- `doc/决策档案/` — 架构决策记录（0001-0015）
+- `doc/决策档案/` — 架构决策记录（0001-0016）
 
 详见 [`doc/README.md`](./doc/README.md) 的阅读地图。
 

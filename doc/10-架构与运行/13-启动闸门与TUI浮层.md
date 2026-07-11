@@ -51,7 +51,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **A-line i18n 软依赖**:浮层、状态栏、通知、启动闸门确认 UI 等用户可见文案通过 `pi-di18n` bundle 本地化;缺失 `pi-di18n` 时降级为内置中文。模型侧 prompt、tool description、schema description 不在本地化范围,避免改变 agent 行为。
 - **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。
 - **10 行折叠**:浮层自身最多渲 10 行(heading + body + 底部 hint),给 Pi core 的 widget 区域留余量,避免触发 `(widget truncated)`;溢出时保留底部 `Ctrl+O 显示/隐藏 task` hint,并用 `+N more` 摘要。
-- **空时隐藏**:无 plan 或 goal 不活跃时 `setWidget(key, undefined)`。
+- **空时隐藏**:无 plan 或 goal 为 pending/已 clear 时 `setWidget(key, undefined)`；paused goal 保留冻结的 plan 浮层供只读查看。
 - **刷新时机**:`tool_execution_end`(toolName 是 dgoal_plan/dgoal_check)+ `agent_end` 推进 iteration 时。注意 `tool_execution_end` 只读 `getState()`,不 replay(branch stale)。
 
 ### 状态栏(现有,保留)
@@ -79,7 +79,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **底部 hint**:内容超过可见高度时显示 offset 指示 + 滚动键位;短内容 / 空状态只显示 `ESC/Ctrl+C` 关闭提示。
 - **滚动**:vim 风格 `j` 下、`k` 上;`↑↓` 方向键、`PgDn/PgUp` 跳 10、`End/G` 跳底、`Home/g` 跳顶、`ESC` 退出
 - **overlay 配置**：`anchor: "center"`, `width: "100%"`, `maxHeight: "85%"`, `margin: 1`（原 top-center，v0.5+ 切 center，见 ADR 0008 追加决策）
-- **空状态**：没有 active goal 时也弹同一个 center modal，显示“当前没有进行中的 dgoal”、`/dgoal <goal>` 引导和 `ESC/Ctrl+C` 关闭提示；非 TUI / custom 不可用时降级为 notify。
+- **空状态**：没有 goal 时弹同一个 center modal，显示“当前没有进行中的 dgoal”、`/dgoal <goal>` 引导和 `ESC/Ctrl+C` 关闭提示；paused goal 仍存在，`/dgoal status` 展示其 plan 只读内容；非 TUI / custom 不可用时降级为 notify。
 
 **为什么 modal 本次彩色化、持续浮层暂不**:持续浮层彩色化涉及把 `aboveEditor widget` 从 `string[]` 升级为 theme-aware factory,会引入新的 TUI 渲染 bug 面;本次浮层只统一状态字符、结构和 done 删除线,彩色化延后到下一版本(见 `doc/30-路线图/30-项目路线图.md`)。
 
