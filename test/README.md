@@ -9,6 +9,7 @@ npm run test:context   # bun test test/context-input-cap.test.ts
 npm run test:rpc       # python3 test/test-extension-rpc.py
 npm run test:smoke:runtime # python3 test/test-ai-smoke-runtime.py（smoke 的 Pi 运行时选择，不消耗 token）
 npm run test:smoke         # python3 test/test-ai-smoke.py（AI 驱动 smoke，消耗真实 token）
+python3 test/test-auditor-fallback-smoke.py # 真实候选运行时回退 smoke，消耗真实 token
 npm test               # bun test（全量，跑所有 *.test.ts）
 ```
 

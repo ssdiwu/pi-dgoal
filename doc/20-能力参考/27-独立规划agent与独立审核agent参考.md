@@ -164,29 +164,11 @@ Aider 的 `/architect` 模式不是独立子会话编排，而是：
 
 - 只拆 phase / goal 两级 auditor，不拆 `plannerModel` / `executorModel` / `summarizerModel` 全家桶
 - 默认仍 inherit（继承主模型），有配置时再覆盖
-- 不做自动换模型 / 备用模型
+- 不把业务 `REJECTED`、HTTP 400 或用户中断当模型故障换模型；仅结构化技术错误按候选回退，耗尽后暂停
 
-**候选 2：把 auditor 从“闸门型 reject”增强成“穷举型 review” —— 最高优先级。**
+**候选 2：把 auditor 从“闸门型 reject”增强成“穷举型 review” —— 已落地。**
 
-当前 prompt 只要求“逐条对照目标里的可验证要求”，并没有明确要求“在预算内尽量提全所有已发现问题，不要找到第一个 blocker（阻塞项）就停”。这会天然导致你说的反复：
-
-- 第一次看到 A，reject
-- 主线程修 A
-- 第二次才看到 B
-- 再修 B
-
-建议吸收 `review.md` 的三轴框架，把 auditor 输出升级为：
-
-- `Standards / Spec / Code Quality` 三类发现
-- 每类 findings（问题发现）尽量提全
-- 明确区分 `blocker / fail / warning`
-- 每条带 evidence（证据）与定位
-
-涉及改动：
-
-- `index.ts`：`AUDITOR_SYSTEM_PROMPT`、`buildAuditorTask()` / `buildPhaseCheckTask()`（若有）
-- 反馈结构：`PhaseCheckFeedback` / `FinalCheckFeedback` 可考虑从纯 `report: string` 演进到 `report + findings[]`
-- 文档：`doc/10-架构与运行/14-*`（若已有 TUI 边界文档可补）与能力参考
+`PHASE_CHECK_SYSTEM_PROMPT` 与 `AUDITOR_SYSTEM_PROMPT` 现在明确要求在本轮预算内尽量提全所有已发现问题，不因第一个 blocker（阻塞项）停下；输出按 GWT（Given/When/Then）验收条件和代码/文档一致性分段，区分 PASS / FAIL / BLOCKER。原始 report 继续保真持久化；是否演进为结构化 findings 仍属候选 3。
 
 **候选 3：给 phase / final audit 增加 issue ledger（问题账本）而不是只存原始报告 —— 中高优先级。**
 
@@ -209,7 +191,7 @@ Jules 和 Codex 的共同优点是 reviewer 有更稳定的“上次发现了什
 
 Codex auto-review 有 rejection circuit breaker；dgoal 目前只有：
 
-- `auditor_error` 三次重试
+- 同模型审核异常最多三次重试；结构化技术错误可切候选，候选耗尽进入 `audit_error`
 - final audit（终审）连续 3 次 rejected -> `paused(audit_failed_3x)`
 
 但 phase check（阶段建检）理论上还可能长时间反复。可以考虑：
@@ -253,11 +235,11 @@ Codex auto-review 有 rejection circuit breaker；dgoal 目前只有：
 
 ### 当前项目内
 
-- `index.ts:1559-1580` — `buildProposePrompt()`：当前启动闸门如何要求主 agent 读代码、整理 plan、提交 `dgoal_propose`
-- `index.ts:2282-2291` — `buildCheckCliArgs()`：当前 auditor 子进程参数构造，模型继承点在这里
-- `index.ts:2297-2419` — `runIsolatedCheck()`：当前独立审核 runtime（运行时）核心接缝
-- `index.ts:2494-2547` — `runCompletionAuditor()` / `runPhaseCheck()`：终审与阶段建检都复用同一套隔离审核
-- `index.ts:2729-2738` — `AUDITOR_SYSTEM_PROMPT`：当前 auditor 职责边界与通过/拒绝判定规则
+- `index.ts` 的 `buildProposePrompt()`：当前启动闸门如何要求主 agent 读代码、整理 plan、提交 `dgoal_propose`
+- `index.ts` 的 `buildCheckCliArgs()`：当前 auditor 子进程参数构造
+- `index.ts` 的 `runIsolatedCheck()` / `runAuditorWithCandidates()`：独立审核 runtime（运行时）与候选调度接缝
+- `index.ts` 的 `runCompletionAuditor()` / `runPhaseCheck()`：终审与阶段建检共用候选调度
+- `index.ts` 的 `AUDITOR_SYSTEM_PROMPT` / `PHASE_CHECK_SYSTEM_PROMPT`：穷举发现、PASS / FAIL / BLOCKER 与通过/拒绝判定规则
 - `/Users/diwu/.pi/agent/prompts/review.md` — 审查三轴与输出格式骨架，可吸收为 auditor 的 findings（问题发现）结构
 
 ### 外部一手源
