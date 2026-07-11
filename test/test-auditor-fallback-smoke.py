@@ -12,6 +12,7 @@ dgoal_check / dgoal_done 的 details 必须含 fallback 尝试轨迹。
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -41,6 +42,8 @@ SMOKE_GOAL = (
     "然后独立验证文件内容与上述要求完全一致。请按「实现」「验证」两个阶段组织 plan，"
     "每个 task 做完用 dgoal_plan 推进状态，每阶段 task 全部终态后调用 dgoal_check 建检，"
     "全部 phase 建检通过后调用 dgoal_done 结束。"
+    "只能通过 /dgoal 启动闸门推进；在 dgoal_propose 成功激活前不得创建文件或改走直接实现。"
+    "若任一 dgoal 工具报告启动/状态错误，立刻停止并报告错误，绝不以直接完成文件任务替代 dgoal 流程。"
 )
 TOTAL_TIMEOUT = 900
 READ_TIMEOUT = 6
@@ -76,9 +79,44 @@ def start_runtime_fallback_session(work_dir: str, agent_dir: str) -> RpcSession:
         bufsize=1,
         env=env,
         cwd=work_dir,
+        start_new_session=True,
     )
     # RpcSession 保留 tmp_dir 字段仅为 driver 兼容；复用 agent_dir，外层 finally 统一清理。
     return RpcSession(proc=proc, tmp_dir=agent_dir, work_dir=work_dir)
+
+
+def close_runtime_fallback_session(session: RpcSession) -> str:
+    """终止 Pi 及其审核子进程，不阻塞读取可能被子进程继承的 stderr pipe。"""
+    proc = session.proc
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        # 清理不得因进程已退出或平台异常阻断外层临时目录回收。
+        pass
+
+    if proc.stderr is None:
+        return ""
+    try:
+        os.set_blocking(proc.stderr.fileno(), False)
+        chunks: list[bytes] = []
+        while True:
+            try:
+                chunk = os.read(proc.stderr.fileno(), 8192)
+            except BlockingIOError:
+                break
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks).decode(errors="replace").strip()
+    finally:
+        proc.stderr.close()
 
 
 def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
@@ -199,7 +237,7 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
         result["duration"] = time.time() - start
         if session is not None:
             try:
-                result["stderr_tail"] = session.close()
+                result["stderr_tail"] = close_runtime_fallback_session(session)
             except Exception as exc:
                 result["stderr_tail"] = f"close 异常: {exc!r}"
                 result["error"] = result.get("error") or result["stderr_tail"]
@@ -227,6 +265,20 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
         and update.get("transition") == "candidate_fallback"
         for update in result.get("candidate_fallback_updates", [])
     )
+    def has_complete_fallback(trace: dict[str, Any]) -> bool:
+        attempts = trace.get("auditorAttempts", [])
+        return (
+            any(a.get("modelId") == PRIMARY_MODEL and a.get("outcome") == "fallback" for a in attempts)
+            and any(a.get("modelId") == BACKUP_MODEL and a.get("outcome") == "approved" for a in attempts)
+        )
+    result["phase_fallback_count"] = sum(
+        trace.get("tool") == "dgoal_check" and has_complete_fallback(trace)
+        for trace in traces
+    )
+    result["goal_fallback_seen"] = any(
+        trace.get("tool") == "dgoal_done" and has_complete_fallback(trace)
+        for trace in traces
+    )
 
     payload = json.dumps(result, ensure_ascii=False, indent=2)
     print(payload)
@@ -238,6 +290,8 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
         and result.get("backup_model_used") is True
         and result.get("primary_fallback") is True
         and result.get("candidate_fallback_seen") is True
+        and result.get("phase_fallback_count", 0) >= 2
+        and result.get("goal_fallback_seen") is True
         and result.get("file_exists") is True
         and result.get("file_content") == EXPECTED_CONTENT
     )
@@ -253,6 +307,10 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
             print("  - 无主候选 fallback 尝试轨迹", file=sys.stderr)
         if not result.get("candidate_fallback_seen"):
             print("  - 未捕获 candidate_fallback 进度事件", file=sys.stderr)
+        if result.get("phase_fallback_count", 0) < 2:
+            print(f"  - 完成回退的 phase 建检少于两次: {result.get('phase_fallback_count', 0)}", file=sys.stderr)
+        if not result.get("goal_fallback_seen"):
+            print("  - 目标终审未留下完整回退轨迹", file=sys.stderr)
         if not result.get("file_exists"):
             print("  - 产物文件不存在", file=sys.stderr)
         if result.get("file_content") != EXPECTED_CONTENT:
@@ -266,10 +324,18 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
 def main() -> int:
     work_dir = tempfile.mkdtemp(prefix="pi-dgoal-fallback-smoke-work.")
     agent_dir = tempfile.mkdtemp(prefix="pi-dgoal-fallback-agent.")
+
+    def exit_for_signal(signum: int, _frame: Any) -> None:
+        # 将外部终止转为可展开 finally 的 SystemExit，保证认证副本不遗留。
+        raise SystemExit(128 + signum)
+
+    previous_handlers = {sig: signal.signal(sig, exit_for_signal) for sig in (signal.SIGINT, signal.SIGTERM)}
     try:
         return run_smoke_main(work_dir, agent_dir)
     finally:
-        # 覆盖启动、运行、关闭、产物核验、KeyboardInterrupt/SystemExit 等所有退出路径。
+        for sig, handler in previous_handlers.items():
+            signal.signal(sig, handler)
+        # 覆盖启动、运行、关闭、产物核验及 SIGINT/SIGTERM 的所有退出路径。
         shutil.rmtree(agent_dir, ignore_errors=True)
         shutil.rmtree(work_dir, ignore_errors=True)
 

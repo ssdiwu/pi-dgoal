@@ -38,7 +38,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
 | `test-ai-smoke-runtime.py` | AI smoke 的 Pi 运行时选择：模拟 npm PATH（路径）含项目旧 `node_modules/.bin/pi` 时跳过它并选择宿主 Pi；`PI_DGOAL_SMOKE_PI` 覆盖优先。 |
 | `test-ai-smoke.py` | AI 驱动 smoke：跳过 npm 注入的项目 local Pi，使用宿主 Pi（可用 `PI_DGOAL_SMOKE_PI` 覆盖）；以 `-ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑多 phase dgoal，自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |
-| `test-auditor-fallback-smoke.py` | 真实模型候选链运行时回退 smoke：候选链位于临时受信任项目 `.pi/pi-dgoal.json`；临时认证副本仅将 ZAI 主候选 key 置为无效，主 agent 固定有效 MiniMax。预检识别两候选后，主候选真实 HTTP 401 → `auditorAttempts` 记录 `fallback` → MiniMax 备用候选完成 phase check / goal audit。断言 `tool_execution_update` 的 `candidate_fallback`、最终 attempts、备用模型和文件产物；认证与工作目录退出即清理。⚠️ 消耗真实 token，不进 CI。 |
+| `test-auditor-fallback-smoke.py` | 真实模型候选链运行时回退 smoke：候选链位于临时受信任项目 `.pi/pi-dgoal.json`；临时认证副本仅将 ZAI 主候选 key 置为无效，主 agent 固定有效 MiniMax。预检识别两候选后，主候选真实 HTTP 401 → `auditorAttempts` 记录 `fallback` → MiniMax 备用候选完成 phase check / goal audit。断言 `tool_execution_update` 的 `candidate_fallback`、两次 phase 与一次 goal 的完整回退 attempts、备用模型和文件产物；Pi 以独立进程组收尾，认证与工作目录在正常退出或 `SIGTERM`（终止信号）时清理。⚠️ 消耗真实 token，不进 CI。 |
 
 ## 边界
 
