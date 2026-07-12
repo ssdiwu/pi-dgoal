@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.8] - 2026-07-12
+
 ### Changed
 
 - **冻结 LLM 可独立验收契约**：`dgoal_propose` 现在要求 goal 与每个 phase 提供结构化 `acceptanceCriteria`（criterion + evidence）；缺失或空条件在启动闸门前拒绝。结构校验和 evidence 形态检查通过后，再由当前会话 LLM 在写入 `pendingProposal` 前做计划级语义预审；人工条件与可复验证据的组合会被拒绝或改写到 `userReviewItems`；`rewrite` 必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除条件，缺失或无关映射 fail-closed。预审异常/中断 fail-closed。`buildProposePrompt` 第 5 条继续引导 agent 在提交前二次复核，审核器只对已冻结契约兜底。新 goal 的冻结完成门只有 `acceptanceCriteria`；`verification` 降级为 goal 级验收说明，不单独作为终审完成门。`userReviewItems` 用于声明 TUI、视觉和实际使用复核项，终审通过后与 agent 补充及审核器非阻塞建议合并输出，不成为 phase/goal 完成门；完成文本明确这些事项不代表人工体验已经验证。终审 rejected 报告中的用户复核建议也会持久化并在后续 approved 时合并交付。重审时上一轮反馈中的越权人工体验完成门不继续作为完成门，只按冻结契约重审。审核器只审冻结契约，不从 AGENTS/README 或人工体验要求运行时扩容完成门。详见 ADR 0016。

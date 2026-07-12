@@ -4,7 +4,7 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.5.7**: paused goals are distinguishable from missing goals, normal agent turns without tool activity pause after three turns, new plans assign consecutive phase IDs, and explicit auditor quota exhaustion can fall back to the next candidate. This release also includes ordered auditor candidate chains in `pi-dgoal.json`, structured isolated-registry preflight, explicit `null` inheritance, and safe first-audit template initialization. See `CHANGELOG.md` for details.
+> **v0.5.8**: the startup gate now performs a current-session semantic preflight before writing `pendingProposal`, freezing independently verifiable acceptance criteria and non-blocking user review items. Startup, resume, completion, and asynchronous PlanOverlay UI failures are fail-soft so state persistence and agent prompts continue independently. See `CHANGELOG.md` for details.
 >
 > **Previous**: v0.5.3 added independent auditor model selection and previous-feedback injection; v0.5.2 added build-check feedback persistence, event-stream auditor liveness, transparent auditor retries, gate-lock progression guard, and bare `/dgoal` startup carryover.
 
