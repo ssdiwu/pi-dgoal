@@ -8,11 +8,11 @@
 /dgoal <objective>            # 路径 A：显式目标启动
 /dgoal                       # 路径 B：承接前文共识启动（v0.5.2）
   ↓
-主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 可选初始 task)
+主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项)
   ↓
-dgoal_propose execute:存参数 + 触发确认 UI
+dgoal_propose execute：结构校验 → 当前会话 LLM 计划语义预审 →（通过或带完整精确迁移映射的改写后）写入 pendingProposal；再触发确认 UI
   ↓
-弹 ctx.ui.select 确认 UI(默认列 goal + verification + readiness + 边界/缺口提示 + phases + task 数量;用户可点入口查看 task 明细):
+弹 ctx.ui.select 确认 UI(默认列 goal + verification + 独立验收条件 + 用户复核项 + readiness + 边界/缺口提示 + phases + task 数量;用户可点入口查看 task 明细):
   ├─ 确认 → 写入 goal(pending→active),发 START prompt 进 loop
   ├─ 拒绝 → 中止,不进 loop
   └─ 输入反馈(ctx.ui.editor)→ 反馈喂回主代理 → 重新整理 → 再弹确认
@@ -33,7 +33,11 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 
 纯自主模式(agent 直接进 loop 自建 plan)的失败是 plan 跑偏在 loop 内不可见,用户只能等结束或中途打断才发现--南辕北辙往往体现在步骤拆解里。启动闸门用一次人工确认把这个成本前置付掉。
 
-本轮改动起，启动闸门不只展示“做什么”（goal / verification / phases），还展示 **plan 级就绪度自检**：至少到 L2（目标 + 验收口 + 阶段计划），若 `nonGoals` / `guardrails` / `budget` 缺失，则在确认框里显式暴露缺口，尤其是 `non-goals` 边界不足。
+本轮改动起，启动闸门不只展示“做什么”（goal / verification / phases），还冻结并展示两类完成信息：**独立验收条件**（goal + 每个 phase 必须具备，缺失则提案直接拒绝）与**完成后用户复核项**（可选，只在完成回复中告知用户，不进入 phase/goal 完成门）。计划仍展示 **plan 级就绪度自检**：至少到 L2（目标 + 验收口 + 独立验收条件 + 阶段计划），若 `nonGoals` / `guardrails` / `budget` 缺失，则在确认框里显式暴露缺口。
+
+### 验收契约边界
+
+`dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成；语义预审改写时必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求，不能静默丢弃。审核器只能复核冻结条件，不能在 loop 运行中依据 AGENTS/README 或自身判断扩容完成门。
 
 ### 为什么用工具回调(不用文本解析)
 

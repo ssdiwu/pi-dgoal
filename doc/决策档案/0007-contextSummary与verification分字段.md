@@ -12,7 +12,9 @@
 
 确认角色也定下：`verification` 的“显式确认”是 AI 在 `dgoal_propose` 中做的内容确认，不是额外弹一个用户确认步骤；用户仍只在启动闸门对话框里做一次总确认（看 goal / phases / verification 后确认、拒绝或给反馈），不为 verification 单独再确认一次。
 
-因此，启动闸门确认对话框必须显式展示 `verification`，把它作为与 goal、phases 并列的提案组成部分，让用户在唯一一次总确认里看见完整完成契约。
+因此，启动闸门确认对话框必须显式展示 `verification`，把它作为与 goal、phases 并列的提案组成部分，让用户在唯一一次总确认里看见完整验收说明。
+
+> **ADR 0016 更新**：`verification` 的角色已从“完成契约”调整为“goal 级验收说明”。新 goal 的冻结完成门是结构化 `acceptanceCriteria`（criterion + evidence）；`verification` 帮助 agent 和用户理解完成标准，但不单独作为终审完成门。旧 session 缺少 `acceptanceCriteria` 时，终审兼容沿用 `verification`。`verification` 仍必填（ADR 0007 的硬约束不变），但其权威角色由 ADR 0016 重新定义。
 
 ## 实现口径（最小闭环，不做过度设计）
 

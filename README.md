@@ -37,7 +37,7 @@ Start a goal with a Task Plan:
 
 Or, after you've already aligned the goal in the current conversation, use bare `/dgoal` to carry that prior discussion into the startup gate. If there is no prior discussion to carry, dgoal does not hard-start; it asks for an explicit objective instead. Use explicit `/dgoal s` (not bare `/dgoal`) to view status.
 
-The startup gate dialog shows a phase-level summary by default (goal + verification + readiness + boundary gaps/signals + phases + task counts), with an explicit entry to view task details on demand. Approve, reject, or give feedback before dgoal execution begins.
+The startup gate runs structure validation, then a semantic preflight with the current session model, before writing `pendingProposal`. Manual or subjective completion conditions are rejected or rewritten into `userReviewItems`; only then does the dialog show a phase-level summary by default (goal + verification + acceptanceCriteria + userReviewItems + readiness + boundary gaps/signals + phases + task counts). Approve, reject, or give feedback before dgoal execution begins.
 
 During dgoal execution:
 
@@ -57,13 +57,13 @@ Control the goal:
 
 Declare completion (triggers final audit):
 
-The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. The completion reply produces a structured, checkable text (what changed / how verified / what still needs your review) rather than just announcing "done". If the final audit passes, the goal closes and dgoal execution stops.
+The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. The completion reply produces a structured, checkable text (what changed / how verified / what still needs your review) rather than just announcing "done". `done` means the frozen LLM-independent acceptance criteria passed; TUI, visual, and experience checks remain explicit non-blocking `userReview` items, and the completion text states that they are not evidence of completed manual experience validation. If the final audit passes, the goal closes and dgoal execution stops.
 
 ## Tools
 
 | Tool | Purpose |
 |---|---|
-| `dgoal_propose` | Startup gate: submit goal + phases + initial tasks. User confirms before dgoal execution begins. |
+| `dgoal_propose` | Startup gate: submit goal + phases + initial tasks + frozen `acceptanceCriteria` (criterion + evidence for goal and each phase) + optional `userReviewItems`. User confirms before dgoal execution begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
 | `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Even on the last phase, it only checks that phase. |
 | `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. Triggers the goal-level final audit internally; the only way to close a goal. Produces structured checkable completion text (what changed / how verified / what needs user review). |
@@ -72,7 +72,7 @@ The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. 
 
 - Session-scoped: one active goal per Pi session. No global goal pool.
 - Task Plan is mandatory: using `/dgoal` implies a compound goal that requires a plan. No empty-plan completion.
-- Goal layer is frozen at gate confirmation; phase/task layers are adjustable during dgoal execution.
+- Goal direction and goal/phase acceptance criteria are frozen at gate confirmation; during execution only phase/task progress, task decomposition, and evidence are adjustable. Acceptance criteria have no runtime update path.
 - Completed tasks don't roll back. A wrong step gets a follow-up task (`blockedBy` → original).
 - Independent audit: the verifier is a separate `pi` subprocess with fresh context, no main-session history, no skills/extensions, and only limited verification tools (`read`, `grep`, `find`, `ls`, `bash`). Completion is not self-reported.
 - No Git auto-actions, no replacement of project-specific tests, no fixed workflow engine.
@@ -174,7 +174,8 @@ pi-dgoal/
 │   ├── 30-路线图/                 ← roadmap
 │   ├── 40-版本实施方案/           ← version implementation plans
 │   ├── 90-归档/                   ← historical
-│   └── 决策档案/                  ← architecture decision records
+│   ├── 经验笔记.md                ← reusable practices and pitfalls
+│   └── 决策档案/                  ← ADR index: see `doc/决策档案/README.md`
 ├── package.json
 ├── index.ts                       ← single-file extension (entry point)
 └── test/                          ← test map + commands: see test/README.md
