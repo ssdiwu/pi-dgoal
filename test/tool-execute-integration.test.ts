@@ -14,9 +14,12 @@ import {
   __executeDgoalCheckForTest,
   __executeDgoalPlanForTest,
   __executeDgoalProposeForTest,
+  __getGoalForTest,
+  __getPendingProposalForTest,
   __resetGoalForTest,
   __setApiForTest,
   __setGoalForTest,
+  __setProposalSemanticReviewForTest,
   __setI18nForTest,
   applyPlanMutation,
   formatPlanResult,
@@ -182,6 +185,44 @@ describe("工具 execute 真实端到端 · 涌现分解：长链 blockedBy", ()
     expect(r.op.kind).toBe("error");
     // goal 不变
     expect(goal.plan!.phases[0].tasks[0].blockedBy ?? []).toEqual([]);
+  });
+});
+
+describe("工具 execute · proposal 语义预审状态边界", () => {
+  beforeEach(() => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "tool-proposal-1", objective: "proposal 测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+  });
+
+  test("rejected/error 不激活 goal，合法重提才写入 pendingProposal", async () => {
+    const params = {
+      objective: "proposal 测试",
+      verification: "bun test",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
+      phases: [{ subject: "阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
+    };
+
+    __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "human-only condition" }));
+    const rejected = await __executeDgoalProposeForTest(params);
+    expect(rejected.details?.error).toBe("semantic review rejected");
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+
+    __setProposalSemanticReviewForTest(() => { throw new Error("provider unavailable"); });
+    const errored = await __executeDgoalProposeForTest(params);
+    expect(errored.details?.error).toBe("semantic review rejected");
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+
+    __setProposalSemanticReviewForTest(() => ({
+      decision: "approve",
+      acceptanceCriteria: params.acceptanceCriteria,
+      phaseAcceptanceCriteria: [params.phases[0].acceptanceCriteria],
+    }));
+    const approved = await __executeDgoalProposeForTest(params);
+    expect(approved.details?.semanticReview).toBe("approve");
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getPendingProposalForTest()?.goalId).toBe("tool-proposal-1");
   });
 });
 

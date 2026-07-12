@@ -155,6 +155,35 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
       __resetGoalForTest();
     }
   });
+
+  test("完成浮层延迟隐藏的 setWidget 抛错时不产生未捕获异常", () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let delayedHide: (() => void) | undefined;
+    globalThis.setTimeout = ((callback: (...args: unknown[]) => void, delay?: number) => {
+      if (delay === 10_000) {
+        delayedHide = callback;
+        return 4242 as unknown as ReturnType<typeof setTimeout>;
+      }
+      return originalSetTimeout(callback, delay) as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout;
+
+    const overlay = new PlanOverlay();
+    const completed = goal([p(1, "完成", [], "done")], { status: "done" });
+    __setGoalForTest(completed);
+    overlay.setUI({
+      setWidget: () => { throw new Error("delayed hide UI boom"); },
+      getToolsExpanded: () => false,
+    });
+    try {
+      expect(() => overlay.showDoneThenHide(completed)).not.toThrow();
+      expect(delayedHide).toBeDefined();
+      expect(() => delayedHide!()).not.toThrow();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+      overlay.dispose();
+      __resetGoalForTest();
+    }
+  });
 });
 
 describe("切片3 · 建检活性片段", () => {
@@ -186,7 +215,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
     const lines = renderPlanLines(g, noHide);
     expect(lines.some((l) => l.includes("task1"))).toBe(false);
-    expect(lines.at(-1)).toContain("Ctrl+O 展开持续显示（待办/进行中 phase）");
+    expect(lines.at(-1)).toContain("Ctrl+O 展开任务");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
@@ -199,7 +228,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     expect(taskLine).toContain("│");
     expect(taskLine).toContain("◐");
     expect(taskLine).toContain("(正在做)");
-    expect(lines.at(-1)).toContain("Ctrl+O 收起持续显示展开态");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起显示");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
@@ -257,7 +286,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     ]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines.at(-1)).toContain("Ctrl+O 收起持续显示展开态");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起显示");
     expect(lines.at(-2)).toContain("more");
   });
 });

@@ -9,10 +9,12 @@ import {
   loadGoal,
   persistGoal,
   setPhaseFeedback,
+  recordPhaseAuditFeedback,
   clearPhaseFeedback,
   setFinalFeedback,
   setPhaseCompleted,
   currentUncheckedPhase,
+  type AcceptanceCriterion,
   type GoalState,
   type Phase,
   type Task,
@@ -20,6 +22,8 @@ import {
 } from "../index.ts";
 
 // 构造一个带 plan 的 goal（0.2.0 形态）
+const acceptanceCriteria: AcceptanceCriterion[] = [{ criterion: "测试通过", evidence: "npm test" }];
+
 function makeGoalWithPlan(overrides: Partial<GoalState> = {}): GoalState {
   const task: Task = {
     id: 1,
@@ -31,6 +35,7 @@ function makeGoalWithPlan(overrides: Partial<GoalState> = {}): GoalState {
   const phase: Phase = {
     id: 1,
     subject: "修复 auth 模块",
+    acceptanceCriteria,
     status: "in_progress",
     tasks: [task],
   };
@@ -44,6 +49,8 @@ function makeGoalWithPlan(overrides: Partial<GoalState> = {}): GoalState {
     iteration: 3,
     plan,
     verification: "全量测试通过",
+    acceptanceCriteria,
+    userReviewItems: ["人工确认 TUI 观感"],
     ...overrides,
   };
 }
@@ -97,7 +104,7 @@ describe("切片1 · isGoalState 向后兼容", () => {
 });
 
 describe("切片1 · persist/load 往返", () => {
-  test("带 plan 的 goal persist 后 load 能完整恢复三层", () => {
+  test("冻结验收契约 persist 后 load 能完整恢复", () => {
     __resetGoalForTest();
     let captured: { type: string; data: { goal: GoalState | null } } | undefined;
     __setApiForTest({
@@ -242,6 +249,13 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     expect(goal.phaseFeedbackById).toBeUndefined();
   });
 
+  test("阶段审核拒绝时同时保存非阻塞用户复核建议", () => {
+    const goal = makeGoalWithPlan();
+    const next = recordPhaseAuditFeedback(goal, 1, "## 建议用户复核（不阻塞完成）\n- 在真实 TUI 检查浮层\n\n## 验收结论\n<REJECTED>");
+    expect(next.phaseFeedbackById!["1"].report).toContain("<REJECTED>");
+    expect(next.userReviewItems).toEqual(["人工确认 TUI 观感", "在真实 TUI 检查浮层"]);
+  });
+
   test("clearPhaseFeedback 清除对应 phase，保留其他 phase", () => {
     const goal = makeGoalWithPlan();
     const g1 = setPhaseFeedback(goal, 1, "phase1 报告");
@@ -280,11 +294,13 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     expect(currentUncheckedPhase(goal)).toBeUndefined();
   });
 
-  test("phaseFeedbackById 旧 goal 无此字段仍可 isGoalState（向后兼容）", () => {
+  test("旧 goal 缺少验收契约字段仍可 isGoalState（向后兼容）", () => {
     const legacy = makeLegacyGoal();
     expect(isGoalState(legacy)).toBe(true);
     expect(legacy.phaseFeedbackById).toBeUndefined();
     expect(legacy.finalFeedback).toBeUndefined();
+    expect(legacy.acceptanceCriteria).toBeUndefined();
+    expect(legacy.userReviewItems).toBeUndefined();
   });
 
   test("带 feedback 的 goal persist 后 load 能完整恢复 phase 和 final feedback", () => {
@@ -303,6 +319,9 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     const restored = loadGoal(ctx as never);
 
     expect(restored).not.toBeUndefined();
+    expect(restored!.acceptanceCriteria).toEqual(acceptanceCriteria);
+    expect(restored!.userReviewItems).toEqual(["人工确认 TUI 观感"]);
+    expect(restored!.plan!.phases[0].acceptanceCriteria).toEqual(acceptanceCriteria);
     expect(restored!.phaseFeedbackById!["1"].report).toBe("phase 报告");
     expect(restored!.phaseFeedbackById!["1"].phaseId).toBe(1);
     expect(restored!.finalFeedback!.report).toBe("final 报告");

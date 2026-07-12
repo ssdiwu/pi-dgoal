@@ -13,19 +13,27 @@ process.env.PI_DGOAL_NO_AUDIT = "1";
 import {
   __executeDgoalCheckForTest,
   __executeDgoalDoneForTest,
+  __executeDgoalProposeForTest,
   __finalizeGoalForTest,
+  __getGoalForTest,
   __handleFinalAuditRejectedForTest,
+  __handleStartupGateForTest,
   __pauseOnAuditFailureForTest,
   __resetGoalForTest,
   __resumeGoalForTest,
   __setApiForTest,
   __setGoalForTest,
   __setPlanOverlayForTest,
+  __setPhaseCheckOverrideForTest,
+  __setProposalSemanticReviewForTest,
   renderPlanLines,
+  extractUserReviewSuggestions,
+  formatUserReviewText,
   type GoalState,
   type Phase,
   type PlanProposal,
   proposalToPlan,
+  PlanOverlay,
   setFinalFeedback,
   setPhaseCompleted,
   currentUncheckedPhase,
@@ -54,6 +62,73 @@ function makePhase(id: number, subject: string, tasks: Task[], status: Phase["st
 describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", () => {
   beforeEach(() => {
     __resetGoalForTest();
+  });
+
+  test("启动确认 UI 抛错时仍先落盘 active 并投递 START prompt", async () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    const pendingGoal: GoalState = { id: "startup-ui-throw", objective: "启动 UI 容错", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+    __setGoalForTest(pendingGoal);
+    const proposalParams = {
+      objective: "启动 UI 容错",
+      verification: "bun test test/e2e-integration.test.ts",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }],
+      phases: [{ subject: "启动阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }] }],
+    };
+    __setProposalSemanticReviewForTest(() => ({
+      decision: "approve",
+      acceptanceCriteria: proposalParams.acceptanceCriteria,
+      phaseAcceptanceCriteria: [proposalParams.phases[0].acceptanceCriteria],
+    }));
+    await __executeDgoalProposeForTest(proposalParams, { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } });
+
+    const sent: string[] = [];
+    const ctx = {
+      ui: {
+        select: async () => "确认，开始执行",
+        editor: async () => undefined,
+        setStatus: () => { throw new Error("Spacer is not defined"); },
+        notify: () => { throw new Error("TUI notify failed"); },
+      },
+      cwd: process.cwd(),
+    } as never;
+    await __handleStartupGateForTest({ sendUserMessage: async (message: string) => { sent.push(message); } } as never, ctx, pendingGoal);
+
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(writes.some((entry) => entry.data.goal?.status === "active")).toBe(true);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("Dgoal 模式已激活");
+    __resetGoalForTest();
+  });
+
+  test("启动拒绝分支 notify 抛错时仍完成 pending goal 清理", async () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    const pendingGoal: GoalState = { id: "startup-reject-ui-throw", objective: "拒绝 UI 容错", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+    __setGoalForTest(pendingGoal);
+    const criteria = [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }];
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve", acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] }));
+    await __executeDgoalProposeForTest({ objective: pendingGoal.objective, verification: criteria[0].evidence, acceptanceCriteria: criteria, phases: [{ subject: "阶段", acceptanceCriteria: criteria }] }, { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } });
+    const ctx = { ui: { select: async () => "拒绝，放弃目标", notify: () => { throw new Error("UI notify failed"); }, setStatus: () => {} }, cwd: process.cwd() } as never;
+    await expect(__handleStartupGateForTest({ sendUserMessage: async () => {} } as never, ctx, pendingGoal)).resolves.toBeUndefined();
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(writes.at(-1)?.data.goal).toBeNull();
+  });
+
+  test("启动反馈分支 notify 抛错时仍投递重提 prompt", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    const pendingGoal: GoalState = { id: "startup-feedback-ui-throw", objective: "反馈 UI 容错", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+    __setGoalForTest(pendingGoal);
+    const criteria = [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }];
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve", acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] }));
+    await __executeDgoalProposeForTest({ objective: pendingGoal.objective, verification: criteria[0].evidence, acceptanceCriteria: criteria, phases: [{ subject: "阶段", acceptanceCriteria: criteria }] }, { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } });
+    const sent: string[] = [];
+    const ctx = { ui: { select: async () => "输入反馈意见", editor: async () => "补充测试", notify: () => { throw new Error("UI notify failed"); }, setStatus: () => {} }, cwd: process.cwd() } as never;
+    await __handleStartupGateForTest({ sendUserMessage: async (message: string) => { sent.push(message); } } as never, ctx, pendingGoal);
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("补充测试");
   });
 
   test("完整流程：startGoal → propose → confirm → plan → task completed → phase completed → dgoal_done(AUDITOR bypass) → done", () => {
@@ -251,6 +326,47 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(cleared).toBeNull();
   });
 
+  test("终审 rejected 提取并持久化审核报告中的用户复核建议", () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    const goal: GoalState = {
+      id: "reject-review",
+      objective: "o",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 1,
+      plan: { phases: [makePhase(1, "p", [makeTask(2, "t", "completed")], "completed")], nextId: 3 },
+    };
+    __setGoalForTest(goal);
+    __handleFinalAuditRejectedForTest({
+      completedGoal: goal,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: `## 验收结论\n<REJECTED>\n\n## 建议用户复核（不阻塞完成）\n- 看一下真实 TUI 浮层`,
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const lastWrite = writes.at(-1)?.data.goal;
+    expect(lastWrite?.status).toBe("rejected");
+    expect(lastWrite?.userReviewItems).toContain("看一下真实 TUI 浮层");
+  });
+
+  test("终审 approved 合并上一轮 rejected 报告中的用户复核建议", () => {
+    // 模拟：先 rejected（finalFeedback 含用户复核建议），后 approved
+    const goalWithFeedback: GoalState = {
+      id: "1", objective: "o", status: "rejected", rejectedCount: 1,
+      finalFeedback: { report: `## 验收结论\n<REJECTED>\n\n## 建议用户复核（不阻塞完成）\n- 上一轮建议人工看 UI`, rejectedCount: 1, createdAt: 1 },
+      startedAt: 1, updatedAt: 1, iteration: 0,
+    } as GoalState;
+    const previousReviewItems = goalWithFeedback.finalFeedback!.report
+      ? extractUserReviewSuggestions(goalWithFeedback.finalFeedback!.report)
+      : [];
+    const discoveredUserReview = extractUserReviewSuggestions(`## 建议用户复核（不阻塞完成）\n- 本轮发现需检查文档`);
+    const completionUserReview = formatUserReviewText(goalWithFeedback, undefined, [...previousReviewItems, ...discoveredUserReview]);
+    expect(completionUserReview).toContain("上一轮建议人工看 UI");
+    expect(completionUserReview).toContain("本轮发现需检查文档");
+  });
+
   test("audit_error 暂停会写 pauseReason=audit_error", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
@@ -423,6 +539,57 @@ describe("端到端集成 · 涌现分解：blockedBy DAG", () => {
 // 时，finalizeGoal 必须仍正确落盘 done 并清空 goal——UI 边界异常不得阻断状态机。
 // 根因在 pi 主程序 TUI 渲染层（本扩展接触不到 Spacer 组件），但 finalizeGoal 不应
 // 假设 ctx.ui.* / planOverlay.* 永不抛错；这是本扩展能且应当防御的失败模式。
+describe("端到端集成 · phase 建检 UI 边界容错", () => {
+  beforeEach(() => {
+    __resetGoalForTest();
+    __setPlanOverlayForTest({ update() { throw new ReferenceError("Spacer is not defined"); } } as never);
+  });
+
+  test("真实 dgoal_check approved 分支先持久化 phase done 再安全更新 UI", async () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "phase-ui-approved",
+      objective: "phase UI approved",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 1,
+      plan: { phases: [makePhase(1, "p", [makeTask(2, "t", "done", { evidence: "ok" })], "in_progress")], nextId: 3 },
+    });
+    __setPhaseCheckOverrideForTest(async () => ({ approved: true, aborted: false, output: `## 建议用户复核（不阻塞完成）
+- 看一下真实 UI`, liveness: "approved" }));
+    const result = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(result.details?.approved).toBe(true);
+    expect(writes.at(-1)?.data.goal?.plan?.phases[0].status).toBe("done");
+    expect(writes.at(-1)?.data.goal?.userReviewItems).toEqual(["看一下真实 UI"]);
+  });
+
+  test("真实 dgoal_check rejected 分支先持久化 feedback/review 再安全更新 UI", async () => {
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "phase-ui-rejected",
+      objective: "phase UI rejected",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 1,
+      plan: { phases: [makePhase(1, "p", [makeTask(2, "t", "done", { evidence: "ok" })], "pending")], nextId: 3 },
+    });
+    __setPhaseCheckOverrideForTest(async () => ({ approved: false, aborted: false, output: `## 建议用户复核（不阻塞完成）
+- 看一下真实 UI
+
+## 验收结论
+<REJECTED>`, liveness: "rejected" }));
+    const result = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(result.details?.approved).toBe(false);
+    expect(writes.at(-1)?.data.goal?.plan?.phases[0].status).toBe("in_progress");
+    expect(writes.at(-1)?.data.goal?.phaseFeedbackById?.["1"]?.report).toContain("<REJECTED>");
+    expect(writes.at(-1)?.data.goal?.userReviewItems).toEqual(["看一下真实 UI"]);
+  });
+});
+
 describe("端到端集成 · finalizeGoal UI 边界容错（Spacer is not defined）", () => {
   beforeEach(() => {
     __resetGoalForTest();
@@ -465,6 +632,46 @@ describe("端到端集成 · finalizeGoal UI 边界容错（Spacer is not define
     expect(() => __finalizeGoalForTest(ctx)).not.toThrow();
     expect(writes.some((w) => w.data.goal?.status === "done")).toBe(true);
     expect(writes.at(-1)?.data.goal).toBeNull();
+  });
+
+  test("状态持久化清理先于完成 UI 展示", () => {
+    const events: string[] = [];
+    __setApiForTest({ appendEntry: (_type, data: { goal: GoalState | null }) => events.push(data.goal === null ? "persist:null" : `persist:${data.goal.status}`) });
+    __setGoalForTest(makeActiveGoal());
+    __setPlanOverlayForTest({
+      showDoneThenHide() { events.push("ui:showDone"); },
+      update() { events.push("ui:overlay"); },
+    } as never);
+    const ctx = {
+      cwd: "/tmp",
+      ui: {
+        confirm: async () => true,
+        notify() { events.push("ui:notify"); },
+        setStatus() { events.push("ui:status"); },
+      },
+    } as never;
+
+    __finalizeGoalForTest(ctx);
+    const clearIndex = events.indexOf("persist:null");
+    expect(clearIndex).toBeGreaterThanOrEqual(0);
+    expect(events.slice(clearIndex + 1).every((event) => event.startsWith("ui:"))).toBe(true);
+    expect(events.indexOf("persist:done")).toBeLessThan(clearIndex);
+  });
+
+  test("真实 PlanOverlay 在 currentGoal 清空后仍展示 done 快照", () => {
+    const widgets: unknown[] = [];
+    const overlay = new PlanOverlay();
+    overlay.setUI({
+      setWidget: (_key: string, lines: unknown) => { widgets.push(lines); },
+      getToolsExpanded: () => false,
+      onTerminalInput: () => () => {},
+    } as never);
+    __setPlanOverlayForTest(overlay);
+    __setGoalForTest(makeActiveGoal());
+    __finalizeGoalForTest({ cwd: "/tmp", ui: { confirm: async () => true, notify() {}, setStatus() {} } } as never);
+    const visible = widgets.find((value): value is string[] => Array.isArray(value) && value.length > 0);
+    expect(visible?.some((line) => line.includes("✓"))).toBe(true);
+    overlay.dispose();
   });
 
   test("ctx.ui.setStatus 抛 ReferenceError 时，goal 仍落盘 done 并清空", () => {

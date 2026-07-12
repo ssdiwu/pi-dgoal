@@ -5,8 +5,13 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  __executeDgoalProposeForTest,
+  __getGoalForTest,
+  __getPendingProposalForTest,
   __isStartGoalInProgressForTest,
   __resetGoalForTest,
+  __resumeGoalForTest,
+  __setGoalForTest,
   __startGoalForTest,
   type GoalState,
 } from "../index.ts";
@@ -38,6 +43,27 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     expect(sent[0]).toContain("dgoal_propose");
   });
 
+  test("startGoal 的 status/notify 抛错时仍投递 propose prompt", async () => {
+    __resetGoalForTest();
+    const sent: string[] = [];
+    const pi = { sendUserMessage: async (msg: string) => void sent.push(msg) } as never;
+    const ctx = {
+      cwd: "/tmp",
+      isIdle: () => true,
+      abort: () => {},
+      ui: {
+        confirm: async () => true,
+        notify: () => { throw new Error("UI notify failed"); },
+        setStatus: () => { throw new Error("UI status failed"); },
+      },
+      sessionManager: { getBranch: () => [] },
+    };
+    await __startGoalForTest("启动 UI 容错", pi, ctx as never);
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("dgoal_propose");
+  });
+
   test("agent idle 时 → 不调用 ctx.abort", async () => {
     __resetGoalForTest();
     let aborted = 0;
@@ -60,6 +86,38 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     await __startGoalForTest("测试目标", pi, ctx as never);
     // 正常完成后必须清零，否则 agent_end 的 pending 分支被永久抑制 → 启动闸门锁死
     expect(__isStartGoalInProgressForTest()).toBe(false);
+  });
+
+  test("语义预审用户中断时 goal 仍为 pending 且没有 active proposal", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "semantic-abort", objective: "测试目标", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const result = await __executeDgoalProposeForTest({
+      objective: "测试目标",
+      verification: "bun test",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
+      phases: [{ subject: "阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
+    }, { signal: AbortSignal.abort() });
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+  });
+
+  test("resumeGoal 的 status/overlay 抛错时仍投递 resume prompt", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "resume-ui-throw", objective: "恢复 UI 容错", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const sent: string[] = [];
+    const pi = { sendUserMessage: async (msg: string) => void sent.push(msg) } as never;
+    const ctx = {
+      ui: {
+        notify: () => {},
+        setStatus: () => { throw new Error("UI status failed"); },
+      },
+      cwd: "/tmp",
+    };
+    await __resumeGoalForTest(pi, ctx as never);
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toContain("恢复当前 /dgoal");
   });
 
   test("startGoal 投递 propose 恰好一次（不双发）", async () => {

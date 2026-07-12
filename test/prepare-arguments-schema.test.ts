@@ -58,10 +58,12 @@ describe("prepareArguments schema 接缝 · dgoal_plan", () => {
 
 describe("prepareArguments schema 接缝 · dgoal_propose", () => {
   const toolDef = __dgoalProposeToolDefForTest();
+  const criterion = { criterion: "测试通过", evidence: "npm test" };
   const baseProposal = (blockedBy: unknown) => ({
     objective: "o",
     verification: "完成验证",
-    phases: [{ subject: "p1", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy }] }],
+    acceptanceCriteria: [criterion],
+    phases: [{ subject: "p1", acceptanceCriteria: [criterion], tasks: [{ subject: "t1" }, { subject: "t2", blockedBy }] }],
   });
 
   test("tasks[].blockedBy 字符串 '[1]' → coerce 后过严格 schema", () => {
@@ -80,6 +82,11 @@ describe("prepareArguments schema 接缝 · dgoal_propose", () => {
   });
 
   test("无 tasks 的 phase 不报错", () => {
-    expect(passesStrictSchema(toolDef, { objective: "o", verification: "v", phases: [{ subject: "p" }] })).toBe(true);
+    expect(passesStrictSchema(toolDef, {
+      objective: "o",
+      verification: "v",
+      acceptanceCriteria: [{ criterion: "完成", evidence: "npm test" }],
+      phases: [{ subject: "p", acceptanceCriteria: [{ criterion: "完成", evidence: "npm test" }] }],
+    })).toBe(true);
   });
 });
