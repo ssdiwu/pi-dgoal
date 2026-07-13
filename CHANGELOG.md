@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.6.2] - 2026-07-13
+
 ### Fixed
 
 - **审核结论仲裁**：有效 `<APPROVED>` / `<REJECTED>` 优先于尾部 WebSocket/网络错误，不再误暂停为 `audit_error`。
