@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **vNext Goal Runtime**：新增 `dgoal-goal-vnext` 持久化键并忽略旧 `dgoal-state`；终审拒绝追加终审修复账本，rejected/paused(audit_failed_3x) 展示 Goal Repair，并保留完整计划修复上下文。
+- **启动与可观测性**：新增冷启动/paused 专用 `/dgoal help`，背景总结支持候选链 fail-closed；审核工具结果展示实际模型，并把脱敏审核 usage 写入 `~/.pi/agent/audit-usage.jsonl`，供 `pi-session-insights` 聚合。
+- **源码分层**：入口收敛到 `index.ts` 组装根，新增 `src/plan`、`src/audit`、`src/isolated-pi`、`src/tui` 职责模块。
+
 ## [0.5.8] - 2026-07-12
 
 ### Changed

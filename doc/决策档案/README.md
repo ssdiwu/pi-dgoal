@@ -27,7 +27,7 @@
 | [0021](./0021-终审修复账本不建goal级task.md) | 终审修复账本不建 goal 级 task | 终审失败追加留痕，直接重审 goal，不新增平行任务层 |
 | [0022](./0022-建检行为版本隔离旧goal.md) | 建检行为版本隔离旧 goal | 新 goal 显式启用新建检语义，旧 goal 不迁移、不猜测 |
 | [0023](./0023-终审修复作为展示阶段.md) | 终审修复作为展示阶段 | rejected 以 Goal Repair 展示，不新建 phase、task 或状态机状态 |
-| [0024](./0024-src模块地图与入口组装.md) | src 模块地图与入口组装 | index 仅组装，按真实职责惰性迁入六个 src 模块 |
-| [0025](./0025-goal-runtime独占会话状态.md) | Goal Runtime 独占会话状态 | 可变 session 状态只归 runtime，其他模块值传递与只读投影 |
+| [0024](./0024-src模块地图与入口组装.md) | src 模块地图与入口组装 | index 仅组装；plan/audit/isolated-pi/tui 迁出，runtime 合并承载 goal runtime+startup |
+| [0025](./0025-goal-runtime独占会话状态.md) | Goal Runtime 独占会话状态 | 可变 session 状态只归 runtime（现合并于 src/runtime），其他模块值传递与只读投影 |
 | [0026](./0026-新版本不兼容旧goal持久态.md) | 新版本不兼容旧 goal 持久态 | 新持久化键隔离旧状态，升级后必须新开 dgoal |
 | [0027](./0027-背景总结模型候选链与启动失败语义.md) | 背景总结模型候选链与启动失败语义 | 候选各一次、当前模型兜底；全失败中止启动，不降级无背景 |

@@ -65,8 +65,8 @@ The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. 
 |---|---|
 | `dgoal_propose` | Startup gate: submit goal + phases + initial tasks + frozen `acceptanceCriteria` (criterion + evidence for goal and each phase) + optional `userReviewItems`. User confirms before dgoal execution begins. |
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
-| `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). Even on the last phase, it only checks that phase. |
-| `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. Triggers the goal-level final audit internally; the only way to close a goal. Produces structured checkable completion text (what changed / how verified / what needs user review). |
+| `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). For single-phase goals, one audit covers both phase and goal, recording a unified audit credential (ADR 0018). |
+| `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. For single-phase goals, reuses the unified audit credential to close directly (no duplicate audit); for multi-phase goals, triggers a goal-level final audit with phase(id)/goal/user_review attribution. The only way to close a goal. |
 
 ## Design Boundaries
 
@@ -106,7 +106,8 @@ On the first audit when neither the global nor trusted project `pi-dgoal.json` f
 {
   "$comment": "Set each list in fallback order to provider/model[:thinking]. Keep null to inherit the current session model.",
   "phaseAuditorModels": null,
-  "goalAuditorModels": null
+  "goalAuditorModels": null,
+  "contextSummarizerModels": null
 }
 ```
 
@@ -126,7 +127,7 @@ Configure the phase and goal auditors independently with ordered lists of at mos
 }
 ```
 
-Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically.
+Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically. `contextSummarizerModels` configures the startup background-summary chain; each candidate is tried once, then the current session model once, and startup fails closed if all attempts fail.
 
 Resolution order:
 
@@ -138,11 +139,15 @@ Within each source, the matching plural scoped key takes precedence over its sin
 
 Before an audit starts, dgoal queries the isolated auditor's structured Pi `get_available_models` registry. It matches a full model ID first, then recognizes a final standard thinking suffix; unavailable candidates are skipped. Successful registry results are cached for the current Pi process and reset on `/reload`; if the query fails, dgoal retains the configured chain for runtime handling rather than deleting candidates. Unreadable files and malformed values continue through normal configuration precedence. A missing global and trusted project config creates the template atomically without overwriting an existing file. While no usable configured candidate exists and there are no other config issues, dgoal shows the selection hint once per Pi process; otherwise it emits only the relevant warnings. User-facing hints and warnings follow `pi-di18n` when installed.
 
-- Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply.
+- Approved: goal closes, dgoal execution stops, model receives a completion signal for the final user-facing reply; tool results expose the actual auditor model that formed the decision and fallback progress updates it.
+- Sanitized audit usage is appended to `~/.pi/agent/audit-usage.jsonl` (timestamp, parent session, project, scope, model, attempt, numeric usage, dedup key only); `pi-session-insights` merges it into `/insights` numeric aggregation.
 - Rejected: phase-check rejection is a normal business result (`isError: false`) that keeps the goal active but gate-locked to the current phase; final-audit rejection enters `rejected`, and the original report is injected and pinned to subsequent prompts. Three consecutive final rejections pause the goal; `/dgoal resume` clears the counter and retries.
 - Audit error / abort / real idle-timeout / no clear decision: treated as `auditor_error` (`isError: true`). Each configured candidate retries up to 3 times on the same model; structured technical failures (HTTP 401/403/404/408/429/5xx, network, zero-output timeout) and explicit pure-text quota exhaustion (`usage/plan/rate limit` reached/exceeded/hit/exhausted, `quota exceeded`, `insufficient quota`) switch to the next candidate, while HTTP 400, explicit `<REJECTED>`, and user interruption do not switch. Partial output that lacks a termination marker is carried as bounded `<partial_audit_feedback>` across same-model retries and then to the next candidate. When all candidates are exhausted the goal is safely paused and `/dgoal resume` continues; dgoal never silently falls back to the execution model.
-- Audit progress is streamed back through the tool call, including liveness updates such as `thinking`, `tool_running`, and `idle Ns/120s`; if the check stops mid-way, partial output is still returned.
+- Audit progress is streamed back through the tool call, including liveness updates such as `thinking`, `tool_running`, and `idle Ns/180s`; if the check stops mid-way, partial output is still returned.
 - Audit reports use a stricter acceptance style: GWT-like PASS / FAIL / BLOCKER items plus a code-and-doc consistency section.
+- Final rejection displays `Goal Repair · attempt N/3`, and `paused(audit_failed_3x)` displays `Goal Repair paused`; each repair round is appended to a repair ledger without creating a goal-level task or extra phase.
+- `/dgoal help` / `/dgoal h` asks the current session model to explain dgoal only at cold start or while paused; it is not a `dgoal_help` tool and does not grant execution authority.
+- vNext persists goals under the new `dgoal-goal-vnext` custom entry type and ignores legacy `dgoal-state` entries; upgraded users must start a new `/dgoal` goal.
 - Escape hatch: `PI_DGOAL_NO_AUDIT=1` skips the audit (debugging only).
 
 ## Tests
@@ -155,7 +160,7 @@ npm run test:smoke # python: AI-driven smoke (real model, isolated env) — cost
 
 Test files cover data model + persistence, plan reducer (state machine + cycle detection), overlay rendering, startup gate, state machine + prompt, end-to-end integration, tool execute real-path integration, context hardening, and subprocess supervision for detached process-group cleanup.
 
-**AI-driven smoke** (`npm run test:smoke`, `test/test-ai-smoke.py`): drives a real multi-phase dgoal in an isolated env (`pi -ne -e ./index.ts -ns -np --mode rpc`), auto-answering the startup-gate select and tracking the full `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` tool chain. Real model + real tokens, so not in CI.
+**AI-driven smoke** (`npm run test:smoke`, `test/test-ai-smoke.py`): drives a real dgoal (single phase by default, per ADR 0017) in an isolated env (`pi -ne -e ./index.ts -ns -np --mode rpc`), auto-answering the startup-gate select and tracking the full `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` tool chain. Real model + real tokens, so not in CI.
 
 **TUI interaction behavior** (startup gate confirm UI, real `dgoal_check` subprocess audit content, terminal rejected retry path, aboveEditor widget rendering) still requires a manual smoke test in the Pi TUI with a real model.
 
@@ -177,7 +182,13 @@ pi-dgoal/
 │   ├── 经验笔记.md                ← reusable practices and pitfalls
 │   └── 决策档案/                  ← ADR index: see `doc/决策档案/README.md`
 ├── package.json
-├── index.ts                       ← single-file extension (entry point)
+├── index.ts                       ← Pi extension composition root
+├── src/                           ← responsibility-based runtime modules
+│   ├── plan/                      ← Task Plan types and pure helpers
+│   ├── runtime/                   ← Goal Runtime orchestration
+│   ├── audit/                     ← audit parsing and sanitized usage ledger
+│   ├── isolated-pi/               ← isolated Pi args and stream helpers
+│   └── tui/                       ← TUI pure helpers and component boundary
 └── test/                          ← test map + commands: see test/README.md
     ├── README.md
     ├── *.test.ts                   ← Bun unit / integration tests

@@ -38,6 +38,7 @@
   },
   "files": [
     "index.ts",
+    "src",
     "test",
     "README.md",
     "README-zh.md"
