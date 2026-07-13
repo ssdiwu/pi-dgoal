@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.6.1] - 2026-07-13
+
 ### Fixed
 
 - **带归因的审核拒绝被误判为部分输出**：`<REJECTED goal>`、`<REJECTED phase="N">` 与 `<REJECTED user_review>` 现在与裸 `<REJECTED>` 一样被识别为正式终审结论，不再触发同模型续审和候选链回退后误暂停为 `audit_error`。
