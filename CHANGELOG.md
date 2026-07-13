@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **语义预审从总时长超时改为可观测 idle timeout**：`dgoal_propose` 启动前语义预审此前用 30s 总时长超时，在 provider 排队或流式延迟时被误杀，且超时、网络异常与技术失败统一伪装成“请将人工体验移入 userReviewItems”的语义打回，误导 agent 反复改计划。现改为默认 60s **idle timeout**（无任何有效流事件才超时，收到任意事件重置），预审过程通过 `onUpdate` 输出活性状态（认证中/接收评审结果/校验评审 JSON）与空闲倒计时。预审终态拆为四类：`approved` / `rewritten` / `rejected`（语义打回，`isError:false`，带 criterion 级意见）/ `technical_error`（认证、超时、网络、非终止、JSON 解析等基础设施失败，`isError:true`，不再提示用户改计划）。
+- **语义预审 idle timeout 可配置**：新增 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds`（正整数秒，1..3600，非法值回退默认 60s 并告警），项目级优先于全局。
+- **预审改用流式事件**：从 `completeSimple()`（只等最终结果）改为 `streamSimple()`（消费 `AssistantMessageEventStream`），每个有效事件（text/thinking/toolcall/done/error）重置 idle timer，半截 JSON 不作为改写建议采用，只有完整解析并通过迁移映射校验的最终结果才写入 `pendingProposal`。
+
+### Changed
+
+- **预审技术失败与语义打回分离**：技术失败以 `isError:true` 返回 `semantic review technical error`，明确提示“这不是计划内容问题；可稍后重试 /dgoal，或检查模型/网络可用性”；语义打回保持 `isError:false` 返回 `semantic review rejected` 与可修正原因。旧测试接缝 `__setProposalSemanticCompletionForTest` 保留向后兼容，新增 `__setProposalSemanticStreamForTest` 注入流式事件序列。
+- **预审配置加载类型安全**：`loadDgoalConfig` 的 `isProjectTrusted` 改为可选并防御性可选链，`DgoalContext` 补 `isProjectTrusted?` 字段；`dgoal_propose` 调用点去掉 `as unknown as ExtensionContext` cast 与过宽的 `.catch(() => null)`，改为按 `ctx.cwd` 存在性加载配置，缺失时回退默认 60s 不阻断预审。清理 `raceWithIdle` 死参数、`emitProposeUpdate` 纯透传包装与 `SemanticReviewLiveness` 的 `"done"` 死分支（终态前显式置 `done`）。
 ## [0.6.2] - 2026-07-13
 
 ### Fixed

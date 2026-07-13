@@ -97,7 +97,8 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
       acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
       phases: [{ subject: "阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
     }, { signal: AbortSignal.abort() });
-    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.error).toBe("semantic review technical error");
+    expect(result.isError).toBe(true);
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(__getPendingProposalForTest()).toBeUndefined();
   });

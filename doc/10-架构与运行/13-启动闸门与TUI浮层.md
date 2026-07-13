@@ -10,7 +10,7 @@
   ↓
 主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项)
   ↓
-dgoal_propose execute：结构校验 → 当前会话 LLM 计划语义预审 →（通过或带完整精确迁移映射的改写后）写入 pendingProposal；再触发确认 UI
+dgoal_propose execute：结构校验 → 当前会话 LLM 计划语义预审（流式，60s idle timeout，可配置）→（通过或带完整精确迁移映射的改写后）写入 pendingProposal；再触发确认 UI
   ↓
 弹 ctx.ui.select 确认 UI(默认列 goal + verification + 独立验收条件 + 用户复核项 + readiness + 边界/缺口提示 + phases + task 数量;用户可点入口查看 task 明细):
   ├─ 确认 → 写入 goal(pending→active),发 START prompt 进 loop

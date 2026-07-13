@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __executeDgoalProposeForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, hasIndependentlyVerifiableEvidenceShape, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type GoalState, type PlanProposal } from "../index.ts";
+import { __executeDgoalProposeForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, hasIndependentlyVerifiableEvidenceShape, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
 
@@ -433,8 +433,10 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-abort", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, { signal: AbortSignal.abort() });
-    expect(result.details?.error).toBe("semantic review rejected");
+    // 技术失败（用户中断）与语义打回分离：isError:true，error 标为 technical error。
+    expect(result.details?.error).toBe("semantic review technical error");
     expect(String(result.content?.[0]?.text ?? "")).toContain("semantic review aborted");
+    expect(result.isError).toBe(true);
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
   });
@@ -448,7 +450,8 @@ describe("验收契约校验", () => {
       acceptanceCriteria: criteria,
       phases: [{ subject: "p", acceptanceCriteria: criteria }],
     });
-    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.error).toBe("semantic review technical error");
+    expect(result.isError).toBe(true);
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
   });
@@ -523,8 +526,9 @@ describe("验收契约校验", () => {
       content: [{ type: "text", text: JSON.stringify({ decision: "approve", acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] }) }],
     });
     const result = await pending;
-    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.error).toBe("semantic review technical error");
     expect(String(result.content?.[0]?.text ?? "")).toContain("semantic review aborted");
+    expect(result.isError).toBe(true);
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
   });
@@ -542,12 +546,15 @@ describe("验收契约校验", () => {
         content: [{ type: "text", text: '{"decision":"approve"}' }],
       }));
       const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
-      expect(result.details?.error).toBe("semantic review rejected");
+      expect(result.details?.error).toBe("semantic review technical error");
+      expect(result.isError).toBe(true);
       expect(__getPendingProposalForTest()).toBeUndefined();
     }
     __setProposalSemanticCompletionForTest(() => ({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"approve"}' }] }));
     const malformed = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    // approve JSON 缺少 acceptanceCriteria → shape 校验失败 → 语义打回（不是技术错误）。
     expect(malformed.details?.error).toBe("semantic review rejected");
+    expect(malformed.isError).toBe(false);
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
   });
@@ -559,7 +566,8 @@ describe("验收契约校验", () => {
     __setProposalSemanticCompletionForTest(() => new Promise(() => {}));
     const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
     const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
-    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.error).toBe("semantic review technical error");
+    expect(result.isError).toBe(true);
     expect(String(result.content?.[0]?.text ?? "")).toContain("timeout");
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
@@ -570,13 +578,84 @@ describe("验收契约校验", () => {
     __setGoalForTest({ id: "pending-semantic-retry", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => { throw new Error("provider unavailable"); });
     const failed = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
-    expect(failed.details?.error).toBe("semantic review rejected");
+    expect(failed.details?.error).toBe("semantic review technical error");
+    expect(failed.isError).toBe(true);
     expect(__getPendingProposalForTest()).toBeUndefined();
 
     __setProposalSemanticReviewForTest(() => approvedReview);
     const retried = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(retried.details?.semanticReview).toBe("approve");
     expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-retry");
+    __resetGoalForTest();
+  });
+
+  test("流式预审：持续有事件时不因总耗时超时，idle timeout 仅在无事件时触发", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-stream-idle", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticReviewTimeoutForTest(20);
+    async function* streamingEvents(): AsyncIterable<AssistantMessageEventLike> {
+      yield { type: "start", partial: { content: [] } };
+      for (let i = 0; i < 8; i += 1) {
+        await new Promise((r) => setTimeout(r, 5));
+        yield { type: "text_delta", contentIndex: 0, delta: "{\"decision\":", partial: { content: [] } };
+      }
+      await new Promise((r) => setTimeout(r, 5));
+      const fullText = JSON.stringify({ decision: "approve", acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] });
+      yield { type: "done", reason: "stop", message: { content: [{ type: "text", text: fullText }], stopReason: "stop" } };
+    }
+    __setProposalSemanticStreamForTest(() => streamingEvents());
+    const updates: Array<{ liveness?: string }> = [];
+    const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
+    const result = await __executeDgoalProposeForTest(
+      { objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] },
+      ctx,
+      (u) => { updates.push(u.details as { liveness?: string }); },
+    );
+    expect(result.details?.semanticReview).toBe("approve");
+    expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-stream-idle");
+    // 过程更新应至少出现一次（authenticating/streaming/parsing 任意）。
+    expect(updates.length).toBeGreaterThan(0);
+    expect(updates.some((u) => u.liveness !== undefined)).toBe(true);
+    __setProposalSemanticStreamForTest(undefined);
+    __resetGoalForTest();
+  });
+
+  test("流式预审：无事件时 idle timeout 触发技术错误而非语义打回", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-stream-timeout", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticReviewTimeoutForTest(15);
+    async function* silentStream(): AsyncIterable<AssistantMessageEventLike> {
+      yield { type: "start", partial: { content: [] } };
+      await new Promise(() => {});
+    }
+    __setProposalSemanticStreamForTest(() => silentStream());
+    const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    expect(result.details?.error).toBe("semantic review technical error");
+    expect(result.isError).toBe(true);
+    expect(String(result.content?.[0]?.text ?? "")).toContain("idle timeout");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    __setProposalSemanticStreamForTest(undefined);
+    __resetGoalForTest();
+  });
+
+  test("流式预审：reject 决策返回语义打回（isError:false），不是技术错误", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-stream-reject", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    async function* rejectStream(): AsyncIterable<AssistantMessageEventLike> {
+      yield { type: "start", partial: { content: [] } };
+      const fullText = JSON.stringify({ decision: "reject", reason: "criterion requires human sign-off" });
+      yield { type: "text_delta", contentIndex: 0, delta: fullText, partial: { content: [] } };
+      yield { type: "done", reason: "stop", message: { content: [{ type: "text", text: fullText }], stopReason: "stop" } };
+    }
+    __setProposalSemanticStreamForTest(() => rejectStream());
+    const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.isError).toBe(false);
+    expect(String(result.content?.[0]?.text ?? "")).toContain("human sign-off");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    __setProposalSemanticStreamForTest(undefined);
     __resetGoalForTest();
   });
 

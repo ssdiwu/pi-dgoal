@@ -11,9 +11,11 @@ import {
   loadDgoalConfig,
   normalizeAuditorModelId,
   preflightAuditorModelCandidates,
+  PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS,
   resolveAuditorModelCandidates,
   resolveAuditorModelId,
   resolveContextSummarizerModelCandidates,
+  resolveProposalSemanticReviewIdleTimeoutSeconds,
 } from "../index.ts";
 
 const tmpRoots: string[] = [];
@@ -659,5 +661,53 @@ describe("dgoal auditor config", () => {
     expect(normalizeAuditorModelId("openai/gpt\u001fx")).toBeUndefined();
     expect(normalizeAuditorModelId("openai/gpt\u007fx")).toBeUndefined();
     expect(normalizeAuditorModelId("openai/gpt\nx")).toBeUndefined();
+  });
+});
+
+describe("dgoal proposalSemanticReviewIdleTimeoutSeconds 配置", () => {
+  test("缺失 isProjectTrusted 时不抛，按未受信任处理并回退默认", async () => {
+    const { agentDir, cwd } = makeTempProject();
+    // 只写全局配置；ctx 不传 isProjectTrusted（模拟 DgoalContext 缺该字段）。
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      proposalSemanticReviewIdleTimeoutSeconds: 120,
+    }));
+    // 反馈环：当前 loadDgoalConfig 调 ctx.isProjectTrusted() 会抛 TypeError。
+    // 修复后应防御性可选链，不抛，全局配置仍被读取。
+    const loaded = await loadDgoalConfig({ cwd } as never, { agentDir });
+    expect(loaded.globalConfig.proposalSemanticReviewIdleTimeoutSeconds).toBe(120);
+    expect(resolveProposalSemanticReviewIdleTimeoutSeconds(loaded)).toBe(120);
+  });
+
+  test("合法项目级优先于全局", async () => {
+    const { agentDir, cwd } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+      proposalSemanticReviewIdleTimeoutSeconds: 120,
+    }));
+    mkdirSync(join(cwd, ".pi"), { recursive: true });
+    writeFileSync(join(cwd, ".pi", "pi-dgoal.json"), JSON.stringify({
+      proposalSemanticReviewIdleTimeoutSeconds: 45,
+    }));
+    const loaded = await loadDgoalConfig({ cwd, isProjectTrusted: () => true }, { agentDir });
+    expect(resolveProposalSemanticReviewIdleTimeoutSeconds(loaded)).toBe(45);
+  });
+
+  test("非法值告警并回退默认 60s", async () => {
+    const { agentDir, cwd } = makeTempProject();
+    for (const bad of [0, -5, 3601, 1.5, "60", null]) {
+      writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
+        proposalSemanticReviewIdleTimeoutSeconds: bad,
+      }));
+      const loaded = await loadDgoalConfig({ cwd, isProjectTrusted: () => true }, { agentDir });
+      expect(loaded.globalConfig.proposalSemanticReviewIdleTimeoutSeconds).toBeUndefined();
+      expect(loaded.issues.some((i) => i.key === "notify.proposalSemanticReviewIdleTimeoutInvalid")).toBe(true);
+      expect(resolveProposalSemanticReviewIdleTimeoutSeconds(loaded)).toBe(PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS);
+    }
+  });
+
+  test("未配置时回退默认 60s", async () => {
+    const { agentDir, cwd } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({ phaseAuditorModels: null }));
+    const loaded = await loadDgoalConfig({ cwd, isProjectTrusted: () => true }, { agentDir });
+    expect(resolveProposalSemanticReviewIdleTimeoutSeconds(loaded)).toBe(PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS);
   });
 });

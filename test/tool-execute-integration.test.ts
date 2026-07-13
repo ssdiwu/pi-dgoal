@@ -211,7 +211,8 @@ describe("工具 execute · proposal 语义预审状态边界", () => {
 
     __setProposalSemanticReviewForTest(() => { throw new Error("provider unavailable"); });
     const errored = await __executeDgoalProposeForTest(params);
-    expect(errored.details?.error).toBe("semantic review rejected");
+    expect(errored.details?.error).toBe("semantic review technical error");
+    expect(errored.isError).toBe(true);
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(__getPendingProposalForTest()).toBeUndefined();
 

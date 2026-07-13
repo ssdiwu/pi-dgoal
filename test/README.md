@@ -24,7 +24,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-status-pure.test.ts` | v0.4.2 `/dgoal s` modal 的纯函数测试：`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`。 |
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界，以及浮层缺失/首次 `setWidget` 异常后的幂等重绘。 |
-| `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput`、当前会话 LLM 语义预审的拒绝/改写/fail-closed、旧 proposal 清理、冻结 `acceptanceCriteria` / `userReviewItems`、`buildProposePrompt`、确认 UI 摘要/明细切换。 |
+| `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput`、当前会话 LLM 语义预审的拒绝/改写/fail-closed、旧 proposal 清理、冻结 `acceptanceCriteria` / `userReviewItems`、`buildProposePrompt`、确认 UI 摘要/明细切换。预审流式 idle timeout（持续事件续命、无事件超时）、技术失败（`isError:true`）与语义打回（`isError:false`）分离、`onUpdate` 活性输出。 |
 | `startgoal-abort.test.ts` | 启动中断与语义预审中断：`ctx.abort`、启动闸门投递去重，以及预审中断后 goal 保持 pending、没有 active proposal。 |
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=180`、`isAuditorError` 三态判定、`runCheckWithRetry` 候选单次切换（approved/rejected 不切换、候选耗尽 `auditor_error`）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
 | `auditor-config.test.ts` | 审核器候选配置与预检：受信任项目链整体 > 全局链、同来源复数字段 > 单值字段 > 旧 `auditorModel`、`phaseAuditorModels` / `goalAuditorModels` 的 `null` 阻断、空/非法/重复/超限候选、custom/gateway 多段路径和 thinking 后缀、隔离 child 的结构化 Pi 注册表匹配、成功缓存/失败重试、预检不可用的跨字段/来源降级与预检失败保留候选；同时覆盖首次双 `null` 模板及 `ui.notify` 抛错容错。 |
