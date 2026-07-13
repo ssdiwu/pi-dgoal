@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-AI 驱动 smoke：真实模型 × 隔离环境跑通多 phase dgoal 全工具链。
+AI 驱动 smoke：真实模型 × 隔离环境跑通 dgoal 全工具链（默认单 phase，对齐 ADR 0017）。
 
 与 test-extension-rpc.py（离线、仅断言加载/命令注册）区别：
   - 不设 PI_OFFLINE（需联网调真实模型 + 建检/终审子进程也调模型）
@@ -77,13 +77,14 @@ TOTAL_TIMEOUT = 900
 EXPECTED_FILE = "hello.txt"
 EXPECTED_CONTENT = "Hello from dgoal smoke"
 
-# 轻引导两阶段（实现 + 验证），让 agent 自然组织多 phase；phases 仍由 agent 自己 propose
+# 轻引导一个可独立建检的交付（实现 + 验证作为 task），让 agent 自然组织 phase 数（ADR 0017：默认一个 phase）。
+# 不强制两个 phase：简单任务强行拆 phase 与 ADR 0017 冲突，会让模型在 proposal 阶段反复重提。
 SMOKE_GOAL = (
     f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}。"
-    "然后独立验证文件内容与上述要求完全一致。请只调用一次 dgoal_propose，按「实现」「验证」两个阶段组织 plan，"
-    "严格按 phase 数组顺序完成：每个 task 做完用 dgoal_plan 推进状态，每阶段 task 全部终态后调用 dgoal_check 建检，"
-    "读取并遵循每次 dgoal_check 的结果；不要重复提案，不要跳过未通过或仍 pending 的 phase。"
-    "只有当所有 phase 都已被 dgoal_check 明确通过且 plan 中没有 pending phase 时，才调用一次 dgoal_done 结束。"
+    "然后独立验证文件内容与上述要求完全一致。"
+    "请用 dgoal_propose 提交一次计划（任务简单时一个 phase 即可，不要为凑结构强行拆 phase），"
+    "确认后用 dgoal_plan 推进 task 状态，阶段 task 全部终态后调用 dgoal_check 建检并读取结果；"
+    "只有阶段被 dgoal_check 明确通过后，才调用一次 dgoal_done 结束。不要重复提案。"
 )
 
 

@@ -453,6 +453,32 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
+  test("语义预审接受 approve JSON 中空的迁移数组", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-empty-migrations", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticCompletionForTest(() => ({
+      stopReason: "stop",
+      content: [{
+        type: "text",
+        text: JSON.stringify({
+          decision: "approve",
+          acceptanceCriteria: criteria,
+          phaseAcceptanceCriteria: [criteria],
+          userReviewItems: [],
+          migratedUserReviewItems: [],
+        }),
+      }],
+    }));
+    const ctx = {
+      model: {},
+      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
+    };
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    expect(result.details?.semanticReview).toBe("approve");
+    expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-empty-migrations");
+    __resetGoalForTest();
+  });
+
   test("人工 criterion 搭配命令、路径、JSON evidence 都经真实工具入口拒绝", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-evidence-shapes", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
@@ -669,6 +695,47 @@ describe("切片4 · handleProposalConfirmation", () => {
     );
     expect(result).toEqual({ feedback: "请先补一个回归测试" });
     expect(editorCalls).toEqual([{ title: "反馈意见（agent 会据此调整计划）：", prefill: "" }]);
+  });
+
+  test("兼容旧主机：无 select 时 fallback 到 confirm 为 true，直接确认启动", async () => {
+    const result = await __handleProposalConfirmationForTest(
+      {
+        cwd: process.cwd(),
+        ui: {
+          confirm: async () => true,
+          notify: () => {},
+          setStatus: () => {},
+          editor: async () => "不应命中",
+        },
+      } as never,
+      goal(),
+      {
+        objective: "修好 auth 测试",
+        verification: "npm test auth 全过",
+        phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
+      },
+    );
+    expect(result).toBe("confirmed");
+  });
+
+  test("兼容旧主机：无 select 且 confirm false 时拒绝目标", async () => {
+    const result = await __handleProposalConfirmationForTest(
+      {
+        cwd: process.cwd(),
+        ui: {
+          confirm: async () => false,
+          notify: () => {},
+          setStatus: () => {},
+        },
+      } as never,
+      goal(),
+      {
+        objective: "修好 auth 测试",
+        verification: "npm test auth 全过",
+        phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
+      },
+    );
+    expect(result).toBe("rejected");
   });
 });
 
