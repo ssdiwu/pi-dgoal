@@ -3,9 +3,17 @@
 export const APPROVED_MARKER = "<APPROVED>";
 export const REJECTED_MARKER = "<REJECTED>";
 
+// Goal audits may attach a supported attribution to REJECTED. These are still
+// terminal decisions, rather than partial reports that require continuation.
+const REJECTED_MARKER_PATTERN = /<REJECTED(?:\s+(?:goal|user_review|phase\s*=\s*["']?\d+["']?))?\s*>/i;
+
+export function hasRejectedAuditorMarker(output: string): boolean {
+  return REJECTED_MARKER_PATTERN.test(output);
+}
+
 export function parseAuditorDecision(output: string): boolean {
   if (!output) return false;
-  return output.includes(APPROVED_MARKER) && !output.includes(REJECTED_MARKER);
+  return output.includes(APPROVED_MARKER) && !hasRejectedAuditorMarker(output);
 }
 
 export function summarizeCheckProgress(output: string, emptyText: string): string {

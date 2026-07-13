@@ -32,6 +32,24 @@ describe("auditor candidate fallback", () => {
     expect(classifyAuditorFailure({ approved: false, aborted: false, output: "", error: "HTTP 429", errorInfo: { kind: "unknown" } })).toBe("retry_same_model");
   });
 
+  test("treats scoped rejected markers as a final decision without retrying or switching candidates", async () => {
+    const markers = ["<REJECTED goal>", '<REJECTED phase="2">', "<REJECTED user_review>"];
+    for (const marker of markers) {
+      const calls: string[] = [];
+      const result = await runCheckWithRetry({
+        modelIds: ["primary/model:high", "backup/model:medium"],
+        run: async (modelId) => {
+          calls.push(modelId!);
+          return { approved: false, aborted: false, output: `audit report\n${marker}` };
+        },
+      });
+
+      expect(calls).toEqual(["primary/model:high"]);
+      expect(result.output).toContain(marker);
+      expect(classifyAuditorFailure(result)).toBe("decision");
+    }
+  });
+
   test("moves to the next candidate for every allowed zero-output technical failure", async () => {
     const failures: AuditorResult["errorInfo"][] = [
       { kind: "http", status: 401 },

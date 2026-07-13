@@ -23,8 +23,8 @@ import {
 } from "../plan/index.ts";
 import {
   APPROVED_MARKER,
-  REJECTED_MARKER,
   extractUserReviewSuggestions as extractAuditUserReviewSuggestions,
+  hasRejectedAuditorMarker,
   parseAuditorDecision,
   parseFinalAuditAttribution,
   summarizeCheckProgress as summarizeAuditProgress,
@@ -4237,7 +4237,7 @@ export type AuditorFailureDisposition = "decision" | "fallback" | "partial_retry
 
 function hasExplicitAuditorDecision(output: string): boolean {
   const approved = output.includes(APPROVED_MARKER);
-  const rejected = output.includes(REJECTED_MARKER);
+  const rejected = hasRejectedAuditorMarker(output);
   return approved !== rejected;
 }
 
