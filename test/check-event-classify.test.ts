@@ -101,8 +101,8 @@ describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
 });
 
 describe("v0.5.2 · 超时秒单位与可见倍计时口径", () => {
-  test("CHECK_IDLE_TIMEOUT_SECONDS 以秒为单位，值为 120（未来可下调，本版 2 分钟）", () => {
-    expect(CHECK_IDLE_TIMEOUT_SECONDS).toBe(120);
+  test("CHECK_IDLE_TIMEOUT_SECONDS 以秒为单位，值为 180（大范围终审留 3 分钟活性窗口）", () => {
+    expect(CHECK_IDLE_TIMEOUT_SECONDS).toBe(180);
     expect(typeof CHECK_IDLE_TIMEOUT_SECONDS).toBe("number");
   });
 });
@@ -167,7 +167,7 @@ describe("v0.5.2 · 结果三态与 auditor_error 重试", () => {
 
 describe("v0.5.2 · 建检运行时文案 i18n", () => {
   test("formatCheckLivenessLine 默认中文：思考中 + 空闲倒计时", () => {
-    expect(formatCheckLivenessLine({ liveness: "thinking", idleLeft: 113, idleTotal: 120 })).toBe("[思考中] · 空闲 113s/120s");
+    expect(formatCheckLivenessLine({ liveness: "thinking", idleLeft: 173, idleTotal: 180 })).toBe("[思考中] · 空闲 173s/180s");
   });
 
   test("formatCheckLivenessLine 可被英文 i18n 覆盖", () => {
@@ -180,7 +180,7 @@ describe("v0.5.2 · 建检运行时文案 i18n", () => {
         return map[key];
       },
     });
-    expect(formatCheckLivenessLine({ liveness: "thinking", idleLeft: 113, idleTotal: 120 })).toBe("[thinking] · idle 113s/120s");
+    expect(formatCheckLivenessLine({ liveness: "thinking", idleLeft: 173, idleTotal: 180 })).toBe("[thinking] · idle 173s/180s");
   });
 
   test("summarizeCheckProgress 默认中文：无输出时返回占位", () => {

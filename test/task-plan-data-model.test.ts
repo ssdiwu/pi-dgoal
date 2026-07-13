@@ -12,6 +12,7 @@ import {
   recordPhaseAuditFeedback,
   clearPhaseFeedback,
   setFinalFeedback,
+  appendFinalAuditHistory,
   setPhaseCompleted,
   currentUncheckedPhase,
   type AcceptanceCriterion,
@@ -117,12 +118,12 @@ describe("切片1 · persist/load 往返", () => {
     persistGoal(original);
 
     // persistGoal 写入 captured
-    expect(captured?.type).toBe("dgoal-state");
+    expect(captured?.type).toBe("dgoal-goal-vnext");
     expect(captured?.data.goal).not.toBeNull();
 
     // 用写入的 entry 构造 ctx，loadGoal 应恢复完整 plan
     const ctx = makeCtx([
-      { type: "custom", customType: "dgoal-state", data: captured!.data },
+      { type: "custom", customType: "dgoal-goal-vnext", data: captured!.data },
     ]);
     const restored = loadGoal(ctx as never);
 
@@ -150,34 +151,28 @@ describe("切片1 · persist/load 往返", () => {
     persistGoal(null);
     expect(captured!.goal).toBeNull();
 
-    const ctx = makeCtx([{ type: "custom", customType: "dgoal-state", data: captured! }]);
+    const ctx = makeCtx([{ type: "custom", customType: "dgoal-goal-vnext", data: captured! }]);
     expect(loadGoal(ctx as never)).toBeUndefined();
   });
 });
 
-describe("切片1 · 旧 entry 向后兼容", () => {
-  test("0.1.x entry（无 plan/verification/pauseReason/rejectedCount）仍可 loadGoal", () => {
+describe("切片1 · 旧 entry 隔离", () => {
+  test("0.1.x dgoal-state entry 被新运行时忽略", () => {
     const legacy = makeLegacyGoal();
     const ctx = makeCtx([
       { type: "custom", customType: "dgoal-state", data: { goal: legacy } },
     ]);
     const restored = loadGoal(ctx as never);
 
-    expect(restored).not.toBeUndefined();
-    expect(restored!.id).toBe("legacy-1");
-    expect(restored!.objective).toBe("旧目标");
-    expect(restored!.contextSummary).toBe("旧背景");
-    // 0.2.0 字段在旧 entry 上不存在
-    expect(restored!.plan).toBeUndefined();
-    expect(restored!.verification).toBeUndefined();
+    expect(restored).toBeUndefined();
   });
 
   test("complete/pending 状态的 goal 不被 loadGoal 恢复（沿用 0.1.x 行为）", () => {
     const completed = makeGoalWithPlan({ status: "complete" });
     const pending = makeGoalWithPlan({ status: "pending", id: "p-1" });
     const ctx = makeCtx([
-      { type: "custom", customType: "dgoal-state", data: { goal: completed } },
-      { type: "custom", customType: "dgoal-state", data: { goal: pending } },
+      { type: "custom", customType: "dgoal-goal-vnext", data: { goal: completed } },
+      { type: "custom", customType: "dgoal-goal-vnext", data: { goal: pending } },
     ]);
     // last-write-wins 取最后一条（pending），但 pending 被过滤 → undefined
     expect(loadGoal(ctx as never)).toBeUndefined();
@@ -278,6 +273,28 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     expect(g1.finalFeedback!.rejectedCount).toBe(2);
   });
 
+  test("终审修复账本追加每轮失败报告与完成声明", () => {
+    const goal = makeGoalWithPlan();
+    const first = appendFinalAuditHistory(goal, {
+      attempt: 1,
+      report: "缺少测试证据",
+      summary: "补齐测试",
+      verification: "npm test",
+      whatChanged: ["补测试"],
+      userReview: "人工看一次 UI",
+    });
+    const second = appendFinalAuditHistory({ ...goal, finalAuditHistory: first }, {
+      attempt: 2,
+      report: "仍缺文档证据",
+      summary: "补文档",
+      verification: "rg 通过",
+    });
+    expect(first).toHaveLength(1);
+    expect(second.map((entry) => entry.attempt)).toEqual([1, 2]);
+    expect(second[0].report).toBe("缺少测试证据");
+    expect(second[1].verification).toBe("rg 通过");
+  });
+
   test("currentUncheckedPhase 返回第一个未 done 的 phase", () => {
     const task: Task = { id: 1, subject: "t", status: "done" };
     const ph1: Phase = { id: 1, subject: "已完成", status: "done", tasks: [task] };
@@ -315,7 +332,7 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     const original = setFinalFeedback(setPhaseFeedback(makeGoalWithPlan(), 1, "phase 报告"), "final 报告", 1);
     persistGoal(original);
 
-    const ctx = makeCtx([{ type: "custom", customType: "dgoal-state", data: captured!.data }]);
+    const ctx = makeCtx([{ type: "custom", customType: "dgoal-goal-vnext", data: captured!.data }]);
     const restored = loadGoal(ctx as never);
 
     expect(restored).not.toBeUndefined();

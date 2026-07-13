@@ -53,7 +53,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **task 默认隐藏**:双可见性轴。持续显示浮层的展开态跟随 Pi 的 `app.tools.expand`(默认 `Ctrl+O`)，但只展开 `pending / in_progress` phase 的 task；`done phase` 持久显示标题行，不再在持续显示展开态里露出其 task。浮层底部同一行固定提示快捷键 + 常用命令说明。
 - **不展示建检报告**:aboveEditor 浮层只显示状态与 plan 结构，不承载阶段/终审失败报告；报告是 agent-facing 修复输入，不是持续浮层正文。
 - **A-line i18n 软依赖**:浮层、状态栏、通知、启动闸门确认 UI 等用户可见文案通过 `pi-di18n` bundle 本地化;缺失 `pi-di18n` 时降级为内置中文。模型侧 prompt、tool description、schema description 不在本地化范围,避免改变 agent 行为。
-- **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。
+- **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。Goal Repair 期间为支持终审回查，system prompt 暂停 done phase 的软遗忘，保留全量 phase/task 上下文；判据是 `status === rejected`、`paused(audit_failed_3x)`，或 `finalFeedback` 存在（含 resume 后 status 已回 active 的修复期）。
 - **10 行折叠**:浮层自身最多渲 10 行(heading + body + 底部 hint),给 Pi core 的 widget 区域留余量,避免触发 `(widget truncated)`;溢出时保留底部 `Ctrl+O 显示/隐藏 task` hint,并用 `+N more` 摘要。
 - **空时隐藏**:无 plan 或 goal 为 pending/已 clear 时 `setWidget(key, undefined)`；paused goal 保留冻结的 plan 浮层供只读查看。
 - **刷新时机**:`tool_execution_end`(toolName 是 dgoal_plan/dgoal_check)+ `agent_end` 推进 iteration 时。注意 `tool_execution_end` 只读 `getState()`,不 replay(branch stale)。
@@ -63,6 +63,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 `ctx.ui.setStatus("dgoal", ...)` 显示 goal 级状态:
 - `🔁 active #N`(N=iteration)
 - `🔁 paused` / `🔁 starting...` / `🔁 rejected ×M`(M=rejectedCount)/ `🔁 done`
+- `rejected` 展示 `终审修复（Goal Repair）· 第 M/3 次`；`paused(audit_failed_3x)` 展示 `终审修复已暂停`。该文本是展示投影，不是新的状态、phase 或 task。
 
 ## `/dgoal s` 详细查询 Modal(v0.4.2+,视觉编码 v0.5+ 见 ADR 0009)
 
@@ -73,7 +74,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - 原始建检/终审失败报告会通过 system prompt 的 `<check_feedback>` block 注入给主 agent，作为后续修复输入。
 - 注入顺序：`<dgoal_goal>` → `<dgoal_context>` → `<dgoal_plan>` → `<check_feedback>` → 循环规则。
 - **用户侧 TUI 不复读报告正文**：aboveEditor 浮层、`/dgoal s` modal、底部状态栏都不渲染 `report`，避免把 agent-facing 修复材料变成持续 UI 噪音。
-- 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running` / `idle Ns/120s`），但这仍属于运行时状态，不是报告正文。
+- 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running` / `idle Ns/180s`），但这仍属于运行时状态，不是报告正文。
 
 决策依据：形态选型 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`（原 Variant A top-center，v0.5+ 切 center，见追加决策）；视觉编码 `doc/决策档案/0009-TUI视觉编码改为层级靠颜色状态靠字符.md`（**层级靠颜色，状态靠字符**，覆盖 ADR 0008 的 emoji+status 色方案）；探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`。
 

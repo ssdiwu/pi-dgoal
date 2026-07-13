@@ -73,6 +73,14 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
       Date.now = realNow;
     }
   });
+
+  test("rejected / audit_failed_3x 显示 Goal Repair 投影", () => {
+    const rejected = goal([p(1, "阶段", [], "done")], { status: "rejected", rejectedCount: 2 });
+    expect(renderPlanLines(rejected, noHide)[0]).toContain("终审修复");
+
+    const paused = goal([p(1, "阶段", [], "done")], { status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3 });
+    expect(renderPlanLines(paused, noHide)[0]).toContain("终审修复已暂停");
+  });
 });
 
 describe("切片3 · 状态符号", () => {

@@ -44,7 +44,7 @@ function makeCtx(entries: Array<{ type?: string; customType?: string; data?: unk
 }
 
 function dgoalEntry(goal: GoalState) {
-  return { type: "custom", customType: "dgoal-state", data: { goal } };
+  return { type: "custom", customType: "dgoal-goal-vnext", data: { goal } };
 }
 
 describe("session_tree 重同步（resyncGoalFromSession）", () => {
@@ -73,7 +73,7 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     __resetGoalForTest();
     __setGoalForTest(makeGoal()); // tree 之前有 goal
 
-    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-state entry
+    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-goal-vnext entry
 
     expect(__getGoalForTest()).toBeUndefined();
   });

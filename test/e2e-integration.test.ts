@@ -25,6 +25,7 @@ import {
   __setGoalForTest,
   __setPlanOverlayForTest,
   __setPhaseCheckOverrideForTest,
+  __setCompletionAuditorOverrideForTest,
   __setProposalSemanticReviewForTest,
   renderPlanLines,
   extractUserReviewSuggestions,
@@ -36,6 +37,7 @@ import {
   PlanOverlay,
   setFinalFeedback,
   setPhaseCompleted,
+  STATE_ENTRY_TYPE,
   currentUncheckedPhase,
   type Task,
   type TaskPlan,
@@ -60,6 +62,114 @@ function makePhase(id: number, subject: string, tasks: Task[], status: Phase["st
 }
 
 describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", () => {
+  test("单 phase dgoal_check 合并 goal 审核，dgoal_done 不重复审核", async () => {
+    __resetGoalForTest();
+    __setApiForTest(makeApi().api as never);
+    let auditCalls = 0;
+    __setCompletionAuditorOverrideForTest(async () => {
+      auditCalls += 1;
+      return { approved: true, aborted: false, output: "<APPROVED> unified", modelId: "test/auditor", liveness: "approved" };
+    });
+    __setGoalForTest({
+      id: "single-phase",
+      objective: "单 phase 交付",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      verification: "npm test",
+      plan: {
+        phases: [{ id: 1, subject: "交付", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] }],
+        nextId: 3,
+      },
+    } as never);
+
+    const check = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(check.details?.approved).toBe(true);
+    expect(__getGoalForTest()?.singlePhaseAudit?.modelId).toBe("test/auditor");
+    // 冻结验收：dgoal_check 最终工具输出必须展示实际形成结论的审核模型
+    expect(check.details?.auditorModel).toBe("test/auditor");
+    expect(String(check.details?.auditorModelLabel ?? "")).toContain("test/auditor");
+    expect(String(check.content?.[0]?.text ?? "")).toContain("test/auditor");
+
+    const done = await __executeDgoalDoneForTest({ summary: "完成单 phase", verification: "npm test" }, { cwd: process.cwd(), ui: {} } as never);
+    expect(done.details?.singlePhaseUnifiedAudit).toBe(true);
+    // 冻结验收：dgoal_done 最终工具输出必须展示实际形成结论的审核模型
+    expect(done.details?.auditorModel).toBe("test/auditor");
+    expect(String(done.content?.[0]?.text ?? "")).toContain("test/auditor");
+    expect(auditCalls).toBe(1);
+  });
+
+  test("多 phase 终审归因链路：phase(id) 拒绝写阶段反馈、goal 拒绝写终审反馈与账本、user_review 不触发重检", async () => {
+    __resetGoalForTest();
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    // 多 phase：dgoal_check 走 runPhaseCheck（phaseCheckOverride），dgoal_done 走 runCompletionAuditor
+    let phaseCheckCalls = 0;
+    __setPhaseCheckOverrideForTest(async () => {
+      phaseCheckCalls += 1;
+      // phase #1 首次过；phase #2 首次拒（带用户复核建议），二次过；均携带实际审核模型
+      if (phaseCheckCalls === 1) return { approved: true, aborted: false, output: "<APPROVED>", liveness: "approved", modelId: "test/auditor" };
+      if (phaseCheckCalls === 2) return { approved: false, aborted: false, output: "## 建议用户复核（不阻塞完成）\n- 复核真实 UI\n\n<REJECTED>", liveness: "rejected", modelId: "test/auditor" };
+      return { approved: true, aborted: false, output: "<APPROVED>", liveness: "approved", modelId: "test/auditor" };
+    });
+    __setGoalForTest({
+      id: "multi-phase-attribution",
+      objective: "多 phase 终审归因",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      verification: "npm test",
+      plan: {
+        phases: [
+          makePhase(1, "实现", [makeTask(3, "t1", "done", { evidence: "npm test" })], "pending"),
+          makePhase(2, "验证", [makeTask(4, "t2", "done", { evidence: "lint ok" })], "pending"),
+        ],
+        nextId: 5,
+      },
+    } as never);
+
+    // 1. phase #1 建检通过 → done
+    const c1 = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(c1.details?.approved).toBe(true);
+    expect(__getGoalForTest()?.plan!.phases[0].status).toBe("done");
+
+    // 2. phase #2 建检拒绝 → 回 in_progress + 阶段反馈（phase 归因）
+    const c2 = await __executeDgoalCheckForTest({ phaseId: 2 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(c2.details?.approved).toBe(false);
+    // 冻结验收：拒绝路径的最终工具输出也必须展示实际形成结论的审核模型
+    expect(c2.details?.auditorModel).toBe("test/auditor");
+    expect(String(c2.content?.[0]?.text ?? "")).toContain("test/auditor");
+    const afterPhaseReject = __getGoalForTest()!;
+    expect(afterPhaseReject.plan!.phases[1].status).toBe("in_progress");
+    expect(afterPhaseReject.phaseFeedbackById?.["2"]?.report).toContain("<REJECTED>");
+    // 阶段拒绝提取的用户复核建议落入 userReviewItems，不阻塞
+    expect(afterPhaseReject.userReviewItems).toContain("复核真实 UI");
+
+    // 3. 修复后 phase #2 再次建检通过 → done，阶段反馈清除
+    const c2b = await __executeDgoalCheckForTest({ phaseId: 2 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(c2b.details?.approved).toBe(true);
+    expect(__getGoalForTest()?.plan!.phases[1].status).toBe("done");
+    expect(__getGoalForTest()?.phaseFeedbackById?.["2"]).toBeUndefined();
+
+    // 4. dgoal_done 终审拒绝（AUDITOR bypass 下用 handleFinalAuditRejectedForTest 直走拒绝路径）→ goal 进 rejected + finalFeedback + 终审修复账本（goal 归因）
+    const completedGoal = __getGoalForTest()!;
+    __handleFinalAuditRejectedForTest({
+      completedGoal,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: "## 建议用户复核（不阻塞完成）\n- 复核 TUI 标签\n\n<REJECTED>",
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const afterGoalReject = __getGoalForTest()!;
+    expect(afterGoalReject.status).toBe("rejected");
+    expect(afterGoalReject.finalFeedback?.report).toContain("<REJECTED>");
+    expect(afterGoalReject.finalAuditHistory).toHaveLength(1);
+    expect(afterGoalReject.finalAuditHistory?.[0].attempt).toBe(1);
+    // 终审拒绝也提取用户复核建议，但不触发重检（userReview 永不阻塞完成）
+    expect(afterGoalReject.userReviewItems).toContain("复核 TUI 标签");
+  });
   beforeEach(() => {
     __resetGoalForTest();
   });
@@ -156,7 +266,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const activatedAt = 2_000;
     goal = { ...goal, plan: proposalToPlan(proposal), status: "active", startedAt: activatedAt, updatedAt: activatedAt };
     // 模拟 persistGoal（startGoal 确认后会 persist）
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
 
     // 计时从用户确认计划进入 active 时开始，而不是 pending 启动阶段。
     expect(goal.startedAt).toBe(activatedAt);
@@ -175,14 +285,14 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     // 模拟 dgoal_plan update（直接调 reducer 模拟工具 execute 的 commit 行为）
     const r1 = applyPlanUpdate(goal, { id: t1.id, status: "in_progress", activeForm: "正在做 task1" });
     goal = r1.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks[0].status).toBe("in_progress");
     expect(goal.plan!.phases[0].status).toBe("in_progress"); // 聚合
 
     // 5. task1 → completed（带 evidence）
     const r2 = applyPlanUpdate(goal, { id: t1.id, status: "completed", evidence: "跑测试全过" });
     goal = r2.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks[0].status).toBe("completed");
     expect(goal.plan!.phases[0].tasks[0].evidence).toBe("跑测试全过");
 
@@ -190,7 +300,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const t2 = goal.plan!.phases[0].tasks[1];
     const r3 = applyPlanUpdate(goal, { id: t2.id, status: "completed", evidence: "ok" });
     goal = r3.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks[1].status).toBe("completed");
     expect(goal.plan!.phases[0].status).toBe("in_progress"); // 聚合：仍有 in_progress task
 
@@ -201,14 +311,14 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const r4 = setPhaseCompleted(goal, 1);
     expect(r4.op.kind).not.toBe("error");
     goal = r4.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].status).toBe("completed");
 
     // 8. 阶段B task3 完成
     const t3 = goal.plan!.phases[1].tasks[0];
     const r5 = applyPlanUpdate(goal, { id: t3.id, status: "completed", evidence: "ok" });
     goal = r5.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
 
     // 9. 阶段B 也全终态 → setPhaseCompleted（phase 2）
     const r6 = setPhaseCompleted(goal, 2);
@@ -219,7 +329,7 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     // finalizeGoal 内部是：status: done → persistGoal(null) → currentGoal=undefined
     // 这里模拟这个序列
     goal = { ...goal, status: "done", updatedAt: Date.now() };
-    api.appendEntry("dgoal-state", { goal: null }); // finalize 写 null
+    api.appendEntry(STATE_ENTRY_TYPE, { goal: null }); // finalize 写 null
 
     // 11. 验证：所有 phase completed，goal done，persist 序列完整
     expect(goal.plan!.phases.every((p) => p.status === "completed")).toBe(true);
@@ -813,5 +923,111 @@ describe("端到端集成 · v0.5.2 越闸门推进拦截（切片6）", () => {
     const ph: Phase = { id: 1, subject: "阶段一", status: "done", tasks: [t] };
     const goal = { id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: { phases: [ph], nextId: 2 } } as GoalState;
     expect(currentUncheckedPhase(goal)).toBeUndefined();
+  });
+});
+
+describe("端到端集成 · vNext 多 phase 终审三路归因", () => {
+  function makeMultiPhaseGoal(): GoalState {
+    return {
+      id: "multi-attribution",
+      objective: "多 phase 终审归因",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      verification: "npm test",
+      plan: {
+        phases: [
+          makePhase(1, "实现", [makeTask(3, "t1", "done", { evidence: "npm test" })], "done"),
+          makePhase(2, "验证", [makeTask(4, "t2", "done", { evidence: "lint ok" })], "done"),
+        ],
+        nextId: 5,
+      },
+    } as never;
+  }
+
+  test("phase(id) 归因：重开对应已完成 phase，不进 rejected", () => {
+    __resetGoalForTest();
+    __setApiForTest(makeApi().api as never);
+    __setGoalForTest(makeMultiPhaseGoal());
+    __handleFinalAuditRejectedForTest({
+      completedGoal: __getGoalForTest()!,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: "phase #2 的验证不充分\n<REJECTED phase=\"2\">",
+      auditorDetails: { auditorModel: "test/auditor" },
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const after = __getGoalForTest()!;
+    // phase #2 被重开为 in_progress，phase #1 保持 done
+    expect(after.status).toBe("active");
+    expect(after.plan!.phases[0].status).toBe("done");
+    expect(after.plan!.phases[1].status).toBe("in_progress");
+    // 不进 rejected，不写终审反馈
+    expect(after.finalFeedback).toBeUndefined();
+    // 阶段反馈记录了报告
+    expect(after.phaseFeedbackById?.["2"]?.report).toContain("<REJECTED");
+    __resetGoalForTest();
+  });
+
+  test("goal 归因：进 rejected + Goal Repair", () => {
+    __resetGoalForTest();
+    __setApiForTest(makeApi().api as never);
+    __setGoalForTest(makeMultiPhaseGoal());
+    __handleFinalAuditRejectedForTest({
+      completedGoal: __getGoalForTest()!,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: "goal 级问题\n<REJECTED goal>",
+      auditorDetails: { auditorModel: "test/auditor" },
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const after = __getGoalForTest()!;
+    expect(after.status).toBe("rejected");
+    expect(after.finalFeedback?.report).toContain("<REJECTED");
+    expect(after.rejectedCount).toBe(1);
+    // phase 状态不变
+    expect(after.plan!.phases[0].status).toBe("done");
+    expect(after.plan!.phases[1].status).toBe("done");
+    __resetGoalForTest();
+  });
+
+  test("user_review 归因：不拒绝，finalize goal + 记录用户复核", () => {
+    __resetGoalForTest();
+    __setApiForTest(makeApi().api as never);
+    __setGoalForTest(makeMultiPhaseGoal());
+    const result = __handleFinalAuditRejectedForTest({
+      completedGoal: __getGoalForTest()!,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: "## 建议用户复核（不阻塞完成）\n- 复核 TUI 标签\n\n<REJECTED user_review>",
+      auditorDetails: { auditorModel: "test/auditor" },
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const after = __getGoalForTest()!;
+    // goal 被终结，不进 rejected
+    expect(after).toBeUndefined();
+    // 工具输出声明 audited=true + user_review 归因
+    expect(result.details?.audited).toBe(true);
+    expect(result.details?.auditAttribution).toBe("user_review");
+    __resetGoalForTest();
+  });
+
+  test("默认（无显式归因）按 goal 处理", () => {
+    __resetGoalForTest();
+    __setApiForTest(makeApi().api as never);
+    __setGoalForTest(makeMultiPhaseGoal());
+    __handleFinalAuditRejectedForTest({
+      completedGoal: __getGoalForTest()!,
+      summary: "完成",
+      verification: "npm test",
+      auditOutput: "有问题\n<REJECTED>",
+      auditorDetails: { auditorModel: "test/auditor" },
+      ctx: { cwd: process.cwd(), ui: {} } as never,
+    } as never);
+    const after = __getGoalForTest()!;
+    expect(after.status).toBe("rejected");
+    expect(after.rejectedCount).toBe(1);
+    __resetGoalForTest();
   });
 });

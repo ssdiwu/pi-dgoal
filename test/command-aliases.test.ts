@@ -8,6 +8,8 @@ describe("/dgoal command aliases", () => {
     expect(__parseCommandForTest("")).toEqual({ kind: "start", objective: "" });
     expect(__parseCommandForTest("status")).toEqual({ kind: "status" });
     expect(__parseCommandForTest("s")).toEqual({ kind: "status" });
+    expect(__parseCommandForTest("help")).toEqual({ kind: "help" });
+    expect(__parseCommandForTest("h")).toEqual({ kind: "help" });
   });
 
   test("pause/resume/clear support full word and single-letter aliases", () => {

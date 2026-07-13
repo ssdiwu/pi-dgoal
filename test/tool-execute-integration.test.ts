@@ -24,6 +24,7 @@ import {
   applyPlanMutation,
   formatPlanResult,
   proposalToPlan,
+  STATE_ENTRY_TYPE,
   type GoalState,
   type PlanProposal,
   type Task,
@@ -56,21 +57,21 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     expect(r1.op.kind).toBe("create");
     if (r1.op.kind !== "create") return;
     goal = r1.goal;
-    api.appendEntry("dgoal-state", { goal }); // 工具 execute 会 persist
+    api.appendEntry(STATE_ENTRY_TYPE, { goal }); // 工具 execute 会 persist
     expect(goal.plan!.phases[0].tasks).toHaveLength(1);
     expect(goal.plan!.phases[0].tasks[0].subject).toBe("t1");
 
     // update task: pending → in_progress
     const r2 = applyPlanMutation(goal, "update", { id: r1.op.taskId, status: "in_progress" });
     goal = r2.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks[0].status).toBe("in_progress");
     expect(goal.plan!.phases[0].status).toBe("in_progress"); // phase 聚合
 
     // update task: in_progress → completed（带 evidence）
     const r3 = applyPlanMutation(goal, "update", { id: r1.op.taskId, status: "completed", evidence: "npm test ok" });
     goal = r3.goal;
-    api.appendEntry("dgoal-state", { goal });
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks[0].status).toBe("completed");
     expect(goal.plan!.phases[0].tasks[0].evidence).toBe("npm test ok");
 
@@ -90,7 +91,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     // 验证 persist 序列：create + update×2 + list(不persist) + get(不persist) = 3 次
     // 工具 execute 的逻辑：list/get 不 commit 不 persist（op kind !== create/update）
     expect(writes.length).toBe(3);
-    expect(writes.every((w) => w.type === "dgoal-state")).toBe(true);
+    expect(writes.every((w) => w.type === STATE_ENTRY_TYPE)).toBe(true);
   });
 
   test("dgoal_plan 错误分支：create 缺 subject 报 error（工具 execute 透传不 persist）", () => {
@@ -112,10 +113,10 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     let goal: GoalState = makeActiveGoal();
     const c = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t" });
     if (c.op.kind !== "create") throw new Error("setup");
-    goal = c.goal; api.appendEntry("dgoal-state", { goal });
+    goal = c.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
     const cid = c.op.taskId;
     const r = applyPlanMutation(goal, "update", { id: cid, status: "completed", evidence: "ok" });
-    goal = r.goal; api.appendEntry("dgoal-state", { goal });
+    goal = r.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
 
     // 尝试回退
     const r2 = applyPlanMutation(goal, "update", { id: cid, status: "in_progress" });

@@ -173,29 +173,14 @@ describe("验收 7 · phase 找不到时返回完整阶段列表", () => {
 });
 
 describe("旧 session loadGoal 不迁移", () => {
-  test("loadGoal 恢复旧 plan 时保留原始非连续 phase ID，不重编号", () => {
+  test("新运行时忽略旧 dgoal-state，不恢复旧 plan", () => {
     const oldPlan: TaskPlan = {
-      phases: [
-        phase(1, "阶段一", [task(2, "done", "done")], "done"),
-        phase(4, "阶段二", [task(5, "todo", "in_progress")], "in_progress"),
-        phase(8, "阶段三", [task(9, "todo")], "pending"),
-      ],
-      nextId: 10,
+      phases: [phase(1, "阶段一", [task(2, "done", "done")], "done")],
+      nextId: 3,
     };
     const entries = [{ type: "custom", customType: "dgoal-state", data: { goal: { id: "g-old", objective: "旧", status: "active", startedAt: 1, updatedAt: 1, iteration: 0, plan: oldPlan } } }];
     const ctx = { sessionManager: { getBranch: () => entries } } as unknown as DgoalContext;
-    const loaded = loadGoal(ctx);
-    expect(loaded).toBeDefined();
-    expect(loaded!.plan!.phases.map((p) => p.id)).toEqual([1, 4, 8]);
-    expect(loaded!.plan!.nextId).toBe(10);
-
-    // 直接加载另一份持久化 goal：必须返回另一份原样 plan，不继承上一份映射。
-    const secondPlan: TaskPlan = { phases: [phase(20, "新阶段一", [task(21, "x")]), phase(30, "新阶段二", [task(31, "y")])], nextId: 32 };
-    const secondCtx = { sessionManager: { getBranch: () => [{ type: "custom", customType: "dgoal-state", data: { goal: { id: "g-second", objective: "新", status: "active", startedAt: 2, updatedAt: 2, iteration: 0, plan: secondPlan } } }] } } as unknown as DgoalContext;
-    const second = loadGoal(secondCtx);
-    expect(second?.id).toBe("g-second");
-    expect(second?.plan?.phases.map((p) => p.id)).toEqual([20, 30]);
-    expect(second?.plan?.nextId).toBe(32);
+    expect(loadGoal(ctx)).toBeUndefined();
   });
 });
 

@@ -173,6 +173,46 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     const block = buildPlanContextBlock(g);
     expect(block).toContain("blocked: 缺 token");
   });
+
+  // Goal Repair（ADR 0011/0012）：resume 从 rejected/paused(audit_failed_3x) 恢复为 active 后，
+  // finalFeedback 仍在，已完成 phase 的 task 细节不能被软遗忘——修复需要回查实现证据。
+  test("Goal Repair：resume 后 active + finalFeedback 仍保留 done phase 全量 task 细节", () => {
+    const g = goal({
+      status: "active",
+      rejectedCount: 2,
+      finalFeedback: { report: "<REJECTED>", rejectedCount: 2, createdAt: Date.now() },
+      plan: {
+        phases: [
+          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
+          p(2, "当前阶段", [t(2, "新任务", "in_progress")], "in_progress"),
+        ],
+        nextId: 3,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    // done phase 的 task 细节在 Goal Repair 期间保留
+    expect(block).toContain("[done] phase #1: 已完成阶段");
+    expect(block).toContain("旧任务");
+    expect(block).toContain("旧证据");
+    expect(block).toContain("[in_progress] phase #2: 当前阶段");
+  });
+
+  test("正常 active（无 finalFeedback）：done phase 仍软遗忘", () => {
+    const g = goal({
+      status: "active",
+      plan: {
+        phases: [
+          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
+          p(2, "当前阶段", [t(2, "新任务", "pending")], "in_progress"),
+        ],
+        nextId: 3,
+      } as TaskPlan,
+    });
+    const block = buildPlanContextBlock(g);
+    expect(block).toContain("[done] phase #1: 已完成阶段");
+    expect(block).not.toContain("旧任务");
+    expect(block).not.toContain("旧证据");
+  });
 });
 
 describe("goal 边界注入", () => {
