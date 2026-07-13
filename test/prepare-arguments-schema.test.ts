@@ -9,7 +9,7 @@
 import { describe, expect, test } from "bun:test";
 import { Compile } from "typebox/compile";
 
-import { __dgoalPlanToolDefForTest, __dgoalProposeToolDefForTest } from "../index.ts";
+import { __dgoalPlanToolDefForTest, __dgoalProposeToolDefForTest, __executeDgoalProposeForTest, __resetGoalForTest, __setGoalForTest } from "../index.ts";
 
 function passesStrictSchema(toolDef: ReturnType<typeof __dgoalPlanToolDefForTest>, args: Record<string, unknown>): boolean {
   // 模拟 pi-agent-core prepareToolCallArguments → validateToolArguments：
@@ -88,5 +88,26 @@ describe("prepareArguments schema 接缝 · dgoal_propose", () => {
       acceptanceCriteria: [{ criterion: "完成", evidence: "npm test" }],
       phases: [{ subject: "p", acceptanceCriteria: [{ criterion: "完成", evidence: "npm test" }] }],
     })).toBe(true);
+  });
+
+  test("遗漏 phases 时进入工具层并返回可操作的错误", async () => {
+    const raw = {
+      objective: "o",
+      verification: "v",
+      acceptanceCriteria: [{ criterion: "完成", evidence: "npm test" }],
+    };
+    const prepared = toolDef.prepareArguments!(raw) as Record<string, unknown>;
+    expect(prepared.phases).toEqual([]);
+    expect(passesStrictSchema(toolDef, raw)).toBe(true);
+
+    __setGoalForTest({ id: "missing-phases", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    try {
+      const result = await __executeDgoalProposeForTest(prepared);
+      expect(result.details?.error).toBe("no phases");
+      expect(result.content?.[0]?.text).toContain("缺少必填字段 phases");
+      expect(result.content?.[0]?.text).toContain("acceptanceCriteria");
+    } finally {
+      __resetGoalForTest();
+    }
   });
 });

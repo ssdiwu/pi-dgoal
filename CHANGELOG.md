@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **`dgoal_propose` 漏传 phase 的错误可操作化**：模型遗漏必填 `phases` 时，预处理现在先补为空数组并交给工具层校验，不再暴露宿主模糊的 `must have required properties phases`。错误会明确指出缺少 `phases`，并提示至少提交一个含 `subject` 与 `acceptanceCriteria`（`criterion` + `evidence`）的 phase；补回归测试覆盖该路径。
+
 ## [0.6.3] - 2026-07-14
 
 ### Fixed

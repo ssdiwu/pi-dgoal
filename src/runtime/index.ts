@@ -430,7 +430,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.semantic.liveness.streaming": "接收评审结果",
       "proposal.semantic.liveness.parsing": "校验评审 JSON",
       "proposal.semantic.liveness.done": "预审结束",
-      "proposal.validate.noPhases": "proposal 至少需要一个 phase。",
+      "proposal.validate.noPhases": "缺少必填字段 phases：请至少提交一个 phase；每个 phase 必须包含 subject 和 acceptanceCriteria（criterion + evidence）。",
       "plan.error.noPlan": "当前 goal 没有 plan",
       "plan.error.subjectRequiredForCreate": "create 必须提供 subject",
       "plan.error.blockedByCycle": "blockedBy 会形成环",
@@ -621,7 +621,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.semantic.liveness.streaming": "receiving review",
       "proposal.semantic.liveness.parsing": "validating review JSON",
       "proposal.semantic.liveness.done": "preflight done",
-      "proposal.validate.noPhases": "proposal must include at least one phase.",
+      "proposal.validate.noPhases": "Missing required field phases: submit at least one phase; each phase must include subject and acceptanceCriteria (criterion + evidence).",
       "plan.error.noPlan": "the current goal has no plan",
       "plan.error.subjectRequiredForCreate": "create requires subject",
       "plan.error.blockedByCycle": "blockedBy would create a cycle",
@@ -1947,11 +1947,13 @@ export const dgoalProposeTool = defineTool({
     ),
   }),
   // 模型有时把 phases[].tasks[].blockedBy stringify 成 "[1]"。校验前 coerce 回数组。
+  // phases 遗漏时先补成空数组，使请求进入工具层并返回可操作的错误，
+  // 而不是暴露宿主的泛化 schema 错误（"must have required properties phases"）。
   prepareArguments(args) {
     if (typeof args !== "object" || args === null) return args as never;
     const a = args as Record<string, unknown>;
     const phases = Array.isArray(a.phases) ? a.phases : undefined;
-    if (!phases) return args as never;
+    if (!phases) return { ...a, phases: [] } as never;
     let changed = false;
     const newPhases = phases.map((ph: unknown) => {
       if (typeof ph !== "object" || ph === null || !Array.isArray((ph as Record<string, unknown>).tasks)) return ph;
