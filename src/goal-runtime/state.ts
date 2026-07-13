@@ -52,10 +52,10 @@ export const goalRuntimeState: GoalRuntimeState = createInitialGoalRuntimeState(
 
 // 重置全部可变状态（测试 / session_shutdown 用）。
 export function resetGoalRuntimeState(): void {
-  const fresh = createInitialGoalRuntimeState();
-  Object.assign(goalRuntimeState, fresh);
+  // 先清理 timer 再 Object.assign：Object.assign 会用 fresh（timer=undefined）覆盖，
+  // 如果先 assign 再检查，timer 引用已丢失，clearTimeout 永远不执行，活跃 timer 泄漏。
   if (goalRuntimeState.continuationDeliveryTimer) {
     clearTimeout(goalRuntimeState.continuationDeliveryTimer);
-    goalRuntimeState.continuationDeliveryTimer = undefined;
   }
+  Object.assign(goalRuntimeState, createInitialGoalRuntimeState());
 }
