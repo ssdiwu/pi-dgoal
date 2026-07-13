@@ -7,11 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### ⚠️ Breaking Changes
+
+- **新持久化键不兼容旧 goal**：vNext 使用 `dgoal-goal-vnext` custom entry，旧 `dgoal-state` 被完全忽略。升级后需重新 `/dgoal`，不迁移、不恢复、不展示旧 goal（ADR 0026）。
+
 ### Changed
 
-- **vNext Goal Runtime**：新增 `dgoal-goal-vnext` 持久化键并忽略旧 `dgoal-state`；终审拒绝追加终审修复账本，rejected/paused(audit_failed_3x) 展示 Goal Repair，并保留完整计划修复上下文。
-- **启动与可观测性**：新增冷启动/paused 专用 `/dgoal help`，背景总结支持候选链 fail-closed；审核工具结果展示实际模型，并把脱敏审核 usage 写入 `~/.pi/agent/audit-usage.jsonl`，供 `pi-session-insights` 聚合。
-- **源码分层**：入口收敛到 `index.ts` 组装根，新增 `src/plan`、`src/audit`、`src/isolated-pi`、`src/tui` 职责模块。
+- **vNext Goal Runtime**：新增 `dgoal-goal-vnext` 持久化键；终审拒绝追加终审修复账本，rejected/paused(audit_failed_3x) 展示 Goal Repair，并保留完整计划修复上下文（含 resume 后软遗忘暂停）。多 phase 终审三路归因：审核器输出 `<REJECTED phase="N">/goal/user_review`，分别重开对应 phase、进 Goal Repair、不拒绝直接记录用户复核。
+- **单 phase 统一完成建检**：单 phase goal 的一次 `dgoal_check` 同时核验 phase 与 goal，记录统一审核凭据；`dgoal_done` 复用凭据不重复终审（ADR 0018）。
+- **启动与可观测性**：新增冷启动/paused 专用 `/dgoal help`；背景总结候选链全失败时 fail-closed 中止启动（ADR 0027）；启动闸门 `select→confirm→editor` 三层降级兼容旧主机；审核工具结果展示实际模型，并把脱敏审核 usage 写入 `~/.pi/agent/audit-usage.jsonl`，供 `pi-session-insights` 聚合。
+- **源码分层**：入口收敛到 `index.ts` 组装根，新增 `src/plan`、`src/audit`、`src/isolated-pi`、`src/tui`、`src/goal-runtime`（可变会话状态单例）、`src/startup`（Pi 注册 + 事件订阅）职责模块（ADR 0024/0025）。
+
+### Fixed
+
+- **smoke prompt 对齐 ADR 0017**：smoke 目标不再强制两个 phase，任务简单时允许单 phase，修复真实模型在 proposal 阶段反复重提。
+- **语义预审空迁移数组**：approve JSON 中空的 `migratedUserReviewItems` 不再误判 fail-closed。
+- **Goal Repair resume 完整上下文**：resume 从 rejected/paused(audit_failed_3x) 恢复为 active 后，`finalFeedback` 仍在时保留全量 plan 上下文，修复软遗忘与修复上下文冲突。
+- **背景失败文案对齐**：候选链全失败通知从“已降级为不带背景启动”改为“已中止启动（未进入目标）”，与 fail-closed 行为一致（ADR 0027）。
 
 ## [0.5.8] - 2026-07-12
 

@@ -2830,7 +2830,7 @@ export function trackFileToolExecutionStart(toolCallId: string, toolName: string
   pendingFileToolExecutions.set(toolCallId, { toolName, path: resolvedPath });
 }
 
-function trackFileToolExecutionEnd(toolCallId: string, isError: boolean) {
+export function trackFileToolExecutionEnd(toolCallId: string, isError: boolean) {
   const pending = pendingFileToolExecutions.get(toolCallId);
   if (!pending) return;
   pendingFileToolExecutions.delete(toolCallId);
@@ -4823,7 +4823,7 @@ function cancelPendingContinuation() {
   goalRuntimeState.pendingContinuation = undefined;
 }
 
-function consumeCancelledContinuation(prompt: string) {
+export function consumeCancelledContinuation(prompt: string) {
   const marker = extractMarker(prompt);
   return marker ? goalRuntimeState.cancelledMarkers.delete(marker) : false;
 }
