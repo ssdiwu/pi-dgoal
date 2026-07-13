@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+## [0.6.3] - 2026-07-14
+
 ### Fixed
 
 - **语义预审从总时长超时改为可观测 idle timeout**：`dgoal_propose` 启动前语义预审此前用 30s 总时长超时，在 provider 排队或流式延迟时被误杀，且超时、网络异常与技术失败统一伪装成“请将人工体验移入 userReviewItems”的语义打回，误导 agent 反复改计划。现改为默认 60s **idle timeout**（无任何有效流事件才超时，收到任意事件重置），预审过程通过 `onUpdate` 输出活性状态（认证中/接收评审结果/校验评审 JSON）与空闲倒计时。预审终态拆为四类：`approved` / `rewritten` / `rejected`（语义打回，`isError:false`，带 criterion 级意见）/ `technical_error`（认证、超时、网络、非终止、JSON 解析等基础设施失败，`isError:true`，不再提示用户改计划）。

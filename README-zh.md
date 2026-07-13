@@ -4,9 +4,9 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **v0.6.2**：审核结论仲裁（带归因的 `<REJECTED>` 不再误判为部分输出）、候选单次故障切换与健康 fallback 按 goal/审核范围持久复用、`/dgoal s` 浮层丢失后幂等重绘。详见 `CHANGELOG.md`。
+> **v0.6.3**：启动闸门语义预审从 30s 总时长超时改为 60s idle timeout（收到任意流事件即重置），通过 `onUpdate` 流出活性状态，并把 `technical_error`（`isError:true`，不是计划内容问题）与语义 `rejected`（`isError:false`）分离。可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置。详见 `CHANGELOG.md`。
 >
-> **此前版本**：v0.6.0 引入 vNext Goal Runtime（新持久化键、单 phase 统一完成建检、终审三路归因、src 分层）；v0.5.8 冻结 LLM 可独立验收契约并加启动前语义预审；v0.5.7 增加审核器候选链与错误回退。
+> **此前版本**：v0.6.2 修复审核结论仲裁、候选故障切换与 `/dgoal s` 浮层恢复；v0.6.0 引入 vNext Goal Runtime（新持久化键、单 phase 统一完成建检、终审三路归因、src 分层）。
 
 ## 安装
 

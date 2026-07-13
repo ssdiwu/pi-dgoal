@@ -4,9 +4,9 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.6.2**: auditor conclusion arbitration (attributed `<REJECTED>` no longer misparsed as partial output), per-candidate failover with healthy fallback stickiness by goal/scope, and idempotent `/dgoal s` widget recovery. See `CHANGELOG.md` for details.
+> **v0.6.3**: the startup-gate semantic preflight now uses a 60s idle timeout (any stream event resets it) instead of a 30s wall-clock kill, streams liveness via `onUpdate`, and separates `technical_error` (`isError:true`, not a plan-content issue) from semantic `rejected` (`isError:false`). Configurable via `proposalSemanticReviewIdleTimeoutSeconds` in `pi-dgoal.json`. See `CHANGELOG.md` for details.
 >
-> **Previous**: v0.6.0 introduced the vNext Goal Runtime (new persistence key, single-phase unified completion check, final-audit three-way attribution, src layering); v0.5.8 froze LLM-independently-verifiable acceptance criteria with a startup semantic preflight; v0.5.7 added the auditor model candidate chain with error fallback.
+> **Previous**: v0.6.2 fixed auditor conclusion arbitration, per-candidate failover, and `/dgoal s` widget recovery; v0.6.0 introduced the vNext Goal Runtime (new persistence key, single-phase unified completion check, final-audit three-way attribution, src layering).
 
 ## Install
 
