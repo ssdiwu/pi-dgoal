@@ -1,4 +1,4 @@
-// 审核器配额错误（纯文本 usage limit）应触发候选回退，而不是同模型重试 3 次后暂停。
+// 审核器配额错误（纯文本 usage limit）应触发候选回退，每个候选只尝试一次。
 import { describe, expect, test } from "bun:test";
 
 import { classifyAuditorFailure, hasQuotaErrorHint, type AuditorResult } from "../index.ts";
@@ -27,7 +27,7 @@ describe("审核器配额错误候选回退", () => {
 
   test("rate limit exceeded → fallback；普通 rate limit 描述不回退", () => {
     expect(classifyAuditorFailure(result("Rate limit exceeded, retry later", { kind: "unknown" }))).toBe("fallback");
-    expect(classifyAuditorFailure(result("rate limit is 100 requests/minute", { kind: "unknown" }))).toBe("retry_same_model");
+    expect(classifyAuditorFailure(result("rate limit is 100 requests/minute", { kind: "unknown" }))).toBe("fallback");
   });
 
   test("高置信 quota 文本检测", () => {
@@ -67,8 +67,8 @@ describe("审核器配额错误候选回退", () => {
     expect(classifyAuditorFailure(r)).toBe("decision");
   });
 
-  test("未知非配额错误仍 retry_same_model", () => {
+  test("未知非配额错误也只尝试一次后切候选", () => {
     const r = result("something weird happened", { kind: "unknown" });
-    expect(classifyAuditorFailure(r)).toBe("retry_same_model");
+    expect(classifyAuditorFailure(r)).toBe("fallback");
   });
 });

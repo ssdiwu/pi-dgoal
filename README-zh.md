@@ -138,7 +138,7 @@ pending ──→ active ──→ done                # 正常路径
 - 通过：goal 关闭，dgoal 执行停止，模型收到完成信号用于最终用户回复；工具结果会显示形成结论的实际审核模型，候选回退时随进度更新
 - 审核用量会脱敏追加到 `~/.pi/agent/audit-usage.jsonl`；只写时间、父 session、项目、范围、模型、尝试序号、数字 usage 与去重键，`pi-session-insights` 会将它合入 `/insights` 数字聚合
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
-- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个已配置候选在同模型上最多重试 3 次；结构化技术错误（HTTP 401/403/404/408/429/5xx、网络、零输出超时）及明确的纯文本配额耗尽（usage/plan/rate limit reached/exceeded/hit/exhausted、quota exceeded、insufficient quota）切下一候选，HTTP 400、明确 `<REJECTED>` 与用户中断不切换。缺终止标记的部分输出作为受限的 `<partial_audit_feedback>` 在同模型重试与跨候选间携带。全部候选耗尽才安全暂停，`/dgoal resume` 继续；绝不静默回退执行模型。
+- 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个候选在一次审核中最多调用一次；技术/协议错误（HTTP 400/401/403/404/408/429/5xx、网络、超时、零输出或缺终止标记的部分输出）按顺序切下一候选。当前 goal、同一审核范围（phase 或 goal）内产生有效结论的候选会持久化并复用。业务 `<REJECTED>` 与用户中断不切换；phase 拒绝可持续修复、不计次数，goal 终审连续三次拒绝才暂停。`/dgoal resume` 从 `audit_error` 恢复时只清除产生错误的 phase/goal 审核范围候选状态（旧 goal 缺失范围字段时全量清除），再重试候选链。全部候选耗尽才安全暂停，绝不静默回退执行模型。
 - 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` / `idle Ns/180s` 等活性信息；即使中途停下，也会尽量返回部分审核输出
 - 审核报告更接近验收单：GWT 风格的 PASS / FAIL / BLOCKER 条目，加代码与文档一致性检查
 - 终审拒绝时展示“终审修复（Goal Repair）· 第 N/3 次”，`paused(audit_failed_3x)` 展示“终审修复已暂停”；每轮原始报告、完成声明与时间进入追加式修复账本，不创建 goal 级 task 或额外 phase

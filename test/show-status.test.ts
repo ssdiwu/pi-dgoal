@@ -2,8 +2,14 @@ import { describe, expect, test } from "bun:test";
 
 import {
   __resetGoalForTest,
+  __getGoalForTest,
+  __getRuntimeStateForTest,
   __setGoalForTest,
+  __setRuntimeStateForTest,
+  __setCheckSnapshotForTest,
   __showStatusForTest,
+  __setPlanOverlayForTest,
+  disposePlanOverlay,
   PlanStatusDialog,
   type GoalState,
   type Phase,
@@ -118,6 +124,51 @@ describe("showStatus 回归", () => {
       expect(calls.notify[0][1]).toBe("info");
     } finally {
       console.error = realError;
+    }
+  });
+
+  test("浮层缺失时 /dgoal s 重绘 dgoal-plan；首次 setWidget 异常后可再次恢复且不改运行态", async () => {
+    const current = goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]);
+    __setGoalForTest(current);
+    const widgetCalls: unknown[] = [];
+    let shouldThrow = true;
+    const { ctx, calls } = makeCtx();
+    ctx.ui.setWidget = (_key: string, value: unknown) => {
+      widgetCalls.push(value);
+      if (shouldThrow) throw new Error("widget boom");
+    };
+    __setPlanOverlayForTest(undefined);
+    __setRuntimeStateForTest({
+      proposalRetryCount: 2,
+      consecutiveErrors: 1,
+      consecutiveNoProgressTurns: 2,
+      turnHadToolExecution: true,
+      pendingContinuation: { goalId: current.id, marker: "continuation-marker", sent: false },
+      cancelledMarkers: new Set(["cancelled-marker"]),
+      latestSuccessfulModifiedFilePath: "/tmp/modified.ts",
+      latestSuccessfulReadFilePath: "/tmp/read.ts",
+    });
+    __setCheckSnapshotForTest({ liveness: "thinking", attempt: 1, attemptTotal: 3 });
+    const runtimeBefore = __getRuntimeStateForTest();
+    try {
+      __showStatusForTest(ctx);
+      await Promise.resolve();
+      expect(calls.custom).toHaveLength(1);
+      expect(widgetCalls).toHaveLength(1);
+      expect(__getGoalForTest()).toEqual(current);
+      expect(__getRuntimeStateForTest()).toEqual(runtimeBefore);
+
+      shouldThrow = false;
+      __showStatusForTest(ctx);
+      await Promise.resolve();
+      expect(calls.custom).toHaveLength(2);
+      expect(widgetCalls).toHaveLength(2);
+      expect(widgetCalls[1]).toEqual(expect.arrayContaining([expect.stringContaining("phase")]));
+      expect(__getGoalForTest()).toEqual(current);
+      expect(__getRuntimeStateForTest()).toEqual(runtimeBefore);
+    } finally {
+      disposePlanOverlay();
+      __setPlanOverlayForTest(undefined);
     }
   });
 

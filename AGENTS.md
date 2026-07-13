@@ -43,7 +43,7 @@ pi-dgoal/
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
 - **背景固化是补充**：启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点。
-- **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModels` / `goalAuditorModels`，以最多 3 个 `provider/model[:thinking]` 有序候选分别配置阶段建检与目标终审。项目候选链整体优先于全局链、不混合；同一来源内复数字段 > 对应单值字段 > 旧 `auditorModel`。复数字段 `null` 显式继承当次会话模型并阻断继续降级，旧单值字段保持兼容；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，查询失败保留候选；运行时仅技术异常可按候选切换，业务 `REJECTED`、用户中断和 HTTP 400 不换模型，耗尽后必须 `audit_error` 暂停。
+- **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModels` / `goalAuditorModels`，以最多 3 个 `provider/model[:thinking]` 有序候选分别配置阶段建检与目标终审。项目候选链整体优先于全局链、不混合；同一来源内复数字段 > 对应单值字段 > 旧 `auditorModel`。复数字段 `null` 显式继承当次会话模型并阻断继续降级，旧单值字段保持兼容；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，查询失败保留候选；一次审核中每候选最多调用一次，技术/协议异常或缺终止标记的部分输出按候选切换，业务 `REJECTED`、用户中断不换模型；健康 fallback 在当前 goal/审核范围复用，耗尽后必须 `audit_error` 暂停。
 - 不硬编码密钥、token、私有路径。
 
 ## TUI 边界防护

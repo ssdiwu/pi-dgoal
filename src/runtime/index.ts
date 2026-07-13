@@ -92,6 +92,11 @@ export interface DgoalConfigIssue {
 
 type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
+export interface AuditorCandidateState {
+  selectedModelId?: string;
+  failedModelIds?: string[];
+}
+
 interface GoalState {
   id: string;
   objective: string;
@@ -116,6 +121,8 @@ interface GoalState {
   budget?: string;
   // 暂停原因，resume 时按此决定是否清零 rejectedCount（audit_failed_3x 清零，其他不清）。
   pauseReason?: PauseReason;
+  // audit_error 的审核范围；resume 只重置该范围的故障候选，旧 goal 缺失时兼容为全量重置。
+  auditErrorScope?: AuditorScope;
   // 累计暂停时长（毫秒）。elapsed = now - startedAt - pausedTotalMs；旧 goal 缺失时视为 0。
   pausedTotalMs?: number;
   // 当前 pause 窗口的开始时间。paused 时冻结 elapsed；resume 时累计进 pausedTotalMs 后清空。
@@ -129,6 +136,11 @@ interface GoalState {
   finalFeedback?: FinalCheckFeedback;
   // vNext 终审修复账本：追加每轮失败的原始报告与完成声明，历史不进入 task/phase。
   finalAuditHistory?: FinalAuditHistoryEntry[];
+  // 按当前 goal + 审核范围持久化候选健康状态；phase/goal 各自隔离。
+  auditorCandidates?: {
+    phase?: AuditorCandidateState;
+    goal?: AuditorCandidateState;
+  };
   // 单 phase 合并建检完成后留下的统一 goal 审核凭据，供 dgoal_done 跳过第二次审核。
   singlePhaseAudit?: { modelId?: string; createdAt: number };
 }
@@ -376,8 +388,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.check.markDoneFailed": "建检通过但标 done 失败：{message}",
       "tool.check.approved": "✓ phase #{phaseId} 建检通过，已标 done。{report}",
       "tool.check.rejected": "✗ phase #{phaseId} 建检未通过，phase 回 in_progress。请根据报告修正后重新建检。\n\n审核报告：\n{report}",
-      "tool.check.retrying": "[审核器异常 · 第 {attempt}/{total} 次重试中] {error}",
-      "tool.check.partialRetrying": "[审核模型 {model} · 已有部分输出，续审第 {attempt}/{total} 次]",
       "tool.check.candidateFallback": "[审核模型 {from} 因 {reason} 未完成，切换至 {to}]",
       "tool.done.noDecision": "审核未产出结论，目标已暂停（{reason}）。{report}",
       "tool.report.inline": "\n报告：{report}",
@@ -563,8 +573,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.check.markDoneFailed": "Phase check passed but marking done failed: {message}",
       "tool.check.approved": "✓ phase #{phaseId} check passed and is now done.{report}",
       "tool.check.rejected": "✗ phase #{phaseId} check failed; the phase moved back to in_progress. Fix the issues in the report and run dgoal_check again.\n\nAudit report:\n{report}",
-      "tool.check.retrying": "[auditor error · retry {attempt}/{total}] {error}",
-      "tool.check.partialRetrying": "[auditor {model} · partial output, continuation retry {attempt}/{total}]",
       "tool.check.candidateFallback": "[auditor {from} could not complete ({reason}); switching to {to}]",
       "tool.done.noDecision": "The audit produced no decision; the goal is paused ({reason}).{report}",
       "tool.report.inline": "\nReport: {report}",
@@ -842,7 +850,7 @@ export const dgoalDoneTool = defineTool({
       });
     } catch (error) {
       // 审核器自身出错 → 安全暂停，不 fail-open，也不烧 token 死循环。
-      pauseOnAuditFailure(ctx, formatError(error));
+      pauseOnAuditFailure(ctx, formatError(error), "goal");
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
       return {
@@ -854,10 +862,12 @@ export const dgoalDoneTool = defineTool({
       };
     }
 
+    // 候选状态在审核器返回前已落盘；拒绝/通过/暂停的后续推进必须基于最新 goal。
+    const auditedGoal = goalRuntimeState.currentGoal ?? completedGoal;
     // 审核被用户中断、候选耗尽、空闲超时或没给出明确结论 → 同样安全暂停。
     if (audit.aborted || audit.liveness === "auditor_error" || Boolean(audit.error) || (!audit.approved && !audit.output)) {
       const reason = audit.error ?? (audit.aborted ? t("runtime.error.auditInterrupted") : t("runtime.error.auditNoOutput"));
-      pauseOnAuditFailure(ctx, reason);
+      pauseOnAuditFailure(ctx, reason, "goal");
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
       return {
@@ -873,7 +883,7 @@ export const dgoalDoneTool = defineTool({
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
       return handleFinalAuditRejected({
-        completedGoal,
+        completedGoal: auditedGoal,
         summary,
         verification,
         whatChanged,
@@ -884,17 +894,17 @@ export const dgoalDoneTool = defineTool({
       });
     }
 
-    const previousReviewItems = completedGoal.finalFeedback?.report ? extractUserReviewSuggestions(completedGoal.finalFeedback.report) : [];
+    const previousReviewItems = auditedGoal.finalFeedback?.report ? extractUserReviewSuggestions(auditedGoal.finalFeedback.report) : [];
     const discoveredUserReview = extractUserReviewSuggestions(audit.output);
-    const completionUserReview = formatUserReviewText(completedGoal, userReview, [...previousReviewItems, ...discoveredUserReview]);
+    const completionUserReview = formatUserReviewText(auditedGoal, userReview, [...previousReviewItems, ...discoveredUserReview]);
     clearCurrentCheckSnapshot();
     // finalizeGoal 先推进 done、持久化并清空运行态；完成 UI 只能作为后效。
     finalizeGoal(ctx);
     return {
       content: [
-        { type: "text", text: buildCompletionReplySignal({ goal: completedGoal, summary, verification, whatChanged, userReview: completionUserReview, audited: true, auditorModel: audit.modelId }) },
+        { type: "text", text: buildCompletionReplySignal({ goal: auditedGoal, summary, verification, whatChanged, userReview: completionUserReview, audited: true, auditorModel: audit.modelId }) },
       ],
-      details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview: completionUserReview, audited: true, auditOutput: audit.output, ...buildAuditorResultDetails(audit) },
+      details: { goal: auditedGoal.objective, summary, verification, whatChanged, userReview: completionUserReview, audited: true, auditOutput: audit.output, ...buildAuditorResultDetails(audit) },
       terminate: false,
     };
   },
@@ -1875,14 +1885,18 @@ export const dgoalCheckTool = defineTool({
       safeUpdatePlanOverlay();
       return { content: [{ type: "text", text: t("tool.check.subprocessError", { error: formatError(error) }) }], details: { error: formatError(error), liveness: "auditor_error" as const }, isError: true };
     }
-    // v0.5.2：三态结构化返回。auditor_error（含 3 次重试耗尽）→ isError:true + paused(audit_error)，其他 → isError:false。
+    // 审核候选状态在 runAuditorWithCandidates 内先落盘；后续状态推进必须基于最新 goal，不能用审核前快照覆盖候选健康状态。
+    const auditedGoal = goalRuntimeState.currentGoal ?? goal;
+    // v0.5.2：三态结构化返回。auditor_error → isError:true + paused(audit_error)，其他 → isError:false。
     if (result.liveness === "auditor_error" || result.aborted || result.error) {
       const reason = result.error ?? "aborted";
       const report = result.output ? t("tool.check.reportSectionPartial", { report: result.output }) : "";
-      // v0.5.2：真实审核器异常（3 次重试耗尽）→ paused(audit_error)，不烧 token 空转
+      // v0.5.2：真实审核器候选链耗尽 → paused(audit_error)，不烧 token 空转
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
-      pauseOnAuditFailure(ctx as unknown as DgoalContext, reason);
+      // 单 phase 走 runCompletionAuditor（goal scope），因此 pause scope 要与实际使用的审核范围对齐，
+      // resume 才能正确清除对应范围的故障候选。
+      pauseOnAuditFailure(ctx as unknown as DgoalContext, reason, isSinglePhaseCheck ? "goal" : "phase");
       return {
         content: [{ type: "text", text: t("tool.check.auditorErrorPaused", { reason, report }) }],
         details: { error: reason, output: result.output, aborted: result.aborted, liveness: "auditor_error" as const, ...buildAuditorResultDetails(result) },
@@ -1891,7 +1905,7 @@ export const dgoalCheckTool = defineTool({
       };
     }
     if (result.approved) {
-      const r = setPhaseCompleted(goal, phaseId);
+      const r = setPhaseCompleted(auditedGoal, phaseId);
       if (r.op.kind === "error") {
         return { content: [{ type: "text", text: t("tool.check.markDoneFailed", { message: (r.op as { message: string }).message }) }], details: { error: (r.op as { message: string }).message }, isError: true };
       }
@@ -1908,12 +1922,12 @@ export const dgoalCheckTool = defineTool({
     }
     // 不通过：phase 回 in_progress（若已是 in_progress 保持），报告注入
     if (phase.status !== "in_progress") {
-      const phases = goal.plan.phases.map((ph) => (ph.id === phaseId ? { ...ph, status: "in_progress" as PlanStatus } : ph));
-      goalRuntimeState.currentGoal = { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() };
+      const phases = auditedGoal.plan!.phases.map((ph) => (ph.id === phaseId ? { ...ph, status: "in_progress" as PlanStatus } : ph));
+      goalRuntimeState.currentGoal = { ...auditedGoal, plan: { ...auditedGoal.plan!, phases }, updatedAt: Date.now() };
       persistGoal(goalRuntimeState.currentGoal);
     }
     // 阶段建检未通过：保存原始修复反馈，并保留审核发现的非阻塞用户复核项。
-    goalRuntimeState.currentGoal = recordPhaseAuditFeedback(goalRuntimeState.currentGoal, phaseId, result.output);
+    goalRuntimeState.currentGoal = recordPhaseAuditFeedback(goalRuntimeState.currentGoal ?? auditedGoal, phaseId, result.output);
     persistGoal(goalRuntimeState.currentGoal);
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
@@ -2119,10 +2133,24 @@ async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   goalRuntimeState.consecutiveErrors = 0;
   goalRuntimeState.consecutiveNoProgressTurns = 0;
   goalRuntimeState.turnHadToolExecution = false;
-  // 切片6：resume 按 pauseReason 决定是否清零 rejectedCount（ADR 0004）。
-  // audit_failed_3x：能力到顶，resume 清零给 agent 新机会；其他：瞬时故障，不清零。
-  const clearRejected = goalRuntimeState.currentGoal.pauseReason === "audit_failed_3x";
-  goalRuntimeState.currentGoal = markGoalResumed(goalRuntimeState.currentGoal, Date.now(), clearRejected ? { rejectedCount: 0 } : {});
+  // resume 按 pauseReason 决定是否清零 rejectedCount；audit_error 还要重置本 goal
+  // 的候选故障记录，允许用户主动重试整条候选链。健康 fallback 记录在正常 rejected
+  // 修复回环中保留，不因每轮 goal/phase 审核重新从候选 1 开始。
+  const pauseReason = goalRuntimeState.currentGoal.pauseReason;
+  const clearRejected = pauseReason === "audit_failed_3x";
+  const resetAuditorCandidates = pauseReason === "audit_error";
+  const auditErrorScope = goalRuntimeState.currentGoal.auditErrorScope;
+  const scopedAuditorCandidates = resetAuditorCandidates && auditErrorScope
+    ? { ...(goalRuntimeState.currentGoal.auditorCandidates ?? {}), [auditErrorScope]: undefined }
+    : undefined;
+  goalRuntimeState.currentGoal = markGoalResumed(
+    goalRuntimeState.currentGoal,
+    Date.now(),
+    {
+      ...(clearRejected ? { rejectedCount: 0 } : {}),
+      ...(resetAuditorCandidates ? { auditorCandidates: auditErrorScope ? scopedAuditorCandidates : undefined, auditErrorScope: undefined } : {}),
+    },
+  );
   persistGoal(goalRuntimeState.currentGoal);
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
@@ -2164,6 +2192,19 @@ function buildStatusNotifyMessage(goal: GoalState) {
     contextPreview ? t("status.contextPreview", { preview: contextPreview }) : t("status.noContextPreview"),
     t("status.commands"),
   ].join("\n");
+}
+
+function ensurePlanOverlay(ctx: DgoalContext): void {
+  const ui = ctx.ui as CustomStatusUI & Partial<PlanOverlayUI>;
+  const mode = (ctx as DgoalContext & { mode?: string }).mode;
+  if (mode !== "tui" || typeof ui.setWidget !== "function") return;
+  try {
+    planOverlay ??= new PlanOverlay();
+    planOverlay.setUI(ui as PlanOverlay["ui"]);
+    planOverlay.update();
+  } catch {
+    // /dgoal s 只提供恢复入口；浮层渲染失败不得阻断状态查询。
+  }
 }
 
 function showStatus(ctx: DgoalContext) {
@@ -2210,6 +2251,8 @@ function showStatus(ctx: DgoalContext) {
   }
 
   const goal = goalRuntimeState.currentGoal;
+  // `/dgoal s` 是持续浮层丢失后的显式恢复入口；只重绑 UI 并重绘，不重同步 session 或修改运行态。
+  ensurePlanOverlay(ctx);
   ctx.ui.setStatus(STATUS_KEY, formatStatus(goal));
   openStatusDialog(goal, () => ctx.ui.notify(buildStatusNotifyMessage(goal), "info"));
 }
@@ -3267,9 +3310,12 @@ function finalizeGoal(ctx: DgoalContext) {
 }
 
 // 审核器出错 / 被中断 / 无结论：安全暂停，避免 fail-open 或烧 token 死循环。
-function pauseOnAuditFailure(ctx: DgoalContext, reason: string) {
+function pauseOnAuditFailure(ctx: DgoalContext, reason: string, scope?: AuditorScope) {
   if (!goalRuntimeState.currentGoal) return;
-  goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "audit_error" });
+  goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), {
+    pauseReason: "audit_error",
+    ...(scope ? { auditErrorScope: scope } : {}),
+  });
   persistGoal(goalRuntimeState.currentGoal);
   clearContinuation();
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
@@ -3286,7 +3332,7 @@ export type AuditorErrorInfo =
   | { kind: "exit"; exitCode?: number | null }
   | { kind: "unknown" };
 
-export type AuditorAttemptOutcome = "approved" | "rejected" | "fallback" | "partial_retry" | "retry_same_model" | "aborted";
+export type AuditorAttemptOutcome = "approved" | "rejected" | "fallback" | "partial_retry" | "aborted";
 
 export interface AuditorAttemptTrace {
   modelId?: string;
@@ -3474,7 +3520,7 @@ interface CheckLivenessSnapshot {
   // 剩余空闲秒数（idle Ns/total），有事件跳回 total，无事件降到 0
   idleSecondsLeft?: number;
   idleSecondsTotal?: number;
-  // 当前重试尝试（auditor_error 重试时 attempt 1/3）
+  // 当前候选尝试（每个候选在一次审核中最多调用一次）
   attempt?: number;
   attemptTotal?: number;
 }
@@ -4146,7 +4192,14 @@ async function runIsolatedCheck(args: {
         return;
       }
       if (childError) {
-        finish({ approved: false, aborted: false, output, error: childError, errorInfo: childErrorInfo ?? { kind: "unknown" } });
+        // Provider 可能在完整审核报告后追加 WebSocket/transport error。只要报告
+        // 已形成唯一明确的业务结论，传输层尾部错误不能覆盖 APPROVED/REJECTED；
+        // 只有没有终止标记时才把 childError 当作 auditor_error。
+        if (hasExplicitAuditorDecision(output)) {
+          finish({ approved: parseAuditorDecision(output), aborted: false, output });
+        } else {
+          finish({ approved: false, aborted: false, output, error: childError, errorInfo: childErrorInfo ?? { kind: "unknown" } });
+        }
         return;
       }
       if (code !== 0 && !output) {
@@ -4178,6 +4231,47 @@ async function runIsolatedCheck(args: {
   });
 }
 
+function auditorCandidateStateFor(goal: GoalState | undefined, scope: AuditorScope): AuditorCandidateState {
+  return goal?.auditorCandidates?.[scope] ?? {};
+}
+
+function orderAuditorCandidates(goal: GoalState | undefined, scope: AuditorScope, modelIds: readonly string[]): string[] {
+  const state = auditorCandidateStateFor(goal, scope);
+  const failed = new Set(state.failedModelIds ?? []);
+  const available = modelIds.filter((modelId) => !failed.has(modelId));
+  if (state.selectedModelId && available.includes(state.selectedModelId)) {
+    return [state.selectedModelId, ...available.filter((modelId) => modelId !== state.selectedModelId)];
+  }
+  return available;
+}
+
+function recordAuditorCandidateResult(scope: AuditorScope, result: AuditorResult): void {
+  const goal = goalRuntimeState.currentGoal;
+  if (!goal) return;
+  const previous = auditorCandidateStateFor(goal, scope);
+  const failed = new Set(previous.failedModelIds ?? []);
+  for (const attempt of result.attempts ?? []) {
+    if (attempt.outcome === "fallback" || attempt.outcome === "partial_retry") {
+      if (attempt.modelId) failed.add(attempt.modelId);
+    }
+  }
+  const selectedModelId = classifyAuditorFailure(result) === "decision" ? result.modelId : undefined;
+  if (selectedModelId) failed.delete(selectedModelId);
+  const nextState: AuditorCandidateState = {
+    ...(selectedModelId ? { selectedModelId } : {}),
+    ...(failed.size ? { failedModelIds: [...failed] } : {}),
+  };
+  goalRuntimeState.currentGoal = {
+    ...goal,
+    auditorCandidates: {
+      ...(goal.auditorCandidates ?? {}),
+      [scope]: nextState,
+    },
+    updatedAt: Date.now(),
+  };
+  persistGoal(goalRuntimeState.currentGoal);
+}
+
 async function runAuditorWithCandidates(args: {
   ctx: ExtensionContext;
   scope: AuditorScope;
@@ -4186,8 +4280,28 @@ async function runAuditorWithCandidates(args: {
 } & CheckRuntimeOptions): Promise<AuditorResult> {
   const { ctx, scope, systemPrompt, task, ...runtimeOptions } = args;
   const resolution = await resolveAuditorModelCandidates(ctx, { scope });
+  const modelIds = orderAuditorCandidates(goalRuntimeState.currentGoal, scope, resolution.modelIds);
+  if (modelIds.length === 0) {
+    const exhausted: AuditorResult = {
+      approved: false,
+      aborted: false,
+      output: "",
+      error: t("runtime.error.auditCandidatesExhausted"),
+      errorInfo: { kind: "unknown" },
+      attempts: [],
+      exhausted: true,
+      liveness: "auditor_error",
+    };
+    recordAuditorCandidateResult(scope, exhausted);
+    return {
+      ...exhausted,
+      configDegraded: resolution.configDegraded,
+      preflightFailed: resolution.preflightFailed,
+      unavailableCandidates: resolution.unavailableCandidates,
+    };
+  }
   const result = await runCheckWithRetry({
-    modelIds: resolution.modelIds,
+    modelIds,
     run: (modelId, partialFeedback, attempt) => runIsolatedCheck({
       ctx,
       scope,
@@ -4199,6 +4313,7 @@ async function runAuditorWithCandidates(args: {
     }),
     onUpdate: args.onUpdate,
   });
+  recordAuditorCandidateResult(scope, result);
   return {
     ...result,
     configDegraded: resolution.configDegraded,
@@ -4229,11 +4344,10 @@ async function runCompletionAuditor(args: {
   });
 }
 
-// v0.5.2 切片5：同模型 auditor_error 透明重试（ADR 0012）。候选链扩展后，
-// 明确的零输出技术错误直接切下一个模型；业务结论、用户中断与 HTTP 400 不切换。
-const MAX_AUDITOR_RETRIES = 3;
+// 候选故障切换预算：每个候选在一次审核调用中只尝试一次；
+// 多次 REJECTED 修复属于外层 phase/goal 回环，不属于同一次审核的模型重试。
 
-export type AuditorFailureDisposition = "decision" | "fallback" | "partial_retry" | "retry_same_model" | "stop";
+export type AuditorFailureDisposition = "decision" | "fallback" | "partial_retry" | "stop";
 
 function hasExplicitAuditorDecision(output: string): boolean {
   const approved = output.includes(APPROVED_MARKER);
@@ -4255,11 +4369,10 @@ export function classifyAuditorFailure(result: AuditorResult): AuditorFailureDis
     }
   }
   // 配额/用量上限类错误：provider 业务层配额耗尽（非 HTTP 429 结构化），
-  // 不是业务 REJECTED，换 provider 候选通常可绕过。必须放 HTTP 结构化判定之后、
-  // 未知兜底之前：只对明确的配额文本回退，其余未知错误仍留原模型。
+  // 不是业务 REJECTED，换 provider 候选通常可绕过。明确配额文本与其它未知
+  // 协议/运行时错误都只允许当前候选单次尝试，随后切换下一候选。
   if (hasQuotaErrorHint(result.error)) return "fallback";
-  // 不能从 stderr/error 文本推断 HTTP 状态，未知或 HTTP 400 只保留原有同模型重试。
-  return "retry_same_model";
+  return "fallback";
 }
 
 // provider 配额/用量上限错误的文本启发式。只检测高置信的配额语义，
@@ -4317,7 +4430,7 @@ function attemptOutcome(result: AuditorResult, disposition: AuditorFailureDispos
   if (disposition === "fallback") return "fallback";
   if (disposition === "partial_retry") return "partial_retry";
   if (disposition === "stop") return "aborted";
-  return "retry_same_model";
+  return "fallback";
 }
 
 export async function runCheckWithRetry(args: {
@@ -4337,56 +4450,29 @@ export async function runCheckWithRetry(args: {
   };
 
   for (const [modelIndex, modelId] of modelIds.entries()) {
-    let lastDisposition: AuditorFailureDisposition = "retry_same_model";
-    for (let attempt = 1; attempt <= MAX_AUDITOR_RETRIES; attempt++) {
-      lastResult = await args.run(modelId, partialFeedback || undefined, attempt);
-      lastDisposition = classifyAuditorFailure(lastResult);
-      attempts.push({
-        modelId,
-        attempt,
-        outcome: attemptOutcome(lastResult, lastDisposition),
-        failureKind: lastResult.errorInfo?.kind,
-        ...(lastResult.errorInfo?.kind === "http" ? { httpStatus: lastResult.errorInfo.status } : {}),
-        ...(lastResult.errorInfo?.kind === "network" && lastResult.errorInfo.code ? { networkCode: lastResult.errorInfo.code } : {}),
-        ...(lastResult.errorInfo?.kind === "exit" ? { exitCode: lastResult.errorInfo.exitCode } : {}),
-        ...(lastResult.error ? { error: lastResult.error } : {}),
-        hasPartialOutput: Boolean(lastResult.output) && !hasExplicitAuditorDecision(lastResult.output),
-      });
-      const resultWithTrace = { ...lastResult, modelId, attempts: [...attempts] };
-      if (lastDisposition === "decision" || lastDisposition === "stop") return resultWithTrace;
-      if (lastDisposition === "fallback") break;
-      if (lastDisposition === "partial_retry") {
-        partialFeedback = appendPartialAuditFeedback(partialFeedback, lastResult.output);
-      }
-      if (attempt < MAX_AUDITOR_RETRIES && args.onUpdate) {
-        const text = lastDisposition === "partial_retry"
-          ? t("tool.check.partialRetrying", { model: modelId ?? "current session", attempt, total: MAX_AUDITOR_RETRIES })
-          : t("tool.check.retrying", { attempt, total: MAX_AUDITOR_RETRIES, error: lastResult.error ?? "" });
-        args.onUpdate({
-          content: [{ type: "text", text }],
-          details: {
-            partial: true,
-            attempt,
-            attemptTotal: MAX_AUDITOR_RETRIES,
-            liveness: "auditor_error" as const,
-            auditorModel: modelId,
-            auditorAttempts: [...attempts],
-          },
-        });
-      }
-    }
+    lastResult = await args.run(modelId, partialFeedback || undefined, 1);
+    const disposition = classifyAuditorFailure(lastResult);
+    attempts.push({
+      modelId,
+      attempt: 1,
+      outcome: attemptOutcome(lastResult, disposition),
+      failureKind: lastResult.errorInfo?.kind,
+      ...(lastResult.errorInfo?.kind === "http" ? { httpStatus: lastResult.errorInfo.status } : {}),
+      ...(lastResult.errorInfo?.kind === "network" && lastResult.errorInfo.code ? { networkCode: lastResult.errorInfo.code } : {}),
+      ...(lastResult.errorInfo?.kind === "exit" ? { exitCode: lastResult.errorInfo.exitCode } : {}),
+      ...(lastResult.error ? { error: lastResult.error } : {}),
+      hasPartialOutput: Boolean(lastResult.output) && !hasExplicitAuditorDecision(lastResult.output),
+    });
+    const resultWithTrace = { ...lastResult, modelId, attempts: [...attempts] };
+    if (disposition === "decision" || disposition === "stop") return resultWithTrace;
+    if (disposition === "partial_retry") partialFeedback = appendPartialAuditFeedback(partialFeedback, lastResult.output);
 
-    // 部分输出预算用尽和明确可回退错误才可以移动候选；HTTP 400/未知错误留在原模型并暂停。
-    const canMoveToNextCandidate = lastDisposition === "fallback" || lastDisposition === "partial_retry";
     const nextModelId = modelIds[modelIndex + 1];
-    if (!canMoveToNextCandidate) {
-      return { ...lastResult, modelId, attempts, liveness: "auditor_error" };
-    }
     if (nextModelId !== undefined && args.onUpdate) {
       args.onUpdate({
         content: [{ type: "text", text: t("tool.check.candidateFallback", {
           from: modelId ?? "current session",
-          reason: lastDisposition === "partial_retry" ? "partial output" : formatAuditorFailureKind(lastResult.errorInfo),
+          reason: disposition === "partial_retry" ? "partial output" : formatAuditorFailureKind(lastResult.errorInfo),
           to: nextModelId,
         }) }],
         details: {
@@ -4401,7 +4487,7 @@ export async function runCheckWithRetry(args: {
     }
   }
 
-  // 所有已配置候选均失败；调用方据此 paused(audit_error)，绝不改用执行模型。
+  // 所有候选均已单次尝试失败；调用方据此 paused(audit_error)，绝不改用执行模型。
   return {
     ...lastResult,
     error: lastResult.error ?? t("runtime.error.auditCandidatesExhausted"),
@@ -4930,6 +5016,25 @@ export function __getGoalForTest() {
 export function __getPendingProposalForTest() {
   return goalRuntimeState.pendingProposal;
 }
+
+export function __setRuntimeStateForTest(patch: Partial<typeof goalRuntimeState>) {
+  Object.assign(goalRuntimeState, patch);
+}
+
+export function __getRuntimeStateForTest() {
+  return {
+    proposalRetryCount: goalRuntimeState.proposalRetryCount,
+    startGoalInProgress: goalRuntimeState.startGoalInProgress,
+    consecutiveErrors: goalRuntimeState.consecutiveErrors,
+    consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
+    turnHadToolExecution: goalRuntimeState.turnHadToolExecution,
+    pendingContinuation: goalRuntimeState.pendingContinuation ? { ...goalRuntimeState.pendingContinuation } : undefined,
+    cancelledMarkers: [...goalRuntimeState.cancelledMarkers],
+    latestSuccessfulModifiedFilePath: goalRuntimeState.latestSuccessfulModifiedFilePath,
+    latestSuccessfulReadFilePath: goalRuntimeState.latestSuccessfulReadFilePath,
+    currentCheckSnapshot: currentCheckSnapshot ? { ...currentCheckSnapshot } : undefined,
+  };
+}
 // 测试专用：验证 goalRuntimeState.startGoalInProgress 标志在 startGoal 结束后正确清零
 // （标志卡 true 会永久抑制 handleStartupGate，导致启动闸门锁死）。
 export function __isStartGoalInProgressForTest() {
@@ -5059,8 +5164,8 @@ export function __executeDgoalDoneForTest(
 }
 
 // 测试专用：直接触发审核失败暂停，覆盖 pauseReason=audit_error。
-export function __pauseOnAuditFailureForTest(ctx: DgoalContext, reason: string) {
-  pauseOnAuditFailure(ctx, reason);
+export function __pauseOnAuditFailureForTest(ctx: DgoalContext, reason: string, scope?: AuditorScope) {
+  pauseOnAuditFailure(ctx, reason, scope);
 }
 
 // 测试专用：直接触发终审 rejected 分支，覆盖 rejected / paused(audit_failed_3x) 的 UI 边界容错。
@@ -5079,6 +5184,14 @@ export function __handleFinalAuditRejectedForTest(args: {
 // 测试专用：注入模块级 planOverlay，复现真实 session 中 overlay 存在时的 UI 崩溃路径。
 export function __setPlanOverlayForTest(overlay: PlanOverlay | undefined) {
   planOverlay = overlay;
+}
+
+export function __selectAuditorCandidatesForTest(scope: AuditorScope, modelIds: readonly string[]): string[] {
+  return orderAuditorCandidates(goalRuntimeState.currentGoal, scope, modelIds);
+}
+
+export function __recordAuditorCandidateResultForTest(scope: AuditorScope, result: AuditorResult): void {
+  recordAuditorCandidateResult(scope, result);
 }
 
 export function __setPhaseCheckOverrideForTest(override: (() => Promise<AuditorResult>) | undefined) {

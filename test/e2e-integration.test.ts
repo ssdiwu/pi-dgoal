@@ -25,6 +25,7 @@ import {
   __setGoalForTest,
   __setPlanOverlayForTest,
   __setPhaseCheckOverrideForTest,
+  __recordAuditorCandidateResultForTest,
   __setCompletionAuditorOverrideForTest,
   __setProposalSemanticReviewForTest,
   renderPlanLines,
@@ -62,6 +63,51 @@ function makePhase(id: number, subject: string, tasks: Task[], status: Phase["st
 }
 
 describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", () => {
+  test("单 phase 审核耗尽写 auditErrorScope=goal，resume 清除 goal 候选", async () => {
+    __resetGoalForTest();
+    const { api, writes } = makeApi();
+    __setApiForTest(api);
+    __setCompletionAuditorOverrideForTest(async () => ({
+      approved: false,
+      aborted: false,
+      output: "",
+      error: "all candidates exhausted",
+      liveness: "auditor_error",
+      exhausted: true,
+    }));
+    __setGoalForTest({
+      id: "single-phase-exhausted",
+      objective: "单 phase scope",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      verification: "npm test",
+      plan: {
+        phases: [{ id: 1, subject: "交付", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] }],
+        nextId: 3,
+      },
+      auditorCandidates: {
+        phase: { selectedModelId: "backup/phase" },
+        goal: { failedModelIds: ["primary/goal"] },
+      },
+    } as never);
+
+    const check = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: { notify: () => {}, setStatus: () => {} } } as never);
+    expect(check.isError).toBe(true);
+    const paused = __getGoalForTest()!;
+    expect(paused.status).toBe("paused");
+    expect(paused.pauseReason).toBe("audit_error");
+    expect(paused.auditErrorScope).toBe("goal");
+
+    await __resumeGoalForTest({ sendUserMessage: async () => {} } as never, { isIdle: () => true, ui: { setStatus: () => {}, notify: () => {} } } as never);
+    const resumed = __getGoalForTest()!;
+    expect(resumed.status).toBe("active");
+    expect(resumed.auditErrorScope).toBeUndefined();
+    expect(resumed.auditorCandidates?.phase).toEqual({ selectedModelId: "backup/phase" });
+    expect(resumed.auditorCandidates?.goal).toBeUndefined();
+  });
+
   test("单 phase dgoal_check 合并 goal 审核，dgoal_done 不重复审核", async () => {
     __resetGoalForTest();
     __setApiForTest(makeApi().api as never);
@@ -510,6 +556,141 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const g2: GoalState = { id: "2", objective: "o", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 };
     const clear2 = g2.pauseReason === "audit_failed_3x";
     expect(clear2).toBe(false);
+  });
+
+  test("审核候选状态先落盘后 phase 推进时不会被旧 goal 快照覆盖", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    __setPhaseCheckOverrideForTest(async () => {
+      // 模拟生产 runAuditorWithCandidates 在工具推进前写入健康 fallback。
+      __recordAuditorCandidateResultForTest("phase", {
+        approved: true,
+        aborted: false,
+        output: "<APPROVED>",
+        modelId: "candidate/3",
+        attempts: [
+          { modelId: "candidate/1", attempt: 1, outcome: "fallback" },
+          { modelId: "candidate/2", attempt: 1, outcome: "fallback" },
+          { modelId: "candidate/3", attempt: 1, outcome: "approved" },
+        ],
+      });
+      return { approved: true, aborted: false, output: "<APPROVED>", modelId: "candidate/3", liveness: "approved" };
+    });
+    __setGoalForTest({
+      id: "candidate-production-merge",
+      objective: "candidate production merge",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      plan: {
+        phases: [
+          makePhase(1, "实现", [makeTask(2, "实现", "done", { evidence: "test" })], "in_progress"),
+          makePhase(3, "验证", [makeTask(4, "验证", "pending")], "pending"),
+        ],
+        nextId: 5,
+      },
+    } as never);
+
+    const result = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+    expect(result.details?.approved).toBe(true);
+    expect(__getGoalForTest()?.auditorCandidates?.phase).toEqual({
+      selectedModelId: "candidate/3",
+      failedModelIds: ["candidate/1", "candidate/2"],
+    });
+  });
+
+  test("phase 有效拒绝可连续重检，不累计 goal 三次暂停计数", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    __setPhaseCheckOverrideForTest(async () => ({
+      approved: false,
+      aborted: false,
+      output: "phase finding\n<REJECTED>",
+      modelId: "test/auditor",
+      liveness: "rejected",
+    }));
+    __setGoalForTest({
+      id: "phase-reject-loop",
+      objective: "phase reject loop",
+      status: "active",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      rejectedCount: 0,
+      plan: {
+        phases: [makePhase(1, "持续修复", [makeTask(2, "实现", "done", { evidence: "test" })], "in_progress")],
+        nextId: 3,
+      },
+    } as never);
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const result = await __executeDgoalCheckForTest({ phaseId: 1 }, { cwd: process.cwd(), ui: {} } as never);
+      expect(result.details?.approved).toBe(false);
+      const goal = __getGoalForTest()!;
+      expect(goal.status).toBe("active");
+      expect(goal.pauseReason).toBeUndefined();
+      expect(goal.rejectedCount).toBe(0);
+      expect(goal.plan!.phases[0].status).toBe("in_progress");
+    }
+  });
+
+  test("resume(audit_error) 清除候选故障记录并保留其它运行态", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "resume-candidates",
+      objective: "resume candidates",
+      status: "paused",
+      pauseReason: "audit_error",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 4,
+      auditorCandidates: {
+        phase: { selectedModelId: "backup/phase", failedModelIds: ["primary/phase"] },
+        goal: { selectedModelId: "backup/goal", failedModelIds: ["primary/goal"] },
+      },
+      auditErrorScope: "phase",
+    } as never);
+    const sent: string[] = [];
+    await __resumeGoalForTest({ sendUserMessage: async (message: string) => void sent.push(message) } as never, {
+      isIdle: () => true,
+      ui: { setStatus: () => {}, notify: () => {} },
+    } as never);
+    const goal = __getGoalForTest()!;
+    expect(goal.status).toBe("active");
+    expect(goal.auditorCandidates?.phase).toBeUndefined();
+    expect(goal.auditorCandidates?.goal).toEqual({ selectedModelId: "backup/goal", failedModelIds: ["primary/goal"] });
+    expect(goal.auditErrorScope).toBeUndefined();
+    expect(goal.iteration).toBe(4);
+    expect(sent).toHaveLength(1);
+  });
+
+  test("resume(audit_error, goal) 只清除 goal 范围候选并保留 phase 候选", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    __setGoalForTest({
+      id: "resume-goal-candidates",
+      objective: "resume goal candidates",
+      status: "paused",
+      pauseReason: "audit_error",
+      auditErrorScope: "goal",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 2,
+      auditorCandidates: {
+        phase: { selectedModelId: "backup/phase", failedModelIds: ["primary/phase"] },
+        goal: { selectedModelId: "backup/goal", failedModelIds: ["primary/goal"] },
+      },
+    } as never);
+    await __resumeGoalForTest({ sendUserMessage: async () => {} } as never, {
+      isIdle: () => true,
+      ui: { setStatus: () => {}, notify: () => {} },
+    } as never);
+    const goal = __getGoalForTest()!;
+    expect(goal.auditorCandidates?.phase).toEqual({ selectedModelId: "backup/phase", failedModelIds: ["primary/phase"] });
+    expect(goal.auditorCandidates?.goal).toBeUndefined();
+    expect(goal.auditErrorScope).toBeUndefined();
   });
 
   test("resume 会把 pause 窗口累计进 pausedTotalMs，而不是把暂停时间算进 elapsed", async () => {

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## Unreleased
 
+### Fixed
+
+- **审核结论仲裁**：有效 `<APPROVED>` / `<REJECTED>` 优先于尾部 WebSocket/网络错误，不再误暂停为 `audit_error`。
+- **审核候选切换**：每候选单次故障切换，健康 fallback 按 goal 与审核范围持久复用；`audit_error` resume 重置故障候选状态，phase/goal 拒绝回环分层。
+- **状态查询浮层恢复**：`/dgoal s` 在持续浮层丢失或首次渲染失败后可幂等重绑并重绘 `dgoal-plan`，且不修改运行态。
 ## [0.6.1] - 2026-07-13
 
 ### Fixed

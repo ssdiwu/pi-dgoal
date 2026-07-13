@@ -85,6 +85,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **滚动**:vim 风格 `j` 下、`k` 上;`↑↓` 方向键、`PgDn/PgUp` 跳 10、`End/G` 跳底、`Home/g` 跳顶、`ESC` 退出
 - **overlay 配置**：`anchor: "center"`, `width: "100%"`, `maxHeight: "85%"`, `margin: 1`（原 top-center，v0.5+ 切 center，见 ADR 0008 追加决策）
 - **空状态**：没有 goal 时弹同一个 center modal，显示“当前没有进行中的 dgoal”、`/dgoal <goal>` 引导和 `ESC/Ctrl+C` 关闭提示；paused goal 仍存在，`/dgoal status` 展示其 plan 只读内容；非 TUI / custom 不可用时降级为 notify。
+- **浮层恢复**：当持续 `aboveEditor` 浮层因 `/reload`、TUI 渲染异常或其它原因丢失时，`/dgoal s` 在打开详细 Modal 前只重绑当前 UI 并重绘 `dgoal-plan`；该路径不调用 session 重同步、不清理审核快照/续跑计数/工作目录追踪。`setWidget` 或 `custom` 抛错均只降级展示，不改变 goal 与审核运行态。
 
 **为什么 modal 本次彩色化、持续浮层暂不**:持续浮层彩色化涉及把 `aboveEditor widget` 从 `string[]` 升级为 theme-aware factory,会引入新的 TUI 渲染 bug 面;本次浮层只统一状态字符、结构和 done 删除线,彩色化延后到下一版本(见 `doc/30-路线图/30-项目路线图.md`)。
 

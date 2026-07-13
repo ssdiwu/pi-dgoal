@@ -23,12 +23,12 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-overlay-render.test.ts` | 切片3：计划浮层渲染纯函数 `renderPlanLines` + `PlanOverlay` 类（reload 恢复、展开折叠、完成闪现）。 |
 | `plan-status-pure.test.ts` | v0.4.2 `/dgoal s` modal 的纯函数测试：`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`。 |
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
-| `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界。 |
+| `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界，以及浮层缺失/首次 `setWidget` 异常后的幂等重绘。 |
 | `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput`、当前会话 LLM 语义预审的拒绝/改写/fail-closed、旧 proposal 清理、冻结 `acceptanceCriteria` / `userReviewItems`、`buildProposePrompt`、确认 UI 摘要/明细切换。 |
 | `startgoal-abort.test.ts` | 启动中断与语义预审中断：`ctx.abort`、启动闸门投递去重，以及预审中断后 goal 保持 pending、没有 active proposal。 |
-| `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=180`、`isAuditorError` 三态判定、`runCheckWithRetry` 透明重试（approved/rejected 不重试、auditor_error 3 次）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
+| `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 事件识别（thinking/toolcall/text/message → 活性）、`CHECK_IDLE_TIMEOUT_SECONDS=180`、`isAuditorError` 三态判定、`runCheckWithRetry` 候选单次切换（approved/rejected 不切换、候选耗尽 `auditor_error`）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
 | `auditor-config.test.ts` | 审核器候选配置与预检：受信任项目链整体 > 全局链、同来源复数字段 > 单值字段 > 旧 `auditorModel`、`phaseAuditorModels` / `goalAuditorModels` 的 `null` 阻断、空/非法/重复/超限候选、custom/gateway 多段路径和 thinking 后缀、隔离 child 的结构化 Pi 注册表匹配、成功缓存/失败重试、预检不可用的跨字段/来源降级与预检失败保留候选；同时覆盖首次双 `null` 模板及 `ui.notify` 抛错容错。 |
-| `auditor-fallback.test.ts` | 审核器候选链运行时回退：结构化错误分类（HTTP 401/403/404/408/429/5xx、网络、超时切候选；400/REJECTED/中断不切）、零输出技术失败逐项切下一候选、部分输出同模型 3 次续审后跨候选携带受限转义反馈、候选耗尽 `audit_error` 与 `buildAuditorResultDetails()` 轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）。 |
+| `auditor-fallback.test.ts` | 审核器候选链运行时回退：候选技术/协议错误或无终止标记部分输出时按顺序单次切换、有效 fallback 按 goal/审核范围持久复用、业务 REJECTED 与中断分流、候选耗尽 `audit_error` 及 `buildAuditorResultDetails()` 轨迹。 |
 | `auditor-workspace-cwd.test.ts` | 审核子进程工作目录推断：优先覆盖当前轮文件工具调用，再回退到会话里的最近文件工具调用；同仓库保持 `ctx.cwd`，并覆盖 goal 结束后不要把旧 worktree 泄漏到下一个 goal。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + pending/active goal 调 `dgoal_` 工具 execute，验证 `currentGoal`、`pendingProposal`、预审 rejected/error/合法重提状态和 `persist` 调用。不依赖终审 spawn。 |
@@ -41,7 +41,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `no-progress-stall.test.ts` | 无进展续跑熔断纯函数 `decideNoProgressPause`：有工具调用清零、无工具累计、达 3 轮暂停、`MAX_NO_PROGRESS_TURNS=3`。 |
 | `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 before_agent_start → tool_execution_start → agent_end 回调，验证连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
 | `phase-id-diagnostics.test.ts` | 新 plan phase ID 连续（proposalToPlan 预分配 1..N）、旧 plan（非连续 #1/#4/#8）兼容加载、phase 找不到时返回完整阶段列表（序号+真实 ID+标题，当前高亮）。 |
-| `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED/未知非配额错误不回退；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
+| `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED 不回退；未知非配额错误也只尝试当前候选一次后切换；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
 | `test-ai-smoke-runtime.py` | AI smoke 的 Pi 运行时选择：模拟 npm PATH（路径）含项目旧 `node_modules/.bin/pi` 时跳过它并选择宿主 Pi；`PI_DGOAL_SMOKE_PI` 覆盖优先。 |
 | `test-ai-smoke.py` | AI 驱动 smoke：跳过 npm 注入的项目 local Pi，使用宿主 Pi（可用 `PI_DGOAL_SMOKE_PI` 覆盖）；以 `-ne -e index.ts -ns -np --mode rpc` 隔离环境 + 真实模型跑 dgoal（默认单 phase，对齐 ADR 0017），自动回复启动闸门 select，追踪 `dgoal_propose/plan/check/done` 全工具链 + 文件产物核验。⚠️ 消耗真实 token，需网络与已配置 provider，不进 CI。 |

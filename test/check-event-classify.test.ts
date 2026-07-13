@@ -136,31 +136,27 @@ describe("v0.5.2 · 结果三态与 auditor_error 重试", () => {
     expect(result.output).toBe("未通过报告\n<REJECTED>");
   });
 
-  test("runCheckWithRetry：auditor_error 重试 3 次全失败才返回，liveness=auditor_error", async () => {
+  test("runCheckWithRetry：单候选技术错误只调用一次后返回 auditor_error", async () => {
     let calls = 0;
-    const updates: Array<{ attempt?: number; liveness?: string }> = [];
     const result = await runCheckWithRetry({
-      run: async () => { calls++; return { approved: false, aborted: false, output: "", error: `timeout#${calls}` } as AuditorResult; },
-      onUpdate: (u) => { updates.push(u.details as { attempt?: number; liveness?: string }); },
+      run: async () => { calls++; return { approved: false, aborted: false, output: "", error: "timeout" } as AuditorResult; },
     });
-    expect(calls).toBe(3); // 3 次全失败
+    expect(calls).toBe(1);
     expect(result.liveness).toBe("auditor_error");
-    expect(result.error).toBe("timeout#3");
-    // 重试过程透传 attempt 次数（第 1、2 次失败后发出，第 3 次失败不再发）
-    expect(updates.map((u) => u.attempt)).toEqual([1, 2]);
-    expect(updates.every((u) => u.liveness === "auditor_error")).toBe(true);
+    expect(result.error).toBe("timeout");
   });
 
-  test("runCheckWithRetry：前 2 次 auditor_error，第 3 次 approved → 停止重试，返回 approved", async () => {
-    let calls = 0;
+  test("runCheckWithRetry：候选 1 故障后候选 2 给出结论", async () => {
+    const calls: string[] = [];
     const result = await runCheckWithRetry({
-      run: async () => {
-        calls++;
-        if (calls < 3) return { approved: false, aborted: false, output: "", error: `timeout#${calls}` } as AuditorResult;
-        return { approved: true, aborted: false, output: "通过" } as AuditorResult;
+      modelIds: ["primary/model", "backup/model"],
+      run: async (modelId) => {
+        calls.push(modelId!);
+        if (modelId === "primary/model") return { approved: false, aborted: false, output: "", error: "timeout" } as AuditorResult;
+        return { approved: true, aborted: false, output: "<APPROVED>" } as AuditorResult;
       },
     });
-    expect(calls).toBe(3);
+    expect(calls).toEqual(["primary/model", "backup/model"]);
     expect(result.approved).toBe(true);
   });
 });
@@ -194,16 +190,19 @@ describe("v0.5.2 · 建检运行时文案 i18n", () => {
     expect(summarizeCheckProgress("")).toBe("(audit running, no text output yet)");
   });
 
-  test("runCheckWithRetry 的固定重试壳子文案可被英文 i18n 覆盖", async () => {
+  test("runCheckWithRetry 的候选切换文案可被英文 i18n 覆盖", async () => {
     __setI18nForTest({
       t: (key: string, params?: Record<string, string | number>) =>
-        key === "dgoal.tool.check.retrying" ? `[auditor error · retry ${params?.attempt}/${params?.total}] ${params?.error}` : undefined,
+        key === "dgoal.tool.check.candidateFallback" ? `[fallback ${params?.from}->${params?.to}]` : undefined,
     });
     const texts: string[] = [];
     await runCheckWithRetry({
-      run: async () => ({ approved: false, aborted: false, output: "", error: "timeout" }),
+      modelIds: ["primary/model", "backup/model"],
+      run: async (modelId) => modelId === "primary/model"
+        ? { approved: false, aborted: false, output: "", error: "timeout" }
+        : { approved: true, aborted: false, output: "<APPROVED>" },
       onUpdate: (u) => texts.push(String(u.content?.[0]?.text ?? "")),
     });
-    expect(texts[0]).toBe("[auditor error · retry 1/3] timeout");
+    expect(texts[0]).toBe("[fallback primary/model->backup/model]");
   });
 });
