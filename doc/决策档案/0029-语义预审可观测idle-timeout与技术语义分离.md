@@ -38,3 +38,7 @@
 - 不写建检反馈、Goal Repair 或审核用量账本。
 
 候选回退先作为适配器支持的能力位置保留，不在没有真实预审多模型需求时启用。本轮只证明“预审要可观测、要按活性超时”，未证明“预审也需要专用候选链”。
+
+## 未抽取的共享骨架
+
+本轮未抽取出公共 `ObservableOperation` 运行骨架：预审的 `raceIterWithIdle`/`raceWithIdle` 与 `runIsolatedCheck` 的 `armIdleTimer`/`noteActivity` 各有一套 idle-timeout 实现。两者共享"有事件续命、无进展才超时"的计时理念，但执行器（直接模型流 vs 隔离 Pi 子进程）、事件协议（严格 JSON vs APPROVED/REJECTED）、重试策略（无候选 vs 候选链）不同。按三次原则，待第三次同类"可观测模型操作"需求出现时再抽取，避免为单一用法提前抽接口。

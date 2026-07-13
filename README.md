@@ -4,9 +4,9 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **v0.5.8**: the startup gate now performs a current-session semantic preflight before writing `pendingProposal`, freezing independently verifiable acceptance criteria and non-blocking user review items. Startup, resume, completion, and asynchronous PlanOverlay UI failures are fail-soft so state persistence and agent prompts continue independently. See `CHANGELOG.md` for details.
+> **v0.6.2**: auditor conclusion arbitration (attributed `<REJECTED>` no longer misparsed as partial output), per-candidate failover with healthy fallback stickiness by goal/scope, and idempotent `/dgoal s` widget recovery. See `CHANGELOG.md` for details.
 >
-> **Previous**: v0.5.3 added independent auditor model selection and previous-feedback injection; v0.5.2 added build-check feedback persistence, event-stream auditor liveness, transparent auditor retries, gate-lock progression guard, and bare `/dgoal` startup carryover.
+> **Previous**: v0.6.0 introduced the vNext Goal Runtime (new persistence key, single-phase unified completion check, final-audit three-way attribution, src layering); v0.5.8 froze LLM-independently-verifiable acceptance criteria with a startup semantic preflight; v0.5.7 added the auditor model candidate chain with error fallback.
 
 ## Install
 
