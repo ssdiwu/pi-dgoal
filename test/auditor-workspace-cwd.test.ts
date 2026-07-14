@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +10,7 @@ import {
   __setGoalForTest,
   __trackFileToolExecutionEndForTest,
   __trackFileToolExecutionStartForTest,
+  __fingerprintAuditWorkspaceForTest,
   resolveAuditorWorkspaceCwd,
   type GoalState,
 } from "../index.ts";
@@ -170,5 +172,61 @@ describe("auditor workspace cwd", () => {
     } as never);
 
     expect(cwd).toBe(repo);
+  });
+
+  test("untracked file content changes invalidate the audit workspace fingerprint", () => {
+    const repo = makeTempRoot();
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "pi-dgoal-test"]);
+    writeFileSync(join(repo, "tracked.txt"), "tracked\n");
+    execFileSync("git", ["-C", repo, "add", "tracked.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+
+    const untracked = join(repo, "untracked.txt");
+    writeFileSync(untracked, "one\n");
+    const before = __fingerprintAuditWorkspaceForTest(repo);
+    writeFileSync(untracked, "two\n");
+    const after = __fingerprintAuditWorkspaceForTest(repo);
+
+    expect(after).not.toBe(before);
+  });
+
+  test("无法读取 Git 状态时不返回可复用 fingerprint", () => {
+    const nonRepo = makeTempRoot();
+
+    expect(__fingerprintAuditWorkspaceForTest(nonRepo)).toBeUndefined();
+  });
+
+  test("untracked 文件读取失败时不返回可复用 fingerprint", () => {
+    const repo = makeTempRoot();
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "pi-dgoal-test"]);
+    writeFileSync(join(repo, "tracked.txt"), "tracked\n");
+    execFileSync("git", ["-C", repo, "add", "tracked.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+    symlinkSync("missing-target", join(repo, "unreadable.txt"));
+
+    expect(__fingerprintAuditWorkspaceForTest(repo)).toBeUndefined();
+  });
+
+  test("ignored 文件内容变化会使 audit workspace fingerprint 失效", () => {
+    const repo = makeTempRoot();
+    execFileSync("git", ["-C", repo, "init", "-q"]);
+    execFileSync("git", ["-C", repo, "config", "user.email", "test@example.com"]);
+    execFileSync("git", ["-C", repo, "config", "user.name", "pi-dgoal-test"]);
+    writeFileSync(join(repo, ".gitignore"), "ignored.txt\n");
+    writeFileSync(join(repo, "tracked.txt"), "tracked\n");
+    execFileSync("git", ["-C", repo, "add", ".gitignore", "tracked.txt"]);
+    execFileSync("git", ["-C", repo, "commit", "-qm", "init"]);
+
+    const ignored = join(repo, "ignored.txt");
+    writeFileSync(ignored, "one\n");
+    const before = __fingerprintAuditWorkspaceForTest(repo);
+    writeFileSync(ignored, "two\n");
+    const after = __fingerprintAuditWorkspaceForTest(repo);
+
+    expect(after).not.toBe(before);
   });
 });

@@ -4398,17 +4398,36 @@ export function __bindAuditorAbortForTest(signal: AbortSignal | undefined, onAbo
   return bindAuditorAbort(signal, onAbort);
 }
 
-// 工作区 fingerprint 只用于判断上一次独立审核事实能否复用；无法读取 git 时安全降级为 cwd。
-function fingerprintAuditWorkspace(cwd: string): string {
+// 工作区 fingerprint 只用于判断上一次独立审核事实能否复用；无法完整读取 git 时返回不可用。
+function fingerprintAuditWorkspace(cwd: string): string | undefined {
   const runGit = (args: string[]) => {
     const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, maxBuffer: 1_000_000 });
-    return result.status === 0 ? result.stdout : "";
+    return result.status === 0 && !result.error ? result.stdout : undefined;
   };
-  const material = [cwd, runGit(["rev-parse", "HEAD"]), runGit(["status", "--porcelain=v1", "--untracked-files=all"]), runGit(["diff", "--no-ext-diff", "--binary", "HEAD"])].join("\u0000");
+  const head = runGit(["rev-parse", "HEAD"]);
+  const status = runGit(["status", "--porcelain=v1", "--untracked-files=all"]);
+  const diff = runGit(["diff", "--no-ext-diff", "--binary", "HEAD"]);
+  // ignored 配置/测试输入也会影响审核结果；依赖目录体量大且不属于项目事实，显式排除。
+  const untracked = runGit(["ls-files", "--others", "--exclude-standard", "-z", "--", ":!node_modules/**"]);
+  const ignored = runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ":!node_modules/**"]);
+  if (head === undefined || status === undefined || diff === undefined || untracked === undefined || ignored === undefined) return undefined;
+
+  const untrackedFileDigests: string[] = [];
+  for (const relativePath of `${untracked}${ignored}`.split("\0").filter(Boolean)) {
+    try {
+      const content = fs.readFileSync(path.resolve(cwd, relativePath));
+      const digest = createHash("sha256").update(content).digest("hex");
+      untrackedFileDigests.push(`${relativePath}\0${digest}`);
+    } catch {
+      return undefined;
+    }
+  }
+  const untrackedFiles = untrackedFileDigests.join("\0");
+  const material = [cwd, head, status, diff, untrackedFiles].join("\u0000");
   return createHash("sha256").update(material).digest("hex");
 }
 
-export function __fingerprintAuditWorkspaceForTest(cwd: string): string {
+export function __fingerprintAuditWorkspaceForTest(cwd: string): string | undefined {
   return fingerprintAuditWorkspace(cwd);
 }
 
@@ -4432,7 +4451,7 @@ async function runIsolatedCheck(args: {
       cwd: ctx.cwd,
       sessionManager: (ctx as unknown as DgoalContext).sessionManager,
     });
-    const workspaceFingerprint = fingerprintAuditWorkspace(auditorCwd);
+    const workspaceFingerprint = fingerprintAuditWorkspace(auditorCwd) ?? `unavailable:${randomUUID()}`;
     let checkpoint = args.checkpoint?.workspaceFingerprint === workspaceFingerprint
       ? args.checkpoint
       : { workspaceFingerprint, records: [] };
@@ -4459,7 +4478,7 @@ async function runIsolatedCheck(args: {
     let currentTool: string | undefined;
     let lastSnippet: string | undefined;
     let childUsage: unknown;
-    const pendingAuditToolArgs = new Map<string, Record<string, unknown>>();
+    const pendingAuditToolArgs = new Map<string, { toolName: string; args: Record<string, unknown> }>();
     let removeAbortListener = () => {};
 
     const clearIdleTimer = () => {
@@ -4550,7 +4569,7 @@ async function runIsolatedCheck(args: {
           const toolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
           const toolArgs = isRecord(raw.args) ? raw.args : undefined;
           if (raw.type === "tool_execution_start" && toolCallId && toolName && toolArgs) {
-            pendingAuditToolArgs.set(toolCallId, toolArgs);
+            pendingAuditToolArgs.set(toolCallId, { toolName, args: toolArgs });
             checkpoint = applyCheckpointEvent(checkpoint, {
               workspaceFingerprint,
               toolName,
@@ -4561,14 +4580,15 @@ async function runIsolatedCheck(args: {
             args.onCheckpoint?.(checkpoint);
           }
           if (raw.type === "tool_execution_end" && toolCallId && toolName) {
-            const completedArgs = pendingAuditToolArgs.get(toolCallId);
-            if (completedArgs) {
+            const pendingTool = pendingAuditToolArgs.get(toolCallId);
+            if (pendingTool && pendingTool.toolName === toolName) {
+              const status = raw.isError === false ? "success" : raw.isError === true ? "failed" : "unknown";
               checkpoint = applyCheckpointEvent(checkpoint, {
                 workspaceFingerprint,
-                toolName,
-                args: completedArgs,
+                toolName: pendingTool.toolName,
+                args: pendingTool.args,
                 phase: "end",
-                status: raw.isError === true ? "failed" : "success",
+                status,
               });
               pendingAuditToolArgs.delete(toolCallId);
               args.onCheckpoint?.(checkpoint);

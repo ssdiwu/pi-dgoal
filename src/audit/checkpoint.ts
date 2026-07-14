@@ -113,7 +113,7 @@ function sanitizeValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [
     key,
-    /(?:api[_-]?key|token|password|secret|authorization)/i.test(key)
+    /(?:api[_-]?key|token|password|secret|authorization|credential|private[_-]?key|session|cookie)/i.test(key)
       ? "[REDACTED]"
       : (key === "command" && typeof child === "string" ? redactCommand(child) : sanitizeValue(child)),
   ]));
@@ -121,9 +121,15 @@ function sanitizeValue(value: unknown): unknown {
 
 function redactCommand(command: string): string {
   return command
-    .replace(/(--(?:token|password|api[_-]?key)\s+)([^\s'\"]+)/gi, "$1[REDACTED]")
-    .replace(/(authorization:\s*bearer\s+)([^\s'\"]+)/gi, "$1[REDACTED]")
-    .replace(/([?&](?:token|password|api[_-]?key)=)([^&\s'\"]+)/gi, "$1[REDACTED]");
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/gi, "[REDACTED PRIVATE KEY]")
+    .replace(/((?:[a-z][a-z0-9+.-]*):\/\/[^\/\s'\":]+:)([^\/\s'\"]*)@/gi, "$1[REDACTED]@")
+    .replace(/(--(?:token|password|secret|authorization|cookie|credential|private[-_]?key|session|api[-_]?key|api[-_]?token|access[-_]?token|client[-_]?secret)(?:\s+|=|:))(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/((?:^|[\s'\";&|])(?:[a-z0-9_-]*(?:api[-_]?key|api[-_]?token|access[-_]?key|access[-_]?token|client[-_]?secret|token|password|secret|authorization|credential|private[-_]?key|session)[a-z0-9_-]*)\s*=\s*)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/((?:^|[\s'\";&|])(?:cookie|set-cookie)\s*:\s*)(?:\"[^\"]*\"|'[^']*'|[^'\";&|]+)/gi, "$1[REDACTED]")
+    .replace(/((?:^|[\s'\";&|])authorization\s*:\s*)(?:\"[^\"]*\"|'[^']*'|[^'\";&|]+)/gi, "$1[REDACTED]")
+    .replace(/((?:^|[\s'\";&|])(?:x[-_])?(?:api[-_]?key|api[-_]?token|auth[-_]?token|token|password|secret|session|credential|private[-_]?key)\s*:\s*)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/(authorization:\s*bearer\s+)(?:\"[^\"]*\"|'[^']*'|[^\s;&|]+)/gi, "$1[REDACTED]")
+    .replace(/([?&](?:[a-z0-9_-]*(?:api[-_]?key|api[-_]?token|access[-_]?key|access[-_]?token|client[-_]?secret|token|password|secret|authorization|credential|private[-_]?key|session)[a-z0-9_-]*)=)([^&\s'\"]+)/gi, "$1[REDACTED]");
 }
 
 function stableSerialize(value: unknown): string {

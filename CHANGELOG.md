@@ -5,7 +5,9 @@ All notable changes to `pi-dgoal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## Unreleased
+## [Unreleased]
+
+## [0.6.4] - 2026-07-14
 
 ### Added
 
@@ -16,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`dgoal_pause` 暂停原因边界与恢复状态**：拒绝空白或超长 `reason`，暂停后的查询与状态标题保留可读的 `pauseReasonDetail`，resume 或切换到其他暂停原因时清理旧 detail，避免用户无法恢复卡点或看到过期原因。
 - **长审核工具执行被 180 秒空闲门误杀**：Pi 在 child（子进程）实际运行 `bash` 等内置工具时发送 `tool_execution_*`，此前 dgoal 未识别这些事件，导致全量测试等长命令虽然正常执行却在 180 秒后被误判为 `auditor_error`。现模型工作仍用 180 秒 idle timeout，工具执行自动扩展到 1800 秒；超时诊断会标明工具名，避免把正常验证误报为审核失败。
 - **超时审核从零重跑**：独立审核 child 的 `tool_execution_start/end` 现在生成按 phase/goal 与工作区 fingerprint 隔离的脱敏审核检查点。候选切换或 `/dgoal resume` 会把同工作区已成功结束的精确命令注入 fresh context，避免反复跑同一重型验证；运行中、失败或工作区变化的命令不作为完成证据。phase 与 goal 另有跨候选共享的 900 秒 / 1800 秒整轮预算，避免无限审核。
+- **审核检查点工作区校验**：untracked/ignored 文件内容变化、文件内容无法读取，或 Git 状态无法完整读取时，都会禁止复用旧工作区 fingerprint（依赖目录除外），避免复用过期的审核成功证据。
+- **审核检查点事件校验**：只有 start/end 的 tool name 匹配且 child 明确报告 `isError:false` 时才记录成功命令；异常、缺失或不合法状态不再成为可复用证据。
+- **审核命令脱敏**：审核恢复报告会额外遮蔽 shell 环境变量、CLI 参数、URL credentials、Cookie/session、HTTP header 和 URL query 形式的复合 API key、access token、client secret、credential、private key、password、secret 与 authorization，避免敏感值进入持久化检查点或模型上下文。
 - **`dgoal_propose` 漏传 phase 的错误可操作化**：模型遗漏必填 `phases` 时，预处理现在先补为空数组并交给工具层校验，不再暴露宿主模糊的 `must have required properties phases`。错误会明确指出缺少 `phases`，并提示至少提交一个含 `subject` 与 `acceptanceCriteria`（`criterion` + `evidence`）的 phase；补回归测试覆盖该路径。
 
 ## [0.6.3] - 2026-07-14

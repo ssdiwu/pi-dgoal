@@ -29,7 +29,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 识别 thinking/toolcall/text/message 与 Pi `tool_execution_*`；模型 idle 180s、工具执行 idle 1800s；`isAuditorError` 三态判定、`runCheckWithRetry` 候选单次切换（approved/rejected 不切换、候选耗尽 `auditor_error`）、`formatCheckLivenessLine`/`summarizeCheckProgress` 中英文 i18n。 |
 | `auditor-config.test.ts` | 审核器候选配置与预检：受信任项目链整体 > 全局链、同来源复数字段 > 单值字段 > 旧 `auditorModel`、`phaseAuditorModels` / `goalAuditorModels` 的 `null` 阻断、空/非法/重复/超限候选、custom/gateway 多段路径和 thinking 后缀、隔离 child 的结构化 Pi 注册表匹配、成功缓存/失败重试、预检不可用的跨字段/来源降级与预检失败保留候选；同时覆盖首次双 `null` 模板及 `ui.notify` 抛错容错。 |
 | `auditor-fallback.test.ts` | 审核器候选链运行时回退：候选技术/协议错误或无终止标记部分输出时按顺序单次切换、有效 fallback 按 goal/审核范围持久复用、业务 REJECTED 与中断分流、候选耗尽 `audit_error` 及 `buildAuditorResultDetails()` 轨迹。 |
-| `audit-checkpoint.test.ts` / `audit-checkpoint-runtime.test.ts` / `audit-checkpoint-resume.test.ts` | 审核检查点：脱敏工具事实、同 workspace fingerprint 的成功命令复用、running/unknown 不算完成、scope 持久化与重启后注入新审核 child。 |
+| `audit-checkpoint.test.ts` / `audit-checkpoint-runtime.test.ts` / `audit-checkpoint-resume.test.ts` / `audit-usage-ledger-production-path.test.ts` | 审核检查点：复合敏感字段、URL credentials、Cookie/session 脱敏；同 workspace fingerprint 的成功命令复用；untracked/ignored/读取失败 fail-closed；running/unknown/异常事件不算完成；真实审核路径与重启后注入边界。 |
 | `auditor-workspace-cwd.test.ts` | 审核子进程工作目录推断：优先覆盖当前轮文件工具调用，再回退到会话里的最近文件工具调用；同仓库保持 `ctx.cwd`，并覆盖 goal 结束后不要把旧 worktree 泄漏到下一个 goal。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + pending/active goal 调 `dgoal_` 工具 execute，验证 `currentGoal`、`pendingProposal`、预审 rejected/error/合法重提状态和 `persist` 调用。不依赖终审 spawn。 |

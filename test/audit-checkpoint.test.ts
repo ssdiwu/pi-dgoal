@@ -74,7 +74,7 @@ describe("audit checkpoint", () => {
       workspaceFingerprint,
       toolName: "bash",
       args: {
-        command: "curl --token tok_live_should-not-leak -H 'Authorization: Bearer sk-secret-should-not-leak' https://example.test",
+        command: "curl --token \"tok_live_should-not-leak\" --api-key=sk-secret-should-not-leak -H 'Authorization: Bearer sk-secret-should-not-leak' https://example.test",
         token: "tok_live_should-not-leak",
         password: "password-should-not-leak",
         apiKey: "sk-secret-should-not-leak",
@@ -91,5 +91,120 @@ describe("audit checkpoint", () => {
     expect(report).not.toContain("password-should-not-leak");
     expect(report).not.toContain("sk-secret-should-not-leak");
     expect(report).toMatch(/\[REDACTED\]|<redacted>|\*{3,}/i);
+  });
+
+  test("partial report 脱敏 shell 环境变量形式的 secret", () => {
+    const secretCommand = "API_KEY=env-secret TOKEN=token-secret password=password-secret SECRET=secret-value curl https://example.test";
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: { command: secretCommand },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("env-secret");
+    expect(report).not.toContain("token-secret");
+    expect(report).not.toContain("password-secret");
+    expect(report).not.toContain("secret-value");
+    expect(report).toMatch(/\[REDACTED\]/);
+  });
+
+  test("partial report 脱敏 HTTP header 形式的 API key", () => {
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: { command: "curl -H 'X-Api-Key: header-secret' https://example.test" },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("header-secret");
+    expect(report).toMatch(/\[REDACTED\]/);
+  });
+
+  test("partial report 脱敏非 Bearer Authorization header 与 query secret", () => {
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: {
+        command: "curl -H 'Authorization: Basic basic-secret' 'https://example.test/?secret=query-secret&authorization=query-auth'",
+      },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("basic-secret");
+    expect(report).not.toContain("query-secret");
+    expect(report).not.toContain("query-auth");
+    expect(report).toMatch(/\[REDACTED\]/);
+  });
+
+  test("partial report 脱敏复合 secret 环境变量与参数变体", () => {
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: {
+        command: "AWS_SECRET_ACCESS_KEY=aws-secret CLIENT_SECRET_KEY=client-value-should-not-leak curl --client-secret:cli-secret 'https://example.test/?access_token=query-token'",
+      },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("aws-secret");
+    expect(report).not.toContain("client-value-should-not-leak");
+    expect(report).not.toContain("cli-secret");
+    expect(report).not.toContain("query-token");
+  });
+
+  test("partial report 脱敏 secret 与 authorization CLI 参数", () => {
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: { command: "tool --secret secret-flag --authorization authorization-flag" },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("secret-flag");
+    expect(report).not.toContain("authorization-flag");
+  });
+
+  test("partial report 脱敏 URL credentials、Cookie 与 credential 变体", () => {
+    const report = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: {
+        command: "curl 'https://user:url-password@example.test' -H 'Cookie: session=session-secret' --cookie 'session=cookie-flag-secret' --credential=credential-secret --private-key=private-key-secret",
+      },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(report).not.toContain("url-password");
+    expect(report).not.toContain("session-secret");
+    expect(report).not.toContain("cookie-flag-secret");
+    expect(report).not.toContain("credential-secret");
+    expect(report).not.toContain("private-key-secret");
+  });
+
+  test("partial report 脱敏 PEM private key 且保留普通命令", () => {
+    const pemReport = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: { command: "cat <<'KEY'\n-----BEGIN PRIVATE KEY-----\npem-secret\n-----END PRIVATE KEY-----\nKEY" },
+      phase: "end",
+      status: "unknown",
+    }));
+    const ordinaryReport = buildPartialReport(stateAfter({
+      workspaceFingerprint,
+      toolName: "bash",
+      args: { command: "printf hello" },
+      phase: "end",
+      status: "unknown",
+    }));
+
+    expect(pemReport).not.toContain("pem-secret");
+    expect(ordinaryReport).toContain("printf hello");
   });
 });

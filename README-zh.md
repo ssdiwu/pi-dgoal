@@ -4,6 +4,8 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
+> **v0.6.4**：新增 agent 主动暂停出口 `dgoal_pause`，并强化审核检查点复用、child 事件校验、工作区 fingerprint 与命令凭据脱敏。详见 `CHANGELOG.md`。
+>
 > **v0.6.3**：启动闸门语义预审从 30s 总时长超时改为 60s idle timeout（收到任意流事件即重置），通过 `onUpdate` 流出活性状态，并把 `technical_error`（`isError:true`，不是计划内容问题）与语义 `rejected`（`isError:false`）分离。可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置。详见 `CHANGELOG.md`。
 >
 > **此前版本**：v0.6.2 修复审核结论仲裁、候选故障切换与 `/dgoal s` 浮层恢复；v0.6.0 引入 vNext Goal Runtime（新持久化键、单 phase 统一完成建检、终审三路归因、src 分层）。
@@ -182,7 +184,9 @@ pi-dgoal/
 ├── index.ts                       ← Pi 扩展组装根
 ├── src/                           ← 按职责分层的运行时代码
 │   ├── plan/                      ← Task Plan 类型与纯 reducer helper
-│   ├── runtime/                   ← Goal Runtime 与过渡编排层
+│   ├── runtime/                   ← Goal Runtime、工具、prompt 与持久化编排
+│   ├── startup/                   ← Pi 工具/命令注册与事件 wiring
+│   ├── goal-runtime/              ← 可变 session 状态单例
 │   ├── audit/                     ← 审核解析与脱敏用量账本
 │   ├── isolated-pi/               ← 隔离 Pi 参数与行流 helper
 │   └── tui/                       ← TUI 纯 helper 与组件边界

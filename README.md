@@ -4,6 +4,8 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
+> **v0.6.4**: adds an agent-initiated `dgoal_pause` escape hatch and hardens audit checkpoint reuse, child event validation, workspace fingerprinting, and command credential redaction. See `CHANGELOG.md` for details.
+>
 > **v0.6.3**: the startup-gate semantic preflight now uses a 60s idle timeout (any stream event resets it) instead of a 30s wall-clock kill, streams liveness via `onUpdate`, and separates `technical_error` (`isError:true`, not a plan-content issue) from semantic `rejected` (`isError:false`). Configurable via `proposalSemanticReviewIdleTimeoutSeconds` in `pi-dgoal.json`. See `CHANGELOG.md` for details.
 >
 > **Previous**: v0.6.2 fixed auditor conclusion arbitration, per-candidate failover, and `/dgoal s` widget recovery; v0.6.0 introduced the vNext Goal Runtime (new persistence key, single-phase unified completion check, final-audit three-way attribution, src layering).
@@ -186,7 +188,9 @@ pi-dgoal/
 ├── index.ts                       ← Pi extension composition root
 ├── src/                           ← responsibility-based runtime modules
 │   ├── plan/                      ← Task Plan types and pure helpers
-│   ├── runtime/                   ← Goal Runtime orchestration
+│   ├── runtime/                   ← Goal Runtime orchestration, tools, prompts, persistence
+│   ├── startup/                   ← Pi tool/command registration and event wiring
+│   ├── goal-runtime/              ← mutable session state singleton
 │   ├── audit/                     ← audit parsing and sanitized usage ledger
 │   ├── isolated-pi/               ← isolated Pi args and stream helpers
 │   └── tui/                       ← TUI pure helpers and component boundary
