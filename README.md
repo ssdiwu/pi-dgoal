@@ -67,6 +67,7 @@ The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?)`. 
 | `dgoal_plan` | CRUD on tasks (create / update / list / get). 4-state machine with `blockedBy` dependency tracking + cycle detection. |
 | `dgoal_check` | Phase completion gate (spawns an isolated acceptance subprocess with fresh context and limited verification tools). For single-phase goals, one audit covers both phase and goal, recording a unified audit credential (ADR 0018). |
 | `dgoal_done` | Declare goal completion after all phases have passed `dgoal_check`. For single-phase goals, reuses the unified audit credential to close directly (no duplicate audit); for multi-phase goals, triggers a goal-level final audit with phase(id)/goal/user_review attribution. The only way to close a goal. |
+| `dgoal_pause` | Agent-initiated pause when it hits a deadlock that needs a user decision (e.g. frozen acceptance criteria conflict with the goal, missing info/authorization only the user has). Immediately pauses with `pauseReason: agent_blocked` and the agent-stated reason, instead of spinning through `no_progress` for 3 turns. `no_progress` remains as a fallback. |
 
 ## Design Boundaries
 
@@ -86,7 +87,7 @@ pending ──→ active ──→ done                # happy path
               │  │  ×3 final-audit failures
               ↓  ↓
             paused (audit_failed_3x) ──/dgoal resume──→ active
-            paused (user_abort / model_error / audit_error / no_progress) ──/dgoal resume──→ active
+            paused (user_abort / model_error / audit_error / audit_failed_3x / no_progress / agent_blocked) ──/dgoal resume──→ active
 ```
 
 See `doc/术语表.md` for state definitions, `doc/决策档案/0004` for the rejected/paused contract, and `doc/10-架构与运行/` for the current implementation.

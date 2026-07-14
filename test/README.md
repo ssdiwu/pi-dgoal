@@ -41,6 +41,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `paused-state-diagnostics.test.ts` | paused/missing/active 状态下工具的可读与可写边界：paused 下 list/get 只读、create/update/check/done 返回结构化 paused 结果与 resume 指引，不误报 noGoal；pauseReason 区分 user_abort/model_error；pending goal 不可完成（启动闸门保护）。 |
 | `no-progress-stall.test.ts` | 无进展续跑熔断纯函数 `decideNoProgressPause`：有工具调用清零、无工具累计、达 3 轮暂停、`MAX_NO_PROGRESS_TURNS=3`。 |
 | `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 before_agent_start → tool_execution_start → agent_end 回调，验证连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
+| `agent-pause-tool.test.ts` | `dgoal_pause` 主动暂停出口：active/rejected 状态立即进入 `paused(agent_blocked)`，reason 非空/有界，paused 结果可读，resume 清理 detail，UI 抛错仍先持久化，工具真实注册可见。 |
 | `phase-id-diagnostics.test.ts` | 新 plan phase ID 连续（proposalToPlan 预分配 1..N）、旧 plan（非连续 #1/#4/#8）兼容加载、phase 找不到时返回完整阶段列表（序号+真实 ID+标题，当前高亮）。 |
 | `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED 不回退；未知非配额错误也只尝试当前候选一次后切换；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |

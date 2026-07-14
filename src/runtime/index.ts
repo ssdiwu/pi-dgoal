@@ -68,7 +68,7 @@ type GoalStatus = "pending" | "active" | "rejected" | "paused" | "done";
 // - phase 状态由其下 task 聚合（agent 不能直接标 phase done，唯一入口是 dgoal_check）。
 // - task：done 不回退（错了新建接续 task），blocked 可回退 in_progress。
 // goal 暂停原因，resume 时按此决定是否清零 rejectedCount（见 ADR 0004）。
-type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress";
+type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress" | "agent_blocked";
 
 export { detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
 export { computeScrollOffset } from "../tui/helpers.ts";
@@ -128,6 +128,8 @@ interface GoalState {
   budget?: string;
   // 暂停原因，resume 时按此决定是否清零 rejectedCount（audit_failed_3x 清零，其他不清）。
   pauseReason?: PauseReason;
+  // pauseReason 的人类可读补充：agent_blocked 时存 agent 声明的死锁原因，供通知/状态展示。
+  pauseReasonDetail?: string;
   // audit_error 的审核范围；resume 只重置该范围的故障候选，旧 goal 缺失时兼容为全量重置。
   auditErrorScope?: AuditorScope;
   // 累计暂停时长（毫秒）。elapsed = now - startedAt - pausedTotalMs；旧 goal 缺失时视为 0。
@@ -325,6 +327,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noDgoal": "当前没有进行中的 dgoal。用法：/dgoal <goal>",
       "status.objective": "目标：{objective}",
       "status.state": "状态：{status}",
+      "status.pauseReason": "暂停原因：{reason}",
+      "status.pauseDetail": "暂停说明：{detail}",
       "status.iteration": "轮次：{iteration}",
       "status.contextPreview": "启动背景预览：\n{preview}",
       "status.noContextPreview": "启动背景预览：无",
@@ -342,6 +346,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
       "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，Dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
       "notify.noProgressPaused": "连续 {max} 轮无工具调用，Dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
+      "notify.agentPaused": "Agent 声明遇到需要你决策的死锁，已主动暂停：{detail}。处理后运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
       "notify.noPriorDiscussionForBareStart": "无前文共识可承接。请用 /dgoal <objective> 提供目标，或先对齐后再裸 /dgoal。",
       "notify.helpActive": "只有冷启动或暂停状态支持 /dgoal help；当前目标仍在执行，请使用 /dgoal s 查看状态。",
@@ -386,6 +391,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "audit.model": "模型：{model}",
       "tool.done.noGoal": "当前没有 /dgoal 目标可完成。",
       "tool.paused": "当前 /dgoal 目标已暂停（{reason}）。只读操作可用；修改、建检或完成请先运行 /dgoal resume。",
+      "tool.pausedWithDetail": "当前 /dgoal 目标已暂停（{reason}）。暂停说明：{detail}。处理后请运行 /dgoal resume。",
+      "tool.pause.noGoal": "当前没有 /dgoal 目标可暂停。",
+      "tool.pause.invalidReason": "暂停原因不能为空且不得超过 {max} 个字符；请写清死锁原因和需要用户做的决策。",
+      "tool.pause.notMutable": "目标尚未进入执行（{status}），无需暂停。",
+      "tool.pause.done": "目标已暂停（agent_blocked）：{detail}。等待用户处理后 /dgoal resume 继续。",
       "tool.done.gateJumping": "越终审推进：phase #{phaseId}（{phaseSubject}）尚未通过建检。必须先把所有 phase 通过 dgoal_check，才能调用 dgoal_done 进入终审。",
       "tool.done.runFailed": "审核运行失败，目标已暂停。运行 /dgoal resume 继续并重试完成。\n错误：{error}",
       "tool.done.auditPaused": "终审连续 {count} 次未通过，目标已暂停。\n\n审核报告：\n{report}",
@@ -516,6 +526,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.noDgoal": "No active dgoal. Usage: /dgoal <goal>",
       "status.objective": "Goal: {objective}",
       "status.state": "Status: {status}",
+      "status.pauseReason": "Pause reason: {reason}",
+      "status.pauseDetail": "Pause detail: {detail}",
       "status.iteration": "Iteration: {iteration}",
       "status.contextPreview": "Startup context preview:\n{preview}",
       "status.noContextPreview": "Startup context preview: none",
@@ -533,6 +545,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
       "notify.modelPaused": "Model error persisted after {max} retries; Dgoal paused{detail}. Run /dgoal resume to continue.",
       "notify.noProgressPaused": "No tool calls for {max} consecutive turns; Dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
+      "notify.agentPaused": "Agent reported a deadlock needing your decision; paused: {detail}. Run /dgoal resume after you resolve it.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
       "notify.noPriorDiscussionForBareStart": "There is no prior aligned discussion to carry. Use /dgoal <objective>, or align first and then run bare /dgoal.",
       "notify.helpActive": "`/dgoal help` is available only at cold start or while paused; use `/dgoal s` for the active goal.",
@@ -576,6 +589,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "audit.model": "model: {model}",
       "tool.done.noGoal": "There is no /dgoal goal to complete.",
       "tool.paused": "The current /dgoal goal is paused ({reason}). Read-only operations are available; to mutate, check, or complete, run /dgoal resume first.",
+      "tool.pausedWithDetail": "The current /dgoal goal is paused ({reason}). Pause detail: {detail}. Run /dgoal resume after resolving it.",
+      "tool.pause.noGoal": "There is no /dgoal goal to pause.",
+      "tool.pause.invalidReason": "The pause reason must not be empty and must be at most {max} characters; explain the deadlock and the decision needed from the user.",
+      "tool.pause.notMutable": "The goal has not entered execution ({status}); no need to pause.",
+      "tool.pause.done": "The goal is paused (agent_blocked): {detail}. Waiting for the user to /dgoal resume after resolving it.",
       "tool.done.gateJumping": "Gate-jumping finalization: phase #{phaseId} ({phaseSubject}) has not passed its check yet. You must pass dgoal_check for all phases before calling dgoal_done.",
       "tool.done.runFailed": "Audit execution failed; the goal is paused. Run /dgoal resume to continue and retry completion.\nError: {error}",
       "tool.done.auditPaused": "Final audit failed {count} times; the goal is now paused.\n\nAudit report:\n{report}",
@@ -729,14 +747,16 @@ function isGoalMutable(status: GoalStatus | undefined): boolean {
 // 工具结果：goal 存在但暂停，返回结构化 paused 信息而非 noGoal。
 function pausedGoalResult(goal: GoalState) {
   const reason = goal.pauseReason ?? "unknown";
+  const detail = goal.pauseReasonDetail?.trim();
   return {
-    content: [{ type: "text" as const, text: t("tool.paused", { reason }) }],
-    details: { error: "goal paused", goalStatus: "paused", pauseReason: reason },
+    content: [{ type: "text" as const, text: detail ? t("tool.pausedWithDetail", { reason, detail }) : t("tool.paused", { reason }) }],
+    details: { error: "goal paused", goalStatus: "paused", pauseReason: reason, pauseReasonDetail: detail },
   };
 }
 // vNext 使用新 custom entry type；旧 dgoal-state 故意不读取、不迁移。
 export const STATE_ENTRY_TYPE = "dgoal-goal-vnext";
 const MAX_OBJECTIVE_LENGTH = 8_000;
+const MAX_PAUSE_REASON_DETAIL_LENGTH = 1_000;
 // v0.5.2 切片8：裸 /dgoal 承接前文启动时的占位 objective。pending 期间短暂存在，dgoal_propose 确认后被 propose.objective 覆盖。
 export const BARE_START_OBJECTIVE = "（承接前文启动，待 dgoal_propose 确定）";
 const CONTEXT_INPUT_CAP_BYTES = 50 * 1024;
@@ -968,6 +988,73 @@ export const dgoalDoneTool = defineTool({
       ],
       details: { goal: auditedGoal.objective, summary, verification, whatChanged, userReview: completionUserReview, audited: true, auditOutput: audit.output, ...buildAuditorResultDetails(audit) },
       terminate: false,
+    };
+  },
+});
+
+// agent 主动暂停出口：当 agent 卡在"需要用户决策才能继续"的死锁（验收条件冲突 / 缺外部信息 / 权限不足）时，
+// 给它一个结构化出口立即 paused(agent_blocked)，避免只能靠连续 3 轮不调工具消极触发 no_progress
+// 被 continuation 催着空转烧 token。no_progress 保留作兜底（agent 不懂事时仍会兜底）。
+export const DGOAL_PAUSE_TOOL_NAME = "dgoal_pause";
+export const dgoalPauseTool = defineTool({
+  name: DGOAL_PAUSE_TOOL_NAME,
+  label: "Dgoal Pause",
+  description:
+    "主动暂停当前 /dgoal 目标，声明遇到需要用户决策才能继续的死锁（如冻结验收条件与目标冲突、缺只有用户掌握的信息或授权、外部阻塞）。仅在确实需要用户介入时调用。",
+  promptSnippet: "遇到需要用户决策的死锁时主动暂停 /dgoal 目标",
+  promptGuidelines: [
+    "仅当遇到必须由用户决策才能继续的死锁时调用：如冻结验收条件与目标冲突、缺少只有用户掌握的信息或授权、外部不可控的阻塞。",
+    "不要把 dgoal_pause 当作放弃或偷懒的出口；一时困难应先尝试替代方案、调试或缩小范围。",
+    "reason 必须写清死锁是什么、需要用户做什么决策，让用户能据此介入。",
+  ],
+  parameters: Type.Object({
+    reason: Type.String({
+      description: "死锁原因与需要用户做出的决策，须具体可操作。",
+      minLength: 1,
+      maxLength: MAX_PAUSE_REASON_DETAIL_LENGTH,
+    }),
+  }),
+  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    const goal = goalRuntimeState.currentGoal;
+    if (!goal) {
+      return {
+        content: [{ type: "text", text: t("tool.pause.noGoal") }],
+        details: { error: "no goal" },
+        terminate: true,
+      };
+    }
+    if (goal.status === "paused") {
+      return { ...pausedGoalResult(goal), terminate: true };
+    }
+    if (!isGoalMutable(goal.status)) {
+      return {
+        content: [{ type: "text", text: t("tool.pause.notMutable", { status: goal.status }) }],
+        details: { error: "not mutable", goalStatus: goal.status },
+        terminate: true,
+      };
+    }
+    const reason = typeof params.reason === "string" ? params.reason.trim() : "";
+    if (!reason || reason.length > MAX_PAUSE_REASON_DETAIL_LENGTH) {
+      return {
+        content: [{ type: "text", text: t("tool.pause.invalidReason", { max: MAX_PAUSE_REASON_DETAIL_LENGTH }) }],
+        details: { error: "invalid pause reason", maxLength: MAX_PAUSE_REASON_DETAIL_LENGTH },
+        isError: true,
+        terminate: false,
+      };
+    }
+    const detail = reason;
+    // agent 主动暂停与用户暂停同权：取消未消费的续跑，清零空转计数（resume 后给完整预算）。
+    cancelPendingContinuation();
+    goalRuntimeState.consecutiveNoProgressTurns = 0;
+    goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), { pauseReason: "agent_blocked", pauseReasonDetail: reason });
+    persistGoal(goalRuntimeState.currentGoal);
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    safeUpdatePlanOverlay();
+    safeNotify(ctx, t("notify.agentPaused", { detail }), "warning");
+    return {
+      content: [{ type: "text", text: t("tool.pause.done", { detail }) }],
+      details: { goal: goal.objective, pauseReason: "agent_blocked", pauseReasonDetail: reason },
+      terminate: true,
     };
   },
 });
@@ -2375,12 +2462,16 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
 }
 
 export function markGoalPaused(goal: GoalState, pausedAt = Date.now(), extra: Partial<GoalState> = {}): GoalState {
+  const pauseReason = extra.pauseReason ?? goal.pauseReason;
   return {
     ...goal,
     ...extra,
     status: "paused",
     updatedAt: pausedAt,
     pauseStartedAt: goal.pauseStartedAt ?? pausedAt,
+    pauseReasonDetail: pauseReason === "agent_blocked"
+      ? extra.pauseReasonDetail ?? goal.pauseReasonDetail
+      : undefined,
   };
 }
 
@@ -2393,8 +2484,9 @@ function markGoalResumed(goal: GoalState, resumedAt = Date.now(), extra: Partial
     updatedAt: resumedAt,
     pausedTotalMs: (goal.pausedTotalMs ?? 0) + pausedFor,
     pauseStartedAt: undefined,
-    // resume 默认清掉旧 pauseReason；如未来确需保留，只能由 extra.pauseReason 显式覆写。
+    // resume 默认清掉旧 pauseReason/detail；如未来确需保留，只能由 extra 显式覆写。
     pauseReason: extra.pauseReason,
+    pauseReasonDetail: extra.pauseReasonDetail,
   };
 }
 
@@ -2462,11 +2554,21 @@ type CustomStatusUI = DgoalContext["ui"] & {
   ) => Promise<T | undefined> | undefined;
 };
 
+function formatPauseReasonLabel(goal: Pick<GoalState, "status" | "pauseReason" | "pauseReasonDetail">): string {
+  if (goal.status !== "paused") return "";
+  const lines = [t("status.pauseReason", { reason: goal.pauseReason ?? "unknown" })];
+  const detail = goal.pauseReasonDetail?.trim();
+  if (detail) lines.push(t("status.pauseDetail", { detail }));
+  return lines.join(" · ");
+}
+
 function buildStatusNotifyMessage(goal: GoalState) {
   const contextPreview = buildContextPreview(goal, 5);
+  const pauseReason = formatPauseReasonLabel(goal);
   return [
     t("status.objective", { objective: goal.objective }),
     t("status.state", { status: goal.status }),
+    ...(pauseReason ? [pauseReason] : []),
     t("status.iteration", { iteration: goal.iteration }),
     contextPreview ? t("status.contextPreview", { preview: contextPreview }) : t("status.noContextPreview"),
     t("status.commands"),
@@ -2734,7 +2836,7 @@ export function buildSystemPrompt(goal: GoalState) {
   const rejectedBlock = goal.status === "rejected" && goal.rejectedCount
     ? `\n\n⚠️ 上次终审未通过（第 ${goal.rejectedCount}/3 次），必须先修正终审指出的与冻结 acceptanceCriteria 直接相关的问题再重新 dgoal_done。反馈中的人工体验要求移入 userReviewItems，不作为完成门。连续 3 次不过将暂停。`
     : "";
-  return `当前 /dgoal 目标：\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>${acceptanceContractBlock}${boundaryBlock}${buildContextBlock(goal)}${planBlock}${feedbackBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验冻结的独立验收条件与已验证证据；用户复核项不构成完成门。\n- 仅在目标全部完成且冻结验收条件验证通过后才调用 dgoal_done。\n- 阶段顺序执行（强制）：必须按 phase 顺序推进——把当前 phase 的所有 task 做完后，必须调用 dgoal_check 建检，通过后才能开始下一个 phase 的 task。严禁跳过未完成的 phase 直接做后续 phase。`;
+  return `当前 /dgoal 目标：\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>${acceptanceContractBlock}${boundaryBlock}${buildContextBlock(goal)}${planBlock}${feedbackBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验冻结的独立验收条件与已验证证据；用户复核项不构成完成门。\n- 仅在目标全部完成且冻结验收条件验证通过后才调用 dgoal_done。\n- 遇到必须由用户决策才能继续的死锁（如冻结验收条件与目标冲突、缺只有用户掌握的信息或授权、外部不可控阻塞）时，调用 dgoal_pause 并写清死锁原因与需要的决策，立即暂停等待用户介入；不要消极地连续不调工具空转。一时困难不算死锁——先尝试替代方案、调试或缩小范围。\n- 阶段顺序执行（强制）：必须按 phase 顺序推进——把当前 phase 的所有 task 做完后，必须调用 dgoal_check 建检，通过后才能开始下一个 phase 的 task。严禁跳过未完成的 phase 直接做后续 phase。`;
 }
 
 // 切片7：把当前 plan（三层，AI 全可见）格式化注入 system prompt。
@@ -5606,6 +5708,14 @@ export function __executeDgoalDoneForTest(
   return dgoalDoneTool.execute("test", params, undefined, onUpdate, { ui: {}, ...ctx } as DgoalContext);
 }
 
+// 测试专用：直接走 dgoal_pause 工具 execute，覆盖 agent 主动暂停出口（agent_blocked）。
+export function __executeDgoalPauseForTest(
+  params: { reason: string },
+  ctx: Partial<DgoalContext> = {},
+) {
+  return dgoalPauseTool.execute("test", params, undefined, undefined, { ui: {}, ...ctx } as DgoalContext);
+}
+
 // 测试专用：直接触发审核失败暂停，覆盖 pauseReason=audit_error。
 export function __pauseOnAuditFailureForTest(ctx: DgoalContext, reason: string, scope?: AuditorScope) {
   pauseOnAuditFailure(ctx, reason, scope);
@@ -6027,13 +6137,15 @@ export function buildBodyLinesNoHeading(goal: GoalState | undefined): RenderLine
 }
 
 /** Build heading only — for pinned top of scrollable modal. 量化到秒避免 elapsed 跳变导致每行失效。 */
-export function buildHeadingLine(goal: Pick<GoalState, "objective" | "plan" | "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt">): string {
+export function buildHeadingLine(goal: Pick<GoalState, "objective" | "plan" | "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt"> & Partial<Pick<GoalState, "pauseReason" | "pauseReasonDetail">>): string {
   const doneCount = goal.plan.phases.filter((ph) => isDonePlanStatus(ph.status)).length;
   const total = goal.plan.phases.length;
   const elapsed = formatElapsed(getGoalElapsedMs(goal));
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
   const repairLabel = formatGoalRepairLabel(goal);
-  return `🎯 ${objectiveFirstLine} (${doneCount}/${total}) ⏱️ ${elapsed}${repairLabel ? ` · ${repairLabel}` : ""}`;
+  const pauseReason = formatPauseReasonLabel(goal);
+  const labels = [repairLabel, pauseReason].filter(Boolean).join(" · ");
+  return `🎯 ${objectiveFirstLine} (${doneCount}/${total}) ⏱️ ${elapsed}${labels ? ` · ${labels}` : ""}`;
 }
 
 /** Colorize a RenderLine based on its type only (layer base color, ADR 0009).

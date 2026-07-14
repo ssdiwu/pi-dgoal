@@ -4,6 +4,7 @@ import {
   dgoalPlanTool,
   dgoalProposeTool,
   dgoalCheckTool,
+  dgoalPauseTool,
   handleDgoalCommand,
   resyncGoalFromSession,
   clearAuditorModelRegistryCache,
@@ -48,6 +49,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   pi.registerTool(dgoalPlanTool);
   pi.registerTool(dgoalProposeTool);
   pi.registerTool(dgoalCheckTool);
+  pi.registerTool(dgoalPauseTool);
 
   pi.registerCommand("dgoal", {
     description: t("command.description"),
