@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -30,6 +30,11 @@ import {
   summarizeCheckProgress as summarizeAuditProgress,
   type FinalAuditAttribution,
 } from "../audit/index.ts";
+import {
+  applyCheckpointEvent,
+  buildPartialReport,
+  type CheckpointState,
+} from "../audit/checkpoint.ts";
 import { appendAuditUsage, buildAuditUsageRecord } from "../audit/usage.ts";
 import { goalRuntimeState, resetGoalRuntimeState } from "../goal-runtime/state.ts";
 import {
@@ -142,6 +147,11 @@ interface GoalState {
   auditorCandidates?: {
     phase?: AuditorCandidateState;
     goal?: AuditorCandidateState;
+  };
+  // 独立审核 child 的已完成工具事实；同一工作区可在候选切换/resume 后复用。
+  auditCheckpoints?: {
+    phase?: CheckpointState;
+    goal?: CheckpointState;
   };
   // 单 phase 合并建检完成后留下的统一 goal 审核凭据，供 dgoal_done 跳过第二次审核。
   singlePhaseAudit?: { modelId?: string; createdAt: number };
@@ -738,10 +748,24 @@ const CONTEXT_SUMMARY_TIMEOUT_MS = 120_000;
 // 的 proposalSemanticReviewIdleTimeoutSeconds 调整（非法值回退默认并告警）。
 export const PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS = 60;
 export const PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_MS = PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS * 1000;
-// v0.5.2：建检空闲超时改秒单位（可读 + 可调）。内部 *1000 传给 timer。
-// 语义从“3 分钟没出文本”改为“3 分钟没有任何动作”；避免大范围终审在 provider 延迟时误报 auditor_error。
+// 模型思考阶段的空闲窗口：3 分钟内没有任何 child 事件才视为异常。
 export const CHECK_IDLE_TIMEOUT_SECONDS = 180;
 const CHECK_IDLE_TIMEOUT_MS = CHECK_IDLE_TIMEOUT_SECONDS * 1000;
+// 审核器允许 bash 跑项目自己的全量验证；工具执行期间 Pi 不会持续输出 child 事件，
+// 因此不能沿用模型思考的 3 分钟窗口，否则长测试会被误杀。
+export const CHECK_TOOL_IDLE_TIMEOUT_SECONDS = 1_800;
+const CHECK_TOOL_IDLE_TIMEOUT_MS = CHECK_TOOL_IDLE_TIMEOUT_SECONDS * 1000;
+// 整轮预算跨候选共享：阶段检查收敛，终审允许一次完整项目验证但不能无限续跑。
+export const PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS = 900;
+export const GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS = 1_800;
+
+export function getCheckIdleTimeoutMs(liveness: CheckLivenessState, modelIdleTimeoutMs = CHECK_IDLE_TIMEOUT_MS): number {
+  return liveness === "tool_running" ? Math.max(modelIdleTimeoutMs, CHECK_TOOL_IDLE_TIMEOUT_MS) : modelIdleTimeoutMs;
+}
+
+export function getAuditTotalTimeoutMs(scope: AuditorScope): number {
+  return (scope === "phase" ? PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS : GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS) * 1000;
+}
 const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
 const SUBPROCESS_FORCE_KILL_TIMEOUT_MS = 5_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
@@ -2556,6 +2580,20 @@ export function setFinalFeedback(goal: GoalState, report: string, rejectedCount:
   return { ...goal, finalFeedback: feedback, updatedAt: Date.now() };
 }
 
+// 审核检查点只按 scope 隔离；工作区变化时读取端失效，避免旧测试结果证明新代码。
+export function setAuditCheckpoint(goal: GoalState, scope: AuditorScope, checkpoint: CheckpointState): GoalState {
+  return {
+    ...goal,
+    auditCheckpoints: { ...(goal.auditCheckpoints ?? {}), [scope]: checkpoint },
+    updatedAt: Date.now(),
+  };
+}
+
+export function getReusableAuditCheckpoint(goal: GoalState | undefined, scope: AuditorScope, workspaceFingerprint: string): CheckpointState | undefined {
+  const checkpoint = goal?.auditCheckpoints?.[scope];
+  return checkpoint?.workspaceFingerprint === workspaceFingerprint ? checkpoint : undefined;
+}
+
 export function appendFinalAuditHistory(
   goal: GoalState,
   entry: Omit<FinalAuditHistoryEntry, "createdAt">,
@@ -3710,6 +3748,7 @@ export function classifyCheckEvent(line: string):
   let event: {
     type?: string;
     assistantMessageEvent?: { type?: string; delta?: string; toolName?: string };
+    toolName?: string;
     message?: {
       role?: string;
       content?: Array<{ type: string; text?: string }>;
@@ -3730,6 +3769,14 @@ export function classifyCheckEvent(line: string):
     const delta = typeof event.assistantMessageEvent?.delta === "string" ? event.assistantMessageEvent.delta : undefined;
     return { liveness: "report_streaming", delta };
   }
+  // Pi 在真正执行内置工具时不再发送 assistantMessageEvent；长 bash 会在这里静默。
+  // 必须识别该事件并扩大工具执行窗口，否则全量验证会被 180 秒模型空闲门误杀。
+  if (event.type === "tool_execution_start" || event.type === "tool_execution_update") {
+    return { liveness: "tool_running", toolName: event.toolName };
+  }
+  if (event.type === "tool_execution_end") {
+    return { liveness: "thinking", toolName: event.toolName };
+  }
   if (event.type === "message_end" && event.message?.role === "assistant") {
     const text = (event.message.content ?? [])
       .filter((part) => part.type === "text" && typeof part.text === "string")
@@ -3737,7 +3784,8 @@ export function classifyCheckEvent(line: string):
     const aborted = event.message.stopReason === "aborted";
     const errorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
     return {
-      liveness: "report_streaming",
+      // toolUse 的 message_end 后紧接 tool_execution_*；在两者之间也保持工具窗口。
+      liveness: event.message.stopReason === "toolUse" ? "tool_running" : "report_streaming",
       isMessageEnd: true,
       text,
       aborted,
@@ -3782,8 +3830,13 @@ interface CheckLivenessSnapshot {
 
 interface CheckRuntimeOptions {
   idleTimeoutMs?: number;
+  // 从本轮审核开始计算、跨候选共享的硬上限。
+  totalTimeoutMs?: number;
   progressUpdateThrottleMs?: number;
   attempt?: number;
+  // 上一候选或上一会话已落盘的独立审核事实；runIsolatedCheck 会按当前 workspace 指纹自行失效。
+  checkpoint?: CheckpointState;
+  onCheckpoint?: ((checkpoint: CheckpointState) => void) | undefined;
   onUpdate?: ((update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void) | undefined;
 }
 
@@ -4243,6 +4296,24 @@ export function __bindAuditorAbortForTest(signal: AbortSignal | undefined, onAbo
   return bindAuditorAbort(signal, onAbort);
 }
 
+// 工作区 fingerprint 只用于判断上一次独立审核事实能否复用；无法读取 git 时安全降级为 cwd。
+function fingerprintAuditWorkspace(cwd: string): string {
+  const runGit = (args: string[]) => {
+    const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, maxBuffer: 1_000_000 });
+    return result.status === 0 ? result.stdout : "";
+  };
+  const material = [cwd, runGit(["rev-parse", "HEAD"]), runGit(["status", "--porcelain=v1", "--untracked-files=all"]), runGit(["diff", "--no-ext-diff", "--binary", "HEAD"])].join("\u0000");
+  return createHash("sha256").update(material).digest("hex");
+}
+
+export function __fingerprintAuditWorkspaceForTest(cwd: string): string {
+  return fingerprintAuditWorkspace(cwd);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 // 切片 5：公共独立审计子进程（completion auditor 和 phase check 共用）。
 // spawn pi --no-session --no-extensions --no-skills --mode json --tools read,grep,find,ls,bash，fresh 上下文，用 APPROVED/REJECTED marker 判定。
 // 两个调用点：runCompletionAuditor（终审全 goal）、runPhaseCheck（阶段建检单 phase）——真接缝，抽出复用。
@@ -4254,13 +4325,17 @@ async function runIsolatedCheck(args: {
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
   const { ctx, systemPrompt, task, modelId } = args;
-  const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task });
-  const invocation = getPiInvocation(procArgs);
   return await new Promise<AuditorResult>((resolve) => {
     const auditorCwd = resolveAuditorWorkspaceCwd({
       cwd: ctx.cwd,
       sessionManager: (ctx as unknown as DgoalContext).sessionManager,
     });
+    const workspaceFingerprint = fingerprintAuditWorkspace(auditorCwd);
+    let checkpoint = args.checkpoint?.workspaceFingerprint === workspaceFingerprint
+      ? args.checkpoint
+      : { workspaceFingerprint, records: [] };
+    const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task: withAuditCheckpoint(task, checkpoint) });
+    const invocation = getPiInvocation(procArgs);
     const proc = spawnManagedSubprocess(invocation.command, invocation.args, auditorCwd);
 
     let finalReport = "";
@@ -4269,10 +4344,12 @@ async function runIsolatedCheck(args: {
     let childError: string | undefined;
     let childErrorInfo: AuditorErrorInfo | undefined;
     let childAborted = false;
-    let abortReason: "user" | "idle_timeout" | undefined;
+    let abortReason: "user" | "idle_timeout" | "total_timeout" | undefined;
     let buffer = "";
     let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    let totalTimer: ReturnType<typeof setTimeout> | undefined;
     let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
+    let activeIdleTimeoutMs = args.idleTimeoutMs ?? CHECK_IDLE_TIMEOUT_MS;
     let lastProgressUpdateAt = 0;
     let sawChildFeedback = false;
     // v0.5.2 建检活性状态（运行时观察层，不写 GoalState）
@@ -4280,6 +4357,7 @@ async function runIsolatedCheck(args: {
     let currentTool: string | undefined;
     let lastSnippet: string | undefined;
     let childUsage: unknown;
+    const pendingAuditToolArgs = new Map<string, Record<string, unknown>>();
     let removeAbortListener = () => {};
 
     const clearIdleTimer = () => {
@@ -4287,17 +4365,23 @@ async function runIsolatedCheck(args: {
       idleTimer = undefined;
     };
 
+    const clearTotalTimer = () => {
+      if (totalTimer) clearTimeout(totalTimer);
+      totalTimer = undefined;
+    };
+
     const armIdleTimer = () => {
       clearIdleTimer();
       if (!args.idleTimeoutMs) return;
-      idleDeadlineMs = Date.now() + args.idleTimeoutMs;
-      idleTimer = setTimeout(() => killProc("idle_timeout"), args.idleTimeoutMs);
+      activeIdleTimeoutMs = getCheckIdleTimeoutMs(liveness, args.idleTimeoutMs);
+      idleDeadlineMs = Date.now() + activeIdleTimeoutMs;
+      idleTimer = setTimeout(() => killProc("idle_timeout"), activeIdleTimeoutMs);
     };
 
     // v0.5.2：构造活性快照文本，随 onUpdate 工具执行流流出（不进底部状态栏）
     const buildLivenessLine = (): string => {
       const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-      const idleTotal = args.idleTimeoutMs ? Math.round(args.idleTimeoutMs / 1000) : undefined;
+      const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
       return formatCheckLivenessLine({ liveness, currentTool, lastSnippet, idleLeft, idleTotal });
     };
 
@@ -4325,7 +4409,7 @@ async function runIsolatedCheck(args: {
       if (!force && now - lastProgressUpdateAt < throttleMs) return;
       lastProgressUpdateAt = now;
       const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-      const idleTotal = args.idleTimeoutMs ? Math.round(args.idleTimeoutMs / 1000) : undefined;
+      const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
       const snapshot: CheckLivenessSnapshot = {
         liveness,
         currentTool,
@@ -4351,18 +4435,53 @@ async function runIsolatedCheck(args: {
     const processLine = (line: string) => {
       if (line.trim()) {
         try {
-          const raw = JSON.parse(line) as { type?: unknown; message?: { role?: unknown; usage?: unknown } };
+          const raw = JSON.parse(line) as {
+            type?: unknown;
+            toolCallId?: unknown;
+            toolName?: unknown;
+            args?: unknown;
+            isError?: unknown;
+            message?: { role?: unknown; usage?: unknown };
+          };
           if (raw.type === "message_end" && raw.message?.role === "assistant") childUsage = raw.message.usage;
+          const toolCallId = typeof raw.toolCallId === "string" ? raw.toolCallId : undefined;
+          const toolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
+          const toolArgs = isRecord(raw.args) ? raw.args : undefined;
+          if (raw.type === "tool_execution_start" && toolCallId && toolName && toolArgs) {
+            pendingAuditToolArgs.set(toolCallId, toolArgs);
+            checkpoint = applyCheckpointEvent(checkpoint, {
+              workspaceFingerprint,
+              toolName,
+              args: toolArgs,
+              phase: "start",
+              status: "running",
+            });
+            args.onCheckpoint?.(checkpoint);
+          }
+          if (raw.type === "tool_execution_end" && toolCallId && toolName) {
+            const completedArgs = pendingAuditToolArgs.get(toolCallId);
+            if (completedArgs) {
+              checkpoint = applyCheckpointEvent(checkpoint, {
+                workspaceFingerprint,
+                toolName,
+                args: completedArgs,
+                phase: "end",
+                status: raw.isError === true ? "failed" : "success",
+              });
+              pendingAuditToolArgs.delete(toolCallId);
+              args.onCheckpoint?.(checkpoint);
+            }
+          }
         } catch {
           // classifyCheckEvent remains the tolerant parser for malformed child output.
         }
       }
       const classified = classifyCheckEvent(line);
       if (!classified) return;
-      // v0.5.2：任何有效事件都重置 idle timer（不止 text_delta），消灭假超时
-      noteActivity();
       liveness = classified.liveness;
       if (classified.toolName) currentTool = classified.toolName;
+      // 先更新活性类型再重置计时，tool_execution_* 才能切到较长的工具窗口。
+      noteActivity();
       if (classified.liveness === "report_streaming" && classified.delta) {
         partialReport += classified.delta;
         emitProgress();
@@ -4384,6 +4503,7 @@ async function runIsolatedCheck(args: {
 
     const finish = (result: AuditorResult) => {
       clearIdleTimer();
+      clearTotalTimer();
       stopCountdownTicker();
       if (forceKillTimer) clearTimeout(forceKillTimer);
       removeAbortListener();
@@ -4414,7 +4534,7 @@ async function runIsolatedCheck(args: {
       }
       if (args.onUpdate && (livenessResult.output || partialReport || livenessResult.error)) {
         const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-        const idleTotal = args.idleTimeoutMs ? Math.round(args.idleTimeoutMs / 1000) : undefined;
+        const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
         const snapshot: CheckLivenessSnapshot = {
           liveness: livenessResult.liveness!,
           currentTool,
@@ -4453,14 +4573,28 @@ async function runIsolatedCheck(args: {
         });
         return;
       }
-      if (abortReason === "idle_timeout") {
-        const timeoutLabel = sawChildFeedback ? "审核空闲超时" : "审核启动超时";
-        const timeoutDetail = sawChildFeedback ? "无新反馈" : "无首个反馈";
+      if (abortReason === "total_timeout") {
         finish({
           approved: false,
           aborted: false,
           output,
-          error: `${timeoutLabel}（${args.idleTimeoutMs}ms ${timeoutDetail}）`,
+          error: `审核总时长超时（${args.totalTimeoutMs}ms）`,
+          errorInfo: { kind: "timeout" },
+        });
+        return;
+      }
+      if (abortReason === "idle_timeout") {
+        const timedOutWhileToolRunning = liveness === "tool_running";
+        const timeoutLabel = sawChildFeedback
+          ? (timedOutWhileToolRunning ? "审核工具空闲超时" : "审核空闲超时")
+          : "审核启动超时";
+        const timeoutDetail = sawChildFeedback ? "无新反馈" : "无首个反馈";
+        const toolDetail = timedOutWhileToolRunning && currentTool ? `；工具=${currentTool}` : "";
+        finish({
+          approved: false,
+          aborted: false,
+          output,
+          error: `${timeoutLabel}（${activeIdleTimeoutMs}ms ${timeoutDetail}${toolDetail}）`,
           errorInfo: { kind: "timeout" },
         });
         return;
@@ -4494,12 +4628,13 @@ async function runIsolatedCheck(args: {
       finish({ approved: false, aborted: false, output: "", error: t("runtime.error.spawnFailed"), errorInfo: { kind: "spawn" } });
     });
 
-    const killProc = (reason: "user" | "idle_timeout") => {
+    const killProc = (reason: "user" | "idle_timeout" | "total_timeout") => {
       if (abortReason) return;
       abortReason = reason;
       forceKillTimer = terminateManagedSubprocess(proc);
     };
     removeAbortListener = bindAuditorAbort(ctx.signal, () => killProc("user"));
+    if (args.totalTimeoutMs) totalTimer = setTimeout(() => killProc("total_timeout"), args.totalTimeoutMs);
     armIdleTimer();
     startCountdownTicker();
   });
@@ -4574,6 +4709,7 @@ async function runAuditorWithCandidates(args: {
       unavailableCandidates: resolution.unavailableCandidates,
     };
   }
+  const auditDeadlineMs = Date.now() + (runtimeOptions.totalTimeoutMs ?? getAuditTotalTimeoutMs(scope));
   const result = await runCheckWithRetry({
     modelIds,
     run: (modelId, partialFeedback, attempt) => runIsolatedCheck({
@@ -4583,6 +4719,14 @@ async function runAuditorWithCandidates(args: {
       systemPrompt,
       task: withPartialAuditFeedback(task, partialFeedback),
       ...runtimeOptions,
+      totalTimeoutMs: Math.max(1, auditDeadlineMs - Date.now()),
+      checkpoint: goalRuntimeState.currentGoal?.auditCheckpoints?.[scope],
+      onCheckpoint: (checkpoint) => {
+        const goal = goalRuntimeState.currentGoal;
+        if (!goal) return;
+        goalRuntimeState.currentGoal = setAuditCheckpoint(goal, scope, checkpoint);
+        persistGoal(goalRuntimeState.currentGoal);
+      },
       attempt,
     }),
     onUpdate: args.onUpdate,
@@ -4613,6 +4757,7 @@ async function runCompletionAuditor(args: {
     systemPrompt: AUDITOR_SYSTEM_PROMPT,
     task: buildAuditorTask(args.goal, args.summary, args.verification, args.whatChanged, args.userReview),
     idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
+    totalTimeoutMs: getAuditTotalTimeoutMs("goal"),
     progressUpdateThrottleMs: CHECK_PROGRESS_UPDATE_THROTTLE_MS,
     onUpdate: args.onUpdate,
   });
@@ -4689,6 +4834,19 @@ export function withPartialAuditFeedback(task: string, partialFeedback?: string)
     "以下是同一轮审核尚未形成终止标记的临时文本；续审时应复用已完成的检查，但必须独立完成判断。它不是正式 REJECTED 反馈。",
     escapeXml(partialFeedback),
     "</partial_audit_feedback>",
+  ].join("\n");
+}
+
+function withAuditCheckpoint(task: string, checkpoint: CheckpointState): string {
+  const report = buildPartialReport(checkpoint);
+  if (!report) return task;
+  return [
+    task,
+    "",
+    "<audit_checkpoint>",
+    "以下是同一工作区内由独立审核 child 记录的工具执行事实。status=success 的精确命令已经完成，不得重复执行；未完成或 unknown 不能视为通过，应检查其产物后只补跑尚未覆盖的验收条件。",
+    escapeXml(report),
+    "</audit_checkpoint>",
   ].join("\n");
 }
 
@@ -4804,6 +4962,7 @@ async function runPhaseCheck(args: {
     systemPrompt: PHASE_CHECK_SYSTEM_PROMPT,
     task: buildPhaseCheckTask(args.goal, args.phase),
     idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
+    totalTimeoutMs: getAuditTotalTimeoutMs("phase"),
     progressUpdateThrottleMs: CHECK_PROGRESS_UPDATE_THROTTLE_MS,
     onUpdate: args.onUpdate,
   });

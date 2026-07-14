@@ -167,6 +167,76 @@ test("goal 终审 APPROVED 优先于同一 message_end 的 WebSocket error", asy
   expect(persisted.at(-1)?.data.goal).toBeNull();
 });
 
+test("审核 child 的成功 bash 事件会持久化为可恢复 phase 检查点", async () => {
+  __setSpawnManagedSubprocessForTest((_command, _args, _cwd) => {
+    const stdout = new EventEmitter();
+    const proc = new EventEmitter() as any;
+    proc.stdout = stdout;
+    proc.stderr = new EventEmitter();
+    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
+    proc.pid = 44;
+    proc.exitCode = null;
+    proc.signalCode = null;
+    proc.kill = () => { proc.exitCode = 0; proc.signalCode = "SIGTERM"; };
+    setTimeout(() => {
+      stdout.emit("data", `${JSON.stringify({
+        type: "tool_execution_start",
+        toolCallId: "checkpoint-bash",
+        toolName: "bash",
+        args: { command: "printf checkpoint" },
+      })}\n`);
+      stdout.emit("data", `${JSON.stringify({
+        type: "tool_execution_end",
+        toolCallId: "checkpoint-bash",
+        toolName: "bash",
+        result: { content: [{ type: "text", text: "checkpoint" }] },
+        isError: false,
+      })}\n`);
+      stdout.emit("data", `${JSON.stringify({
+        type: "message_end",
+        message: { role: "assistant", content: [{ type: "text", text: "<APPROVED>" }] },
+      })}\n`);
+      proc.exitCode = 0;
+      proc.emit("close", 0);
+    }, 0);
+    return proc;
+  });
+
+  __setApiForTest({ appendEntry: () => {} });
+  __setGoalForTest({
+    id: "checkpoint-production-path",
+    objective: "审核检查点回归",
+    status: "active",
+    startedAt: 1,
+    updatedAt: 1,
+    iteration: 0,
+    verification: "npm test",
+    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
+    plan: {
+      phases: [
+        { id: 1, subject: "验收", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] },
+        { id: 3, subject: "后续", status: "pending", tasks: [] },
+      ],
+      nextId: 4,
+    },
+  } as never);
+
+  const result = await __executeDgoalCheckForTest(
+    { phaseId: 1 },
+    { cwd: process.cwd(), model: { provider: "openai", id: "gpt-5" }, isProjectTrusted: () => true, ui: { notify: () => {} } } as never,
+  );
+
+  expect(result.details?.approved).toBe(true);
+  const checkpoint = __getGoalForTest()?.auditCheckpoints?.phase;
+  expect(checkpoint?.records).toEqual([expect.objectContaining({
+    toolName: "bash",
+    args: { command: "printf checkpoint" },
+    started: true,
+    ended: true,
+    status: "success",
+  })]);
+});
+
 test("生产审核 child message_end.usage 可写入 audit-usage jsonl", async () => {
   const spawnCalls: { command?: string; cwd?: string }[] = [];
   __setSpawnManagedSubprocessForTest((command, _args, cwd) => {

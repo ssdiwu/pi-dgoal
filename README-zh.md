@@ -139,7 +139,7 @@ pending ──→ active ──→ done                # 正常路径
 - 审核用量会脱敏追加到 `~/.pi/agent/audit-usage.jsonl`；只写时间、父 session、项目、范围、模型、尝试序号、数字 usage 与去重键，`pi-session-insights` 会将它合入 `/insights` 数字聚合
 - 拒绝：阶段建检不通过是正常业务结果（`isError: false`），goal 保持 active，但闸门锁在当前 phase；终审不通过则进 `rejected`，原始审核报告会继续注入后续 prompt；连续 3 次终审不通过 → 暂停，`/dgoal resume` 清零重试
 - 审核出错 / 中断 / 真实空闲超时 / 无结论：统一视为 `auditor_error`（`isError: true`）。每个候选在一次审核中最多调用一次；技术/协议错误（HTTP 400/401/403/404/408/429/5xx、网络、超时、零输出或缺终止标记的部分输出）按顺序切下一候选。当前 goal、同一审核范围（phase 或 goal）内产生有效结论的候选会持久化并复用。业务 `<REJECTED>` 与用户中断不切换；phase 拒绝可持续修复、不计次数，goal 终审连续三次拒绝才暂停。`/dgoal resume` 从 `audit_error` 恢复时只清除产生错误的 phase/goal 审核范围候选状态（旧 goal 缺失范围字段时全量清除），再重试候选链。全部候选耗尽才安全暂停，绝不静默回退执行模型。
-- 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` / `idle Ns/180s` 等活性信息；即使中途停下，也会尽量返回部分审核输出
+- 审核过程会通过工具增量更新回传，含 `thinking` / `tool_running` 等活性信息：模型工作显示 `idle Ns/180s`，审核工具执行时显示 `idle Ns/1800s`，避免长项目验证命令被误判成模型卡死。工具执行会持久化为脱敏、scope 隔离的审核检查点；候选切换或 `/dgoal resume` 仅在 workspace fingerprint 相同的前提下复用成功结束的精确命令，running/failed 不构成证据。phase/goal 审核跨候选共享 900 秒 / 1800 秒总预算。
 - 审核报告更接近验收单：GWT 风格的 PASS / FAIL / BLOCKER 条目，加代码与文档一致性检查
 - 终审拒绝时展示“终审修复（Goal Repair）· 第 N/3 次”，`paused(audit_failed_3x)` 展示“终审修复已暂停”；每轮原始报告、完成声明与时间进入追加式修复账本，不创建 goal 级 task 或额外 phase
 - `/dgoal help` / `/dgoal h` 只在冷启动或 paused 时让当前会话 AI 用用户语言解释 dgoal；它不是 `dgoal_help` 工具，也不授予 AI 执行权

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **长审核工具执行被 180 秒空闲门误杀**：Pi 在 child（子进程）实际运行 `bash` 等内置工具时发送 `tool_execution_*`，此前 dgoal 未识别这些事件，导致全量测试等长命令虽然正常执行却在 180 秒后被误判为 `auditor_error`。现模型工作仍用 180 秒 idle timeout，工具执行自动扩展到 1800 秒；超时诊断会标明工具名，避免把正常验证误报为审核失败。
+- **超时审核从零重跑**：独立审核 child 的 `tool_execution_start/end` 现在生成按 phase/goal 与工作区 fingerprint 隔离的脱敏审核检查点。候选切换或 `/dgoal resume` 会把同工作区已成功结束的精确命令注入 fresh context，避免反复跑同一重型验证；运行中、失败或工作区变化的命令不作为完成证据。phase 与 goal 另有跨候选共享的 900 秒 / 1800 秒整轮预算，避免无限审核。
 - **`dgoal_propose` 漏传 phase 的错误可操作化**：模型遗漏必填 `phases` 时，预处理现在先补为空数组并交给工具层校验，不再暴露宿主模糊的 `must have required properties phases`。错误会明确指出缺少 `phases`，并提示至少提交一个含 `subject` 与 `acceptanceCriteria`（`criterion` + `evidence`）的 phase；补回归测试覆盖该路径。
 
 ## [0.6.3] - 2026-07-14

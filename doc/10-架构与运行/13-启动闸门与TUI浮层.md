@@ -74,7 +74,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - 原始建检/终审失败报告会通过 system prompt 的 `<check_feedback>` block 注入给主 agent，作为后续修复输入。
 - 注入顺序：`<dgoal_goal>` → `<dgoal_context>` → `<dgoal_plan>` → `<check_feedback>` → 循环规则。
 - **用户侧 TUI 不复读报告正文**：aboveEditor 浮层、`/dgoal s` modal、底部状态栏都不渲染 `report`，避免把 agent-facing 修复材料变成持续 UI 噪音。
-- 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running` / `idle Ns/180s`），但这仍属于运行时状态，不是报告正文。
+- 进行中的建检可以在工具执行流里展示活性片段（如 `thinking` / `tool_running`）；模型工作使用 `idle Ns/180s`，收到 Pi `tool_execution_*` 的工具执行使用 `idle Ns/1800s`，避免长 `bash` 验证被误判为空闲，但这仍属于运行时状态，不是报告正文。
 
 决策依据：形态选型 `doc/决策档案/0008-dgoal-s-modal-形态选型.md`（原 Variant A top-center，v0.5+ 切 center，见追加决策）；视觉编码 `doc/决策档案/0009-TUI视觉编码改为层级靠颜色状态靠字符.md`（**层级靠颜色，状态靠字符**，覆盖 ADR 0008 的 emoji+status 色方案）；探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`。
 

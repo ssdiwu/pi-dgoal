@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md
 // 关键：thinking/toolcall 事件被正确识别为活性，不再被误判为空闲超时
 import { afterEach, describe, expect, test } from "bun:test";
-import { __setI18nForTest, classifyCheckEvent, CHECK_IDLE_TIMEOUT_SECONDS, formatCheckLivenessLine, isAuditorError, runCheckWithRetry, summarizeCheckProgress, type AuditorResult } from "../index.ts";
+import { __setI18nForTest, classifyCheckEvent, CHECK_IDLE_TIMEOUT_SECONDS, CHECK_TOOL_IDLE_TIMEOUT_SECONDS, GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS, PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS, formatCheckLivenessLine, getAuditTotalTimeoutMs, getCheckIdleTimeoutMs, isAuditorError, runCheckWithRetry, summarizeCheckProgress, type AuditorResult } from "../index.ts";
 
 const msg = (type: string, evt: Record<string, unknown>) =>
   JSON.stringify({ type, assistantMessageEvent: evt });
@@ -34,6 +34,15 @@ describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
     const r = classifyCheckEvent(msg("message_update", { type: "text_delta", delta: "## 验收" }));
     expect(r?.liveness).toBe("report_streaming");
     expect(r?.delta).toBe("## 验收");
+  });
+
+  test("tool_execution 事件保持工具执行活性，避免长 bash 被误判为模型空闲", () => {
+    const start = classifyCheckEvent(JSON.stringify({ type: "tool_execution_start", toolName: "bash" }));
+    const update = classifyCheckEvent(JSON.stringify({ type: "tool_execution_update", toolName: "bash" }));
+    const end = classifyCheckEvent(JSON.stringify({ type: "tool_execution_end", toolName: "bash" }));
+    expect(start).toEqual(expect.objectContaining({ liveness: "tool_running", toolName: "bash" }));
+    expect(update).toEqual(expect.objectContaining({ liveness: "tool_running", toolName: "bash" }));
+    expect(end).toEqual(expect.objectContaining({ liveness: "thinking", toolName: "bash" }));
   });
 
   test("message_end 提取完整 text 并标记 isMessageEnd", () => {
@@ -85,6 +94,9 @@ describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
 
   test("覆盖所有有效事件类型——任一都应返回非 null（重置 idle timer 的依据）", () => {
     const events = [
+      JSON.stringify({ type: "tool_execution_start", toolName: "bash" }),
+      JSON.stringify({ type: "tool_execution_update", toolName: "bash" }),
+      JSON.stringify({ type: "tool_execution_end", toolName: "bash" }),
       msg("message_update", { type: "thinking_start" }),
       msg("message_update", { type: "thinking_delta" }),
       msg("message_update", { type: "thinking_end" }),
@@ -101,9 +113,18 @@ describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
 });
 
 describe("v0.5.2 · 超时秒单位与可见倍计时口径", () => {
-  test("CHECK_IDLE_TIMEOUT_SECONDS 以秒为单位，值为 180（大范围终审留 3 分钟活性窗口）", () => {
+  test("模型空闲为 180 秒，工具执行扩展到 1800 秒", () => {
     expect(CHECK_IDLE_TIMEOUT_SECONDS).toBe(180);
-    expect(typeof CHECK_IDLE_TIMEOUT_SECONDS).toBe("number");
+    expect(CHECK_TOOL_IDLE_TIMEOUT_SECONDS).toBe(1_800);
+    expect(getCheckIdleTimeoutMs("thinking", CHECK_IDLE_TIMEOUT_SECONDS * 1_000)).toBe(180_000);
+    expect(getCheckIdleTimeoutMs("tool_running", CHECK_IDLE_TIMEOUT_SECONDS * 1_000)).toBe(1_800_000);
+  });
+
+  test("phase 与 goal 使用不同的整轮审核预算", () => {
+    expect(PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS).toBe(900);
+    expect(GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS).toBe(1_800);
+    expect(getAuditTotalTimeoutMs("phase")).toBe(900_000);
+    expect(getAuditTotalTimeoutMs("goal")).toBe(1_800_000);
   });
 });
 
