@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.5.2-建检反馈闭环增强实施方案.md
 // 关键：thinking/toolcall 事件被正确识别为活性，不再被误判为空闲超时
 import { afterEach, describe, expect, test } from "bun:test";
-import { __setI18nForTest, classifyCheckEvent, CHECK_IDLE_TIMEOUT_SECONDS, CHECK_TOOL_IDLE_TIMEOUT_SECONDS, GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS, PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS, formatCheckLivenessLine, getAuditTotalTimeoutMs, getCheckIdleTimeoutMs, isAuditorError, runCheckWithRetry, summarizeCheckProgress, type AuditorResult } from "../index.ts";
+import { __setI18nForTest, classifyCheckEvent, CHECK_IDLE_TIMEOUT_SECONDS, CHECK_TOOL_IDLE_TIMEOUT_SECONDS, GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS, PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS, formatAuditTotalTimeout, formatCheckLivenessLine, getAuditTotalTimeoutMs, getCheckIdleTimeoutMs, isAuditorError, runCheckWithRetry, summarizeCheckProgress, type AuditorResult } from "../index.ts";
 
 const msg = (type: string, evt: Record<string, unknown>) =>
   JSON.stringify({ type, assistantMessageEvent: evt });
@@ -180,11 +180,32 @@ describe("v0.5.2 · 结果三态与 auditor_error 重试", () => {
     expect(calls).toEqual(["primary/model", "backup/model"]);
     expect(result.approved).toBe(true);
   });
+
+  test("runCheckWithRetry：共享总预算耗尽时不启动下一候选", async () => {
+    const calls: string[] = [];
+    const result = await runCheckWithRetry({
+      modelIds: ["primary/model", "backup/model"],
+      shouldContinue: () => false,
+      run: async (modelId) => {
+        calls.push(modelId!);
+        return { approved: false, aborted: false, output: "", error: "审核总时长超时（900秒）", errorInfo: { kind: "timeout" } } as AuditorResult;
+      },
+    });
+
+    expect(calls).toEqual(["primary/model"]);
+    expect(result.error).toBe("审核总时长超时（900秒）");
+    expect(result.attempts).toHaveLength(1);
+    expect(result.exhausted).toBe(true);
+  });
 });
 
 describe("v0.5.2 · 建检运行时文案 i18n", () => {
   test("formatCheckLivenessLine 默认中文：思考中 + 空闲倒计时", () => {
     expect(formatCheckLivenessLine({ liveness: "thinking", idleLeft: 173, idleTotal: 180 })).toBe("[思考中] · 空闲 173s/180s");
+  });
+
+  test("formatAuditTotalTimeout 对外使用秒，不泄漏内部毫秒", () => {
+    expect(formatAuditTotalTimeout(900_000)).toBe("审核总时长超时（900秒）");
   });
 
   test("formatCheckLivenessLine 可被英文 i18n 覆盖", () => {

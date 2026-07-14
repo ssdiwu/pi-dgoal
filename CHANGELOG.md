@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **审核共享预算耗尽后不再伪启动 1ms 候选**：首个审核候选耗尽 phase/goal 的共享总预算后，不再启动下一候选并把剩余时间压成 1ms；保留真实的总时长超时原因，避免误导为新的瞬时超时。审核超时文案也不再泄漏内部毫秒，统一显示为秒。
+
 ## [0.6.4] - 2026-07-14
 
 ### Added

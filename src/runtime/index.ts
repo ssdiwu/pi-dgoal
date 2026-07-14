@@ -434,6 +434,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.done.noDecision": "审核未产出结论，目标已暂停（{reason}）。{report}",
       "tool.report.inline": "\n报告：{report}",
       "runtime.error.auditInterrupted": "审核被中断",
+      "runtime.error.auditTotalTimeout": "审核总时长超时（{seconds}秒）",
       "runtime.error.auditNoOutput": "审核无输出",
       "runtime.error.auditCandidatesExhausted": "所有审核模型候选均未形成明确结论",
       "runtime.error.spawnFailed": "启动 pi 子进程失败",
@@ -633,6 +634,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.done.noDecision": "The audit produced no decision; the goal is paused ({reason}).{report}",
       "tool.report.inline": "\nReport: {report}",
       "runtime.error.auditInterrupted": "audit interrupted",
+      "runtime.error.auditTotalTimeout": "audit total timeout ({seconds}s)",
       "runtime.error.auditNoOutput": "audit produced no output",
       "runtime.error.auditCandidatesExhausted": "all auditor model candidates exhausted without a clear decision",
       "runtime.error.spawnFailed": "failed to start pi subprocess",
@@ -786,7 +788,14 @@ export function getCheckIdleTimeoutMs(liveness: CheckLivenessState, modelIdleTim
 export function getAuditTotalTimeoutMs(scope: AuditorScope): number {
   return (scope === "phase" ? PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS : GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS) * 1000;
 }
+
+export function formatAuditTotalTimeout(totalTimeoutMs: number): string {
+  return t("runtime.error.auditTotalTimeout", { seconds: Math.ceil(totalTimeoutMs / 1000) });
+}
+
 const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
+// 候选切换前至少保留 1 秒，避免刚启动就因共享总预算耗尽而产生瞬时超时。
+const MIN_AUDIT_CANDIDATE_START_REMAINING_MS = 1_000;
 const SUBPROCESS_FORCE_KILL_TIMEOUT_MS = 5_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
 const CONTINUATION_POLL_INTERVAL_MS = 250;
@@ -4700,7 +4709,7 @@ async function runIsolatedCheck(args: {
           approved: false,
           aborted: false,
           output,
-          error: `审核总时长超时（${args.totalTimeoutMs}ms）`,
+          error: formatAuditTotalTimeout(args.totalTimeoutMs ?? 0),
           errorInfo: { kind: "timeout" },
         });
         return;
@@ -4832,6 +4841,7 @@ async function runAuditorWithCandidates(args: {
     };
   }
   const auditDeadlineMs = Date.now() + (runtimeOptions.totalTimeoutMs ?? getAuditTotalTimeoutMs(scope));
+  const shouldContinue = () => auditDeadlineMs - Date.now() >= MIN_AUDIT_CANDIDATE_START_REMAINING_MS;
   const result = await runCheckWithRetry({
     modelIds,
     run: (modelId, partialFeedback, attempt) => runIsolatedCheck({
@@ -4851,6 +4861,7 @@ async function runAuditorWithCandidates(args: {
       },
       attempt,
     }),
+    shouldContinue,
     onUpdate: args.onUpdate,
   });
   recordAuditorCandidateResult(scope, result);
@@ -4990,6 +5001,7 @@ function attemptOutcome(result: AuditorResult, disposition: AuditorFailureDispos
 export async function runCheckWithRetry(args: {
   modelIds?: readonly string[];
   run: (modelId?: string, partialFeedback?: string, attempt?: number) => Promise<AuditorResult>;
+  shouldContinue?: () => boolean;
   onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
   const modelIds = args.modelIds?.length ? args.modelIds : [undefined];
@@ -5004,6 +5016,15 @@ export async function runCheckWithRetry(args: {
   };
 
   for (const [modelIndex, modelId] of modelIds.entries()) {
+    if (modelIndex > 0 && args.shouldContinue && !args.shouldContinue()) {
+      return {
+        ...lastResult,
+        modelId: lastResult.modelId ?? modelIds[modelIndex - 1],
+        attempts,
+        exhausted: true,
+        liveness: "auditor_error",
+      };
+    }
     lastResult = await args.run(modelId, partialFeedback || undefined, 1);
     const disposition = classifyAuditorFailure(lastResult);
     attempts.push({
