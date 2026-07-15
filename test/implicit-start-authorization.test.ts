@@ -3,11 +3,27 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { __executeDgoalProposeForTest, __getPendingProposalForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, validateImplicitToolAction, type GoalState } from "../index.ts";
+import { __executeDgoalProposeForTest, __getPendingProposalForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, dgoalProposeTool, validateImplicitToolAction, type GoalState } from "../index.ts";
+import { buildImplicitStartGuidance } from "../src/startup/index.ts";
 
 const criterion = { criterion: "测试退出码 0", evidence: "npm test" };
 
 describe("v0.7.0 · 隐式轻量启动权限", () => {
+  test("冷启动提示明确隐式入口与安全策略", () => {
+    const guidance = buildImplicitStartGuidance();
+    expect(guidance).toContain("implicit=true");
+    expect(guidance).toContain("final_only + bounded");
+    expect(guidance).toContain("用户明确要求启动 dgoal");
+    expect(guidance).toContain("没有明确用户目标时不要自行启动");
+    expect(guidance).toContain("显式使用 /dgoal");
+  });
+
+  test("dgoal_propose implicit 描述明确不要求显式 /dgoal", () => {
+    const implicitParam = String((dgoalProposeTool.parameters as { properties?: { implicit?: { description?: string } } }).properties?.implicit?.description ?? "");
+    expect(implicitParam).toContain("不要求用户输入 /dgoal");
+    expect(implicitParam).toContain("final_only + bounded");
+  });
+
   test("全局显式授权可成功进入 pending proposal，项目配置不能替代全局授权", async () => {
     __resetGoalForTest();
     __setProposalSemanticReviewForTest(() => ({ decision: "approve", acceptanceCriteria: [criterion] }));

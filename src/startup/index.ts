@@ -17,6 +17,7 @@ import {
   safeNotify,
   isGoalRunning,
   buildSystemPrompt,
+  loadDgoalConfig,
   markContinuationDelivered,
   trackFileToolExecutionStart,
   trackFileToolExecutionEnd,
@@ -43,6 +44,10 @@ import {
 } from "../runtime/index.ts";
 import { goalRuntimeState } from "../goal-runtime/state.ts";
 
+
+export function buildImplicitStartGuidance(): string {
+  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及外部写入、发布、推送、权限或付费动作。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。没有明确用户目标时不要自行启动，否则要求用户显式使用 /dgoal。\n</dgoal_implicit_start>";
+}
 
 export function registerDgoal(pi: ExtensionAPI) {
   setApi(pi);
@@ -89,15 +94,25 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
   });
 
-  pi.on("before_agent_start", (event) => {
+  pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
     // 新 agent turn 重置本轮工具调用标记。
     goalRuntimeState.turnHadToolExecution = false;
     // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
-    if (!goalRuntimeState.currentGoal || !isGoalRunning(goalRuntimeState.currentGoal.status)) return;
+    if (goalRuntimeState.currentGoal) {
+      if (isGoalRunning(goalRuntimeState.currentGoal.status)) {
+        return {
+          systemPrompt: `${event.systemPrompt}\n\n${buildSystemPrompt(goalRuntimeState.currentGoal)}`,
+        };
+      }
+      return;
+    }
 
+    // 冷启动时把全局隐式授权告知主模型；校验、语义预审和运行时护栏仍由 dgoal_propose/工具钩子执行。
+    const loaded = await loadDgoalConfig(ctx).catch(() => undefined);
+    if (!loaded?.globalConfig.implicitFinalOnlyStart) return;
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${buildSystemPrompt(goalRuntimeState.currentGoal)}`,
+      systemPrompt: `${event.systemPrompt}\n\n${buildImplicitStartGuidance()}`,
     };
   });
 

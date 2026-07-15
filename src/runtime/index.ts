@@ -2178,7 +2178,7 @@ export const dgoalProposeTool = defineTool({
     "计划要具体可执行：phase subject 是阶段性目标，不要写空泛的「调研」「实现」。",
     "每个 goal 都必须提供 LLM 可独立核验的 acceptanceCriteria（criterion + evidence）；phased 的每个 phase 也必须提供，final_only 的 phase 条件可省略；人工体验/视觉事项放入 userReviewItems，不得作为完成门。",
     "若前文已明确这个 goal 不做什么、高风险边界或成本预期，请分别写入 nonGoals / guardrails / budget；若缺失，也应让缺口在计划里显式暴露。",
-    "提交后等用户确认；若用户反馈意见，按反馈调整后重新提交。",
+    "显式 /dgoal 启动时，提交后等用户确认；若用户反馈意见，按反馈调整后重新提交。全局授权的隐式轻量启动可设置 implicit=true 跳过阻塞式确认，但不跳过结构校验、语义预审、预算和动作护栏。",
   ],
   parameters: Type.Object({
     objective: Type.String({ description: "goal 的简述（一句话，用户确认的方向）" }),
@@ -2198,7 +2198,7 @@ export const dgoalProposeTool = defineTool({
       })),
     }, { description: "bounded 策略的结构化上限；缺失维度不限制。" })),
     /** Global-only authorized autonomous path; cannot request phased/unbounded. */
-    implicit: Type.Optional(Type.Boolean({ description: "仅当全局 implicitFinalOnlyStart=true 时允许的轻量自动启动。" })),
+    implicit: Type.Optional(Type.Boolean({ description: "全局 implicitFinalOnlyStart=true 时的隐式轻量启动开关：当用户提出明确、适合持续执行直到完成的本地/只读任务时可设为 true；不要求用户输入 /dgoal，但必须使用 final_only + bounded，并且仍受 proposal 校验、语义预审和运行时动作护栏约束。" })),
     verification: Type.String({ description: "goal 级验收说明（跨 phase 全局，必填）：交付什么、满足什么标准。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考 contextSummary 的“验收标准”，但必须显式写出，不要留空或写“完成并验证”这类空话。" }),
     acceptanceCriteria: Type.Array(
       Type.Object({
