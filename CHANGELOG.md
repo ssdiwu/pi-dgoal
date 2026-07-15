@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **自然语言显式启动**（ADR 0036）：真实用户在冷会话明确说“使用/启动 dgoal”后，`dgoal_propose` 可消费绑定当前 agent prompt 的一次性内存授权，建立普通 pending goal 并继续语义预审与确认 UI；复杂目标可提交 `phased` / `unbounded` 及计划内外部动作，不再要求重复输入 `/dgoal`。extension 注入、能力询问、讨论、否定句和已有 goal 均不会借此静默启动或替换。
+- **自然语言显式启动**（ADR 0036）：真实用户在空闲冷会话用祈使句明确要求“使用/启动 dgoal”后，`dgoal_propose` 可消费精确绑定 input/prompt 的一次性内存授权，建立普通 pending goal 并继续语义预审与确认 UI；复杂目标可提交 `phased` / `unbounded` 及计划内外部动作，不再要求重复输入 `/dgoal`。能力问句、引用/代码示例、解释讨论、否定句、标识符后缀、处理中追加输入、`interactive` / `rpc` 之外的来源和已有 goal 均不会借此静默启动或替换；Pi 无不可变输入原文字段，早于 dgoal 的受信任 transform 仍属于扩展全权限信任边界。
 
 ### Changed
 

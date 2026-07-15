@@ -27,19 +27,34 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
       "启动 /dgoal",
       "麻烦用一下 dgoal 完成这个任务",
       "交给 dgoal 来处理",
-      "你能用 dgoal 修复这个问题吗？",
-      "我重载你了，你是否可以开始自己测试dgoal呢？",
+      "请让 dgoal 开始工作",
+      "dgoal，开始工作",
+      "先分析需求，再请用 dgoal 处理",
+      "不要再问，直接用 dgoal",
       "please use dgoal for this task",
-      "could you use dgoal to fix this?",
+      "run the dgoal workflow",
+      "start the /dgoal workflow",
     ]) expect(isNaturalLanguageDgoalStartRequest(text)).toBe(true);
     for (const text of [
       "dgoal 是什么？",
       "为什么 dgoal 没启动？",
       "不要用 dgoal",
       "禁止现在使用 dgoal",
+      "不是请用 dgoal，而是讨论它",
+      "不是要用 dgoal，而是只讨论它",
+      "并非启动 dgoal",
       "do not currently use dgoal",
       "你能用 dgoal 吗？",
+      "你能用 dgoal 修复这个问题吗？",
+      "你可以用 dgoal 吗？",
+      "你可以启动 dgoal 吗？",
+      "是否可以启动 dgoal？",
+      "我重载你了，你是否可以开始自己测试dgoal呢？",
       "could you use dgoal?",
+      "could you use dgoal to fix this?",
+      "请解释‘请用 dgoal’这句话",
+      "请解释 `请用 dgoal` 这句话",
+      "请启动mydgoal",
       "请完善 dgoal 产品缺口",
     ]) expect(isNaturalLanguageDgoalStartRequest(text)).toBe(false);
     expect(buildNaturalLanguageStartGuidance()).toContain("不设置 implicit");
@@ -48,7 +63,7 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
 
   test("自然语言显式授权可从冷会话提交 phased 外部动作计划", async () => {
     __resetGoalForTest();
-    __setRuntimeStateForTest({ naturalLanguageStartAuthorized: true, proposalRetryCount: 2, consecutiveErrors: 2, consecutiveNoProgressTurns: 2 });
+    __setRuntimeStateForTest({ naturalLanguageStartAuthorized: true, naturalLanguageStartInput: "请用 dgoal 完成任务", proposalRetryCount: 2, consecutiveErrors: 2, consecutiveNoProgressTurns: 2 });
     __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
     const result = await __executeDgoalProposeForTest({
       objective: "创建 issue、修复并推送 PR", verification: "测试通过并查询远端状态",
@@ -66,6 +81,19 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
     expect(__getRuntimeStateForTest().consecutiveErrors).toBe(0);
     expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
     __setProposalSemanticReviewForTest(undefined);
+  });
+
+  test("自然语言显式授权缺少精确 input 绑定时 fail-closed", async () => {
+    __resetGoalForTest();
+    __setRuntimeStateForTest({ naturalLanguageStartAuthorized: true, naturalLanguageStartInput: undefined });
+    const result = await __executeDgoalProposeForTest({
+      objective: "修复问题", verification: "npm test",
+      verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
+      phases: [{ subject: "完成修复", tasks: [{ subject: "实现" }] }],
+    });
+    expect(result.details?.error).toBe("no pending goal");
+    expect(__getGoalForTest()).toBeUndefined();
   });
 
   test("dgoal_propose implicit 描述明确不要求显式 /dgoal", () => {

@@ -1,6 +1,6 @@
 # src/startup — 启动与 Pi 注册（ADR 0024）
 
-启动模块承载 Pi 扩展注册、事件订阅 wiring、命令路由与启动闸门逻辑。`registerDgoal` 是 Pi 扩展入口，注册工具、命令与事件处理器；`session_start`、`session_tree`、`session_compact` 统一恢复持久化 goal，工具入口还提供内存状态丢失时的惰性恢复。`input` 只从真实用户来源识别自然语言显式 dgoal 指令，`before_agent_start` 把一次性授权绑定到实际 prompt 并注入对应工具指导，`agent_settled` 清理未消费授权（ADR 0036）。
+启动模块承载 Pi 扩展注册、事件订阅 wiring、命令路由与启动闸门逻辑。`registerDgoal` 是 Pi 扩展入口，注册工具、命令与事件处理器；`session_start`、`session_tree`、`session_compact` 统一恢复持久化 goal，工具入口还提供内存状态丢失时的惰性恢复。`input` 只从空闲的 `interactive` / `rpc` 来源识别祈使式自然语言 dgoal 指令，拒绝问句、引用/讨论、否定、标识符后缀及处理中追加输入；`before_agent_start` 要求 prompt 与 dgoal handler 观察到的文本完全一致并注入工具指导，`agent_settled` 清理未消费授权（ADR 0036）。Pi 不提供不可变 input 原文，早于 dgoal 的受信任 transform 属于扩展全权限信任边界。
 
 ## 文件
 

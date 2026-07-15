@@ -39,7 +39,7 @@ pi install npm:pi-dgoal
 
 如果前文里已经把目标对齐清楚，也可以直接用裸 `/dgoal` 承接前文共识进入启动闸门；如果当前没有可承接的前文，dgoal 不会硬启动，而是提示改用 `/dgoal <objective>`。看状态统一用显式 `/dgoal s`，不再复用裸 `/dgoal`。
 
-也可以直接自然语言说“用 dgoal 和 dteam 自己处理掉”。冷会话会把这条真实用户指令记为一次性显式授权，允许 `dgoal_propose` 建立普通 pending goal，不再要求补输 `/dgoal`。仅讨论 dgoal、能力询问、否定句与 extension 注入不会授权；已有 goal 也不会被静默替换。
+也可以在空闲冷会话直接用祈使句说“用 dgoal 和 dteam 自己处理掉”。这条指令会形成一次性显式授权，允许 `dgoal_propose` 建立普通 pending goal，不再要求补输 `/dgoal`。能力问句、引用/代码示例、解释讨论、否定句、`mydgoal` 等标识符后缀、处理中追加输入与 `interactive` / `rpc` 之外的来源（含 `source=extension`）不会授权；已有 goal 也不会被静默替换。授权精确绑定 dgoal 实际观察到的 input/prompt；Pi 没有不可变输入原文，早于 dgoal 的受信任 input transform 属于扩展全权限信任边界。
 
 启动闸门先做结构校验，再用当前会话模型做计划级语义预审，之后才写入 `pendingProposal`。预审以流式接收模型响应，默认 60s idle timeout（可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置）；收到任意流事件即重置计时器，慢但活跃的响应不会被误杀。人工或主观完成条件会被拒绝或改写到 `userReviewItems`。预审终态区分 `approved` / `rewritten` / `rejected`（语义打回，`isError:false`，带可修正原因）与 `technical_error`（认证、空闲超时、网络、非终止、JSON 解析等基础设施失败，`isError:true`，不是计划内容问题）。显式启动的预审通过后，对话框默认展示阶段级摘要（goal + verification + 验收/预算策略推荐 + acceptanceCriteria + userReviewItems + readiness + 边界信号/缺口提示 + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。`final_only` 可省略 phase 级验收条件；全局授权的隐式轻量启动跳过阻塞式计划确认，但仍经过 proposal 校验、语义预审与终审。
 

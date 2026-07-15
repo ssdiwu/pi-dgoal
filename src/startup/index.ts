@@ -42,21 +42,47 @@ import {
   MAX_NO_PROGRESS_TURNS,
   type DgoalContext,
 } from "../runtime/index.ts";
-import { goalRuntimeState } from "../goal-runtime/state.ts";
+import {
+  authorizeNaturalLanguageStart,
+  clearNaturalLanguageStartAuthorization,
+  goalRuntimeState,
+} from "../goal-runtime/state.ts";
 
+const DGOAL_TOKEN_SOURCE = String.raw`(?<![A-Za-z0-9_])\/?dgoal\b`;
+const DGOAL_TOKEN_PATTERN = new RegExp(DGOAL_TOKEN_SOURCE, "i");
+const NATURAL_START_META_PATTERN = /(?:解释|含义|意思|示例|举例|讨论|分析|比较|评审|审查|为什么|为何|是否|能否|可否|可不可以|能不能|有没有|what\s+does|explain|example|discuss|whether|why|can\s+you|could\s+you|would\s+you|is\s+it|may\s+i|should\s+we)/i;
+const NATURAL_START_NEGATED_PATTERN = new RegExp(
+  String.raw`(?:不是(?:要|请)?|并非|不要|别|禁止|无需|不用|不准|没有授权|不(?:建议|推荐|允许|准备|打算|应该|应当|该)?|do\s+not|don't|never|must\s+not|should\s+not|without|not\s+going\s+to)\s*(?:(?:现在|再|继续|立即|直接|你|在本轮|currently|now|ever)\s*)*(?:用|使用|启动|开启|运行|执行|start|use|run|launch)?\s*${DGOAL_TOKEN_SOURCE}`,
+  "i",
+);
+const NATURAL_START_PREFIX_SOURCE = String.raw`(?:(?:请|麻烦|直接|现在|接下来|继续|再|我授权你|我同意你|你可以|可以|帮我)\s*){0,3}`;
+const NATURAL_START_DIRECTIVE_PATTERNS = [
+  new RegExp(String.raw`^${NATURAL_START_PREFIX_SOURCE}(?:用|使用|启动|开启|进入|运行|执行)(?:一下|下)?\s*${DGOAL_TOKEN_SOURCE}`, "i"),
+  new RegExp(String.raw`^${NATURAL_START_PREFIX_SOURCE}(?:让|交给)\s*${DGOAL_TOKEN_SOURCE}\s*(?:来)?\s*(?:开始(?:工作)?|处理|完成|执行|解决|做|工作)`, "i"),
+  new RegExp(String.raw`^${DGOAL_TOKEN_SOURCE}(?:\s*(?:模式|工作流|workflow))?\s*[,，]?\s*(?:开始(?:工作)?|启动|运行|执行|处理|工作|start|run|work)`, "i"),
+  new RegExp(String.raw`^(?:(?:please|now|go\s+ahead\s+and|you\s+(?:may|can)|i\s+authorize\s+you\s+to)\s+){0,3}(?:use|start|launch|run|activate|enter)\s+(?:the\s+)?${DGOAL_TOKEN_SOURCE}(?:\s+(?:workflow|mode))?\b`, "i"),
+];
+
+function stripQuotedNaturalStartExamples(text: string): string {
+  return text.replace(/```[\s\S]*?```|`[^`]*`|“[^”]*”|‘[^’]*’|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*'/g, " ");
+}
+
+function naturalStartClauseIsDirective(clause: string, question: boolean): boolean {
+  const trimmed = clause.trim();
+  const dgoalIndex = trimmed.search(DGOAL_TOKEN_PATTERN);
+  if (!trimmed || dgoalIndex < 0 || question || NATURAL_START_NEGATED_PATTERN.test(trimmed)) return false;
+  if (NATURAL_START_META_PATTERN.test(trimmed.slice(0, dgoalIndex))) return false;
+  return NATURAL_START_DIRECTIVE_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
 
 export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
-  return text.split(/[。！？；;，,\r\n]+/).some((clause) => {
-    const trimmed = clause.trim();
-    const negated = /(?:不要|别|禁止|无需|不用|不准|没有授权|do\s+not|don't|never|must\s+not|without)\s*(?:(?:现在|再|继续|立即|你|在本轮|currently|now|ever)\s*)*(?:用|使用|启动|开启|运行|执行|start|use|run|launch)?\s*\/?dgoal\b/i.test(trimmed);
-    if (!trimmed || negated) return false;
-    const chineseDirective = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|我授权你|我同意你|帮我)\s*(?:用|使用|启动|开启|进入|运行|执行)(?:一下|下)?\s*\/?dgoal\b/i.test(trimmed);
-    const delegatedDirective = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|我授权你|我同意你|帮我)\s*(?:让|交给)\s*\/?dgoal\s*(?:来)?(?:处理|完成|执行|解决|做)/i.test(trimmed);
-    const taskQuestion = /(?:你能|能不能|能否)\s*(?:用|使用|启动|运行)?\s*\/?dgoal\b[^。！？]{0,12}(?:处理|完成|修复|解决|执行|做)/i.test(trimmed);
-    const startAroundDgoal = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|帮我)\s*(?:开始|启动|开启).{0,16}\/?dgoal\b/i.test(trimmed);
-    const englishDirective = /(?:^|\b(?:please|now|you\s+(?:may|can)|go\s+ahead\s+and|i\s+authorize\s+you\s+to)\s+)(?:use|start|launch|run|activate|enter)\s+\/?dgoal\b/i.test(trimmed);
-    const englishTaskQuestion = /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:use|start|run)\s+\/?dgoal\b(?=\s+(?:to|for)\b)/i.test(trimmed);
-    return chineseDirective || delegatedDirective || taskQuestion || startAroundDgoal || englishDirective || englishTaskQuestion;
+  const unquoted = stripQuotedNaturalStartExamples(text);
+  const sentences = unquoted.match(/[^。！？!?；;\r\n]+[。！？!?；;]?/g) ?? [];
+  return sentences.some((rawSentence) => {
+    const question = /[？?]\s*$/.test(rawSentence) || /(?:吗|么|呢)\s*[？?]?\s*$/.test(rawSentence);
+    const sentence = rawSentence.replace(/[。！？!?；;]+\s*$/, "").trim();
+    if (naturalStartClauseIsDirective(sentence, question)) return true;
+    return !question && sentence.split(/[，,]+/).some((clause) => naturalStartClauseIsDirective(clause, false));
   });
 }
 
@@ -83,7 +109,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (event, ctx) => {
-    goalRuntimeState.naturalLanguageStartAuthorized = false;
+    clearNaturalLanguageStartAuthorization();
     if (event.reason === "reload") clearAuditorModelRegistryCache();
     resyncGoalFromSession(ctx);
   });
@@ -92,7 +118,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   // 只发 session_tree 通知。不重同步会导致 goalRuntimeState.currentGoal 停在旧分支、overlay 显示陈旧状态
   // （阶段明明完成了还显示未完成，计时器也冻住）。与 session_start 复用同一套重同步。
   pi.on("session_tree", (_event, ctx) => {
-    goalRuntimeState.naturalLanguageStartAuthorized = false;
+    clearNaturalLanguageStartAuthorization();
     resyncGoalFromSession(ctx);
   });
 
@@ -102,7 +128,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
-    goalRuntimeState.naturalLanguageStartAuthorized = false;
+    clearNaturalLanguageStartAuthorization();
     if (goalRuntimeState.currentGoal) persistGoal(goalRuntimeState.currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
@@ -113,19 +139,27 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("input", (event) => {
     if (event.source === "extension") {
+      clearNaturalLanguageStartAuthorization();
       if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
       return;
     }
-    goalRuntimeState.naturalLanguageStartAuthorized = !goalRuntimeState.currentGoal
+    if (event.source !== "interactive" && event.source !== "rpc") {
+      clearNaturalLanguageStartAuthorization();
+      return;
+    }
+    const authorized = !goalRuntimeState.currentGoal
+      && event.streamingBehavior === undefined
       && isNaturalLanguageDgoalStartRequest(event.text);
+    if (authorized) authorizeNaturalLanguageStart(event.text);
+    else clearNaturalLanguageStartAuthorization();
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
-    // input 只做原始输入预授权；在真正 agent prompt 上再次绑定，避免被其它扩展 handled/transform 后留下陈旧授权。
+    // 只接受 dgoal input handler 观察到的文本；后加载扩展若 transform 了 prompt，精确绑定会 fail-closed。
     if (!goalRuntimeState.currentGoal && goalRuntimeState.naturalLanguageStartAuthorized
-      && !isNaturalLanguageDgoalStartRequest(event.prompt)) {
-      goalRuntimeState.naturalLanguageStartAuthorized = false;
+      && event.prompt !== goalRuntimeState.naturalLanguageStartInput) {
+      clearNaturalLanguageStartAuthorization();
     }
     // 新 agent turn 重置本轮工具调用标记。
     goalRuntimeState.turnHadToolExecution = false;
@@ -151,7 +185,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", () => {
-    if (!goalRuntimeState.currentGoal) goalRuntimeState.naturalLanguageStartAuthorized = false;
+    if (!goalRuntimeState.currentGoal) clearNaturalLanguageStartAuthorization();
   });
 
   pi.on("tool_call", (event, ctx) => {

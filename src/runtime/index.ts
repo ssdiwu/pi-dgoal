@@ -36,7 +36,7 @@ import {
   type CheckpointState,
 } from "../audit/checkpoint.ts";
 import { appendAuditUsage, buildAuditUsageRecord } from "../audit/usage.ts";
-import { goalRuntimeState, resetGoalRuntimeState } from "../goal-runtime/state.ts";
+import { clearNaturalLanguageStartAuthorization, goalRuntimeState, resetGoalRuntimeState } from "../goal-runtime/state.ts";
 import {
   ansiStrikethrough,
   computeScrollOffset,
@@ -2339,13 +2339,14 @@ export const dgoalProposeTool = defineTool({
       }
       // Project config is deliberately ignored for this permission.
       goal = { ...createGoal(String((params as Record<string, unknown>).objective ?? "").trim()), implicitStart: true };
-      goalRuntimeState.naturalLanguageStartAuthorized = false;
+      clearNaturalLanguageStartAuthorization();
       goalRuntimeState.currentGoal = goal;
       persistGoal(goal);
     }
-    if (!goal && !requestedImplicit && goalRuntimeState.naturalLanguageStartAuthorized) {
+    if (!goal && !requestedImplicit && goalRuntimeState.naturalLanguageStartAuthorized
+      && goalRuntimeState.naturalLanguageStartInput !== undefined) {
       // 用户本轮自然语言已明确要求 dgoal：等价于打开显式启动闸门，但仍须 semantic preflight + 确认 UI。
-      goalRuntimeState.naturalLanguageStartAuthorized = false;
+      clearNaturalLanguageStartAuthorization();
       goalRuntimeState.pendingProposal = undefined;
       goalRuntimeState.proposalRetryCount = 0;
       goalRuntimeState.consecutiveErrors = 0;
@@ -6153,6 +6154,7 @@ export function __getRuntimeStateForTest() {
     proposalRetryCount: goalRuntimeState.proposalRetryCount,
     startGoalInProgress: goalRuntimeState.startGoalInProgress,
     naturalLanguageStartAuthorized: goalRuntimeState.naturalLanguageStartAuthorized,
+    naturalLanguageStartInput: goalRuntimeState.naturalLanguageStartInput,
     consecutiveErrors: goalRuntimeState.consecutiveErrors,
     consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
     turnHadToolExecution: goalRuntimeState.turnHadToolExecution,

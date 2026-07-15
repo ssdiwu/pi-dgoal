@@ -35,10 +35,11 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 ### 自然语言显式启动（路径 C，ADR 0036）
 
 - **目的**：用户已经明确说“使用/启动 dgoal”时，不再要求重复输入 `/dgoal`。
-- **授权来源**：只接受 Pi `input` 的真实用户来源 `interactive` / `rpc`；`extension` 注入、仅讨论 dgoal、能力询问和否定句不授权。原始输入命中后还会在 `before_agent_start` 对实际 prompt 再绑定，避免其它扩展处理或改写后残留授权。
+- **授权来源**：只接受空闲状态下 Pi `input` 的真实用户来源 `interactive` / `rpc`；要求祈使动作 + 独立 dgoal token。`source=extension`、`steer/followUp`、引用/代码示例、解释讨论、能力问句、否定句和标识符后缀不授权。
+- **输入绑定**：记录 dgoal handler 实际观察到的文本，`before_agent_start` 要求 prompt 完全一致；后加载扩展的 transform 会清除授权。Pi 0.80.7 不提供不可变 `originalText`，所以早于 dgoal 执行的受信任 transform 可改变其观察文本；Pi 扩展本来就拥有完整本机权限，该限制不是恶意扩展 sandbox。
 - **消费方式**：冷会话的 `dgoal_propose` 不设置 `implicit`，消费一次性授权并创建普通 pending goal，继续结构校验、语义预审和阻塞式确认 UI。
 - **能力边界**：可提交 `phased` / `unbounded` 及计划中的外部动作，因为它复用完整显式确认；这不扩大 `implicit=true` 的权限。已有 goal 时不静默替换，仍走原命令流程。
-- **生命周期**：授权只保存在 Goal Runtime 内存，消费、session 结束或 agent settled 后清除，不进入 goal 持久态。
+- **生命周期**：授权只保存在 Goal Runtime 内存，消费、session/tree 结束或 agent settled 后清除，不进入 goal 持久态。
 
 ### 为什么是启动闸门(不是纯自主)
 

@@ -75,14 +75,25 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
   test("input 事件只把真实用户的明确 dgoal 指令记为一次性授权", async () => {
     handlers["input"]({ source: "extension", text: "请用 dgoal 完成任务" });
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    handlers["input"]({ source: "unknown", text: "请用 dgoal 完成任务" });
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    handlers["input"]({ source: "interactive", streamingBehavior: "followUp", text: "请用 dgoal 完成任务" });
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
     handlers["input"]({ source: "interactive", text: "你可以用 dgoal 和 dteam 自己处理掉" });
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
+    expect(__getRuntimeStateForTest().naturalLanguageStartInput).toBe("你可以用 dgoal 和 dteam 自己处理掉");
     const guided = await handlers["before_agent_start"]({ prompt: "你可以用 dgoal 和 dteam 自己处理掉", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
     expect(guided.systemPrompt).toContain("<dgoal_natural_language_start>");
+    handlers["input"]({ source: "extension", text: "你可以用 dgoal 和 dteam 自己处理掉" });
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    handlers["input"]({ source: "interactive", text: "你可以用 dgoal 和 dteam 自己处理掉" });
     await handlers["before_agent_start"]({ prompt: "已被其它扩展改写成普通问题", systemPrompt: "" }, mockCtx());
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    expect(__getRuntimeStateForTest().naturalLanguageStartInput).toBeUndefined();
     handlers["input"]({ source: "interactive", text: "dgoal 是什么？" });
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    handlers["input"]({ source: "rpc", text: "请用 dgoal 完成任务" });
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
   });
 
   // 模拟真实一轮：before_agent_start（重置工具标记）→ [可选工具] → agent_end。

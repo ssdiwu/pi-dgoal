@@ -22,8 +22,10 @@ export interface GoalRuntimeState {
   pendingProposal: PendingProposalState | undefined;
   proposalRetryCount: number;
   startGoalInProgress: boolean;
-  /** One-shot authorization from the latest real user input that explicitly asks to use/start dgoal. */
+  /** One-shot authorization from the latest user input observed by dgoal that explicitly asks to use/start dgoal. */
   naturalLanguageStartAuthorized: boolean;
+  /** Exact observed input, used to reject later input-transform changes before agent start. Never persisted. */
+  naturalLanguageStartInput: string | undefined;
   consecutiveErrors: number;
   consecutiveNoProgressTurns: number;
   turnHadToolExecution: boolean;
@@ -41,6 +43,7 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     proposalRetryCount: 0,
     startGoalInProgress: false,
     naturalLanguageStartAuthorized: false,
+    naturalLanguageStartInput: undefined,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
     turnHadToolExecution: false,
@@ -54,6 +57,16 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
 
 // 单例：整个进程生命周期内只有一个 Goal Runtime 状态实例。
 export const goalRuntimeState: GoalRuntimeState = createInitialGoalRuntimeState();
+
+export function authorizeNaturalLanguageStart(input: string): void {
+  goalRuntimeState.naturalLanguageStartAuthorized = true;
+  goalRuntimeState.naturalLanguageStartInput = input;
+}
+
+export function clearNaturalLanguageStartAuthorization(): void {
+  goalRuntimeState.naturalLanguageStartAuthorized = false;
+  goalRuntimeState.naturalLanguageStartInput = undefined;
+}
 
 // 重置全部可变状态（测试 / session_shutdown 用）。
 export function resetGoalRuntimeState(): void {

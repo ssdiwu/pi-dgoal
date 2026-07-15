@@ -45,11 +45,11 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `paused-state-diagnostics.test.ts` | paused/missing/active 状态下工具的可读与可写边界：paused 下 list/get 只读、create/update/check/done 返回结构化 paused 结果与 resume 指引，不误报 noGoal；pauseReason 区分 user_abort/model_error；pending goal 不可完成（启动闸门保护）。 |
 | `no-progress-stall.test.ts` | 无进展续跑熔断纯函数 `decideNoProgressPause`：有工具调用清零、无工具累计、达 3 轮暂停、`MAX_NO_PROGRESS_TURNS=3`。 |
-| `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 input → before_agent_start → tool_call/tool_execution_start → agent_end 回调，验证自然语言显式启动只接受真实用户明确指令并绑定实际 prompt、隐式越界工具在执行前 block、连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
+| `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 input → before_agent_start → tool_call/tool_execution_start → agent_end 回调，验证自然语言显式启动拒绝 `source=extension` / mid-run 输入并精确绑定 dgoal 观察到的 input/prompt、后续 transform fail-closed；同时覆盖隐式越界工具执行前 block、连续 3 轮无工具调用暂停、工具调用重置与 user_abort/model_error。 |
 | `agent-pause-tool.test.ts` | `dgoal_pause` 主动暂停出口：active/rejected 状态立即进入 `paused(agent_blocked)`，reason 非空/有界，paused 结果可读，resume 清理 detail，UI 抛错仍先持久化，工具真实注册可见。 |
 | `budget-policy-stall.test.ts` | v0.7.0 预算策略：bounded/unbounded、宽限判定与状态栏宽限标记。 |
 | `final-only-phase-progress.test.ts` / `final-only-proposal-path.test.ts` | v0.7.0 `final_only`：阶段进度划线、拒绝 `dgoal_check`、真实 proposal 预审路径，以及 reviewer 在 approve/rewrite 返回空 `phaseAcceptanceCriteria: []` 时补齐 phase 层、不误判偷改也不再触发 `rewrittenLayers[layer]` 崩溃。 |
-| `implicit-start-authorization.test.ts` | 启动授权：v0.7.0 隐式轻量启动的全局授权、项目越权拒绝、策略/预算边界、proposal 文本与运行时动作护栏；ADR 0036 自然语言显式意图识别，以及冷会话提交 phased/外部动作计划仍进入普通 pending 确认。 |
+| `implicit-start-authorization.test.ts` | 启动授权：v0.7.0 隐式轻量启动的全局授权、项目越权拒绝、策略/预算边界、proposal 文本与运行时动作护栏；ADR 0036 祈使句/问句/引用/否定/token 边界的自然语言意图识别，以及冷会话提交 phased/外部动作计划仍进入普通 pending 确认。 |
 | `phase-id-diagnostics.test.ts` | 新 plan phase ID 连续（proposalToPlan 预分配 1..N）、旧 plan（非连续 #1/#4/#8）兼容加载、phase 找不到时返回完整阶段列表（序号+真实 ID+标题，当前高亮）。 |
 | `session-tree-resync.test.ts` | session 分支/压缩恢复：pending/active/rejected goal 重同步、stale session replacement 保护，以及三个 dgoal 工具的惰性恢复。 |
 | `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED 不回退；未知非配额错误也只尝试当前候选一次后切换；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
