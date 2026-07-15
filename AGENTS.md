@@ -9,13 +9,13 @@
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
 4. `doc/决策档案/README.md`（决策档案索引；0006 是建检循环基本盘，0016 是独立验收条件与用户复核边界，其他决策按索引按需深入）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
-6. `index.ts`（扩展入口，单文件实现）
+6. `index.ts`（扩展组合根；运行时职责位于 `src/`）
 
 ## 项目结构
 
 ```text
 pi-dgoal/
-├── index.ts                          ← Pi 扩展入口（单文件实现）
+├── index.ts                          ← Pi 扩展组合根；实现按职责位于 src/
 ├── doc/
 │   ├── README.md                     ← 文档导航
 │   ├── 术语表.md                     ← 术语权威（含建检循环）
@@ -38,11 +38,11 @@ pi-dgoal/
 
 - **会话内单目标**：只支持当前会话内单目标，不做多目标池。
 - **Task Plan 必选**：`/dgoal` 即复合目标，必须有 plan（phase + task 两层内容）；无空 plan 放行。详见 ADR 0002/0006。
-- **三层内容 + 建检循环**：goal（冻结）/phase（task 聚合）/task（按需分解）三层；dgoal 是建检循环——定义 goal + 完成后 check，不过继续干，过则结束。phase completed 唯一入口是 `dgoal_check`（独立子进程，建检不可绕过）。详见 ADR 0006、`doc/10-架构与运行/`。
-- **工具规范化**：agent 与 dgoal 状态机的交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task）、`dgoal_check`（phase completed 唯一入口，只负责阶段建检）、`dgoal_done`（在所有 phase 都通过后声明完成并触发 goal 级终审）、`dgoal_pause`（遇到需用户决策的死锁时主动暂停）。原 `loop_complete` 已改名 `dgoal_done`。
+- **三层内容 + 建检循环**：goal（冻结）/phase（task 聚合）/task（按需分解）三层；phased dgoal 是建检循环——定义 goal + 完成后 check，不过继续干，过则结束。phase completed 唯一入口是 `dgoal_check`（独立子进程，建检不可绕过）；`final_only` 只记录 phase progress，由 `complete_progress` 标记进度，最终统一走 goal 终审。详见 ADR 0006、`doc/10-架构与运行/`。
+- **工具规范化**：agent 与 dgoal 状态机的交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task/phase progress）、`dgoal_check`（phased 的 phase completed 唯一入口，只负责阶段建检）、`dgoal_done`（所有 phased phase 或 final_only progress 完成后声明完成并触发 goal 级终审）、`dgoal_pause`（遇到需用户决策的死锁时主动暂停）。原 `loop_complete` 已改名 `dgoal_done`。
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
-- **背景固化是补充**：启动背景固化是补充信息，不替代把关键约束写进 objective 或文档；摘要可能漏点。
+- **背景固化是补充**：当前生产启动不再运行独立背景摘要子进程；主 agent 可在 proposal 中提供可选 `contextSummary`，它仍是补充信息，不替代把关键约束写进 objective 或文档。
 - **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModels` / `goalAuditorModels`，以最多 3 个 `provider/model[:thinking]` 有序候选分别配置阶段建检与目标终审。项目候选链整体优先于全局链、不混合；同一来源内复数字段 > 对应单值字段 > 旧 `auditorModel`。复数字段 `null` 显式继承当次会话模型并阻断继续降级，旧单值字段保持兼容；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，查询失败保留候选；一次审核中每候选最多调用一次，技术/协议异常或缺终止标记的部分输出按候选切换，业务 `REJECTED`、用户中断不换模型；健康 fallback 在当前 goal/审核范围复用，耗尽后必须 `audit_error` 暂停。
 - 不硬编码密钥、token、私有路径。
 
