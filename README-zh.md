@@ -4,6 +4,8 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
+> **Unreleased**：全局授权的隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更；`tool_call` 执行前策略门会阻止已识别的工作仓库 / `.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令。它是 best-effort 策略检查而非 OS sandbox，获准脚本内部仍可能隐藏副作用。详见 ADR 0035。
+>
 > **v0.7.0**：新增可选 `final_only` / `phased` 验收策略、有界/无上限运行预算、proposal 主导背景固化，以及带 fail-closed 本地/只读动作护栏的全局授权隐式轻量启动。详见 `CHANGELOG.md`。
 >
 > **v0.6.3**：启动闸门语义预审从 30s 总时长超时改为 60s idle timeout（收到任意流事件即重置），通过 `onUpdate` 流出活性状态，并把 `technical_error`（`isError:true`，不是计划内容问题）与语义 `rejected`（`isError:false`）分离。可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置。详见 `CHANGELOG.md`。
@@ -128,7 +130,7 @@ pending ──→ active ──→ done                # 正常路径
 }
 ```
 
-旧单值 `phaseAuditorModel`、`goalAuditorModel` 与共享 `auditorModel` 字段继续兼容，dgoal 不会自动改写用户已有文件。`contextSummarizerModels` 已废弃：v0.7.0 起移除了启动前独立背景摘要子进程（ADR 0033），主代理可在 `dgoal_propose` 中按需持久化可选 `contextSummary`，背景缺失不再阻断启动。`implicitFinalOnlyStart`（仅全局，默认 `false`）授权 agent 无需显式 `/dgoal` 即可启动有界 `final_only` 目标；`implicitFinalOnlyBudget` 可覆盖安全默认预算（基础 `24 turns / 60 min / 1 repair`，turn 宽限再给 24）。
+旧单值 `phaseAuditorModel`、`goalAuditorModel` 与共享 `auditorModel` 字段继续兼容，dgoal 不会自动改写用户已有文件。`contextSummarizerModels` 已废弃：v0.7.0 起移除了启动前独立背景摘要子进程（ADR 0033），主代理可在 `dgoal_propose` 中按需持久化可选 `contextSummary`，背景缺失不再阻断启动。`implicitFinalOnlyStart`（仅全局，默认 `false`）授权 agent 无需显式 `/dgoal` 即可启动有界 `final_only` 目标；`implicitFinalOnlyBudget` 可覆盖安全默认预算（基础 `24 turns / 60 min / 1 repair`，turn 宽限再给 24）。授权后的隐式目标可执行本地测试、构建、脚本、项目文件修改与本地 Git 变更。执行前策略门会阻止已识别的工作仓库 / `.git` 破坏和远端写入，但它不是 OS sandbox，无法证明获准脚本内部没有隐藏副作用（ADR 0035）。
 
 解析优先级：
 

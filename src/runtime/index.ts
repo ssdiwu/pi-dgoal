@@ -2173,6 +2173,35 @@ function applyProposalSemanticReview(proposal: PlanProposal, review: ProposalSem
   };
 }
 
+const IMPLICIT_PROPOSAL_ACTION_PATTERNS = [
+  /\bgit\s+(?:push|send-pack)\b|\bgit\s+lfs\s+push\b/i,
+  /\b(?:deploy(?:ment)?|publish|release|sudo|chmod|chown|delete\s+remote|drop\s+table|send\s+message|post\s+to|put\s+to|upload(?:ing)?|docker\s+push|npm\s+publish|gh\s+(?:pr|issue)\s+create|purchase|pay|charge|invoice|provision|terraform\s+apply|kubectl\s+(?:apply|delete)|ssh\s+|scp\s+)\b/i,
+  /\bcurl\b[^\n]*(?:\s-(?:d|F|T)\S*|\s--(?:data(?:-ascii|-binary|-raw|-urlencode)?|form|upload-file)(?:=|\s)|\s(?:-X|--request)(?:=|\s*)(?:POST|PUT|PATCH|DELETE)\b)/i,
+  /\b(?:aws|gcloud|az|firebase|vercel|netlify|fly|heroku)\b[^\n]*\b(?:create|update|delete|set|deploy|push|publish|add|grant|put)\b/i,
+  /\b(?:grant|revoke|authorize|permission|role|invite|access\s+token)\b/i,
+  /\b(?:write|upload|put|post|patch|delete|modify)\b[^\n]*\b(?:external|remote|cloud|production|server|bucket|database|api)\b/i,
+];
+
+function collectImplicitProposalStrings(value: unknown, output: string[] = []): string[] {
+  if (typeof value === "string") output.push(value);
+  else if (Array.isArray(value)) value.forEach((item) => collectImplicitProposalStrings(item, output));
+  else if (value && typeof value === "object") Object.values(value as Record<string, unknown>).forEach((item) => collectImplicitProposalStrings(item, output));
+  return output;
+}
+
+function isNegatedImplicitProposalMatch(clause: string, matchIndex: number): boolean {
+  const prefix = clause.slice(0, matchIndex).trimEnd();
+  return /(?:^|\s)(?:不|不要|不得|禁止|严禁|不可|不能|避免|无需|不会|not|never|do\s+not|don't|must\s+not|should\s+not|forbid(?:den)?|without)(?:(?:执行|运行|调用|进行|允许|做|任何)|\s+(?:execute|run|use|call|perform|allow|do|any))*\s*$/i.test(prefix);
+}
+
+function implicitProposalContainsForbiddenAction(raw: Record<string, unknown>): boolean {
+  return collectImplicitProposalStrings(raw).some((text) => text.split(/[。；;，,\r\n]+/).some((clause) =>
+    IMPLICIT_PROPOSAL_ACTION_PATTERNS.some((pattern) => {
+      const match = pattern.exec(clause);
+      return match !== null && !isNegatedImplicitProposalMatch(clause, match.index);
+    })));
+}
+
 export const dgoalProposeTool = defineTool({
   name: DGOAL_PROPOSE_TOOL_NAME,
   label: "Dgoal Propose",
@@ -2200,12 +2229,12 @@ export const dgoalProposeTool = defineTool({
       maxRepairAttempts: Type.Optional(Type.Number({ minimum: 1 })),
       grace: Type.Optional(Type.Object({
         maxTurns: Type.Optional(Type.Number({ minimum: 1 })),
-        maxWallClockMinutes: Type.Optional(Type.Number({ minimum: 1 })),
+        maxWallClockMinutes: Type.Optional(Type.Number({ minimum: 0 })),
         maxRepairAttempts: Type.Optional(Type.Number({ minimum: 1 })),
       })),
     }, { description: "bounded 策略的结构化上限；缺失维度不限制。" })),
     /** Global-only authorized autonomous path; cannot request phased/unbounded. */
-    implicit: Type.Optional(Type.Boolean({ description: "全局 implicitFinalOnlyStart=true 时的隐式轻量启动开关：当用户提出明确、适合持续执行直到完成的本地/只读任务时可设为 true；不要求用户输入 /dgoal，但必须使用 final_only + bounded，并且仍受 proposal 校验、语义预审和运行时动作护栏约束。" })),
+    implicit: Type.Optional(Type.Boolean({ description: "全局 implicitFinalOnlyStart=true 时的隐式轻量启动开关：当用户提出明确、适合持续执行直到完成的本地任务或外部只读任务时可设为 true；不要求用户输入 /dgoal，可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更，但必须使用 final_only + bounded，且仍受 proposal 校验、语义预审和高风险动作护栏约束。" })),
     verification: Type.String({ description: "goal 级验收说明（跨 phase 全局，必填）：交付什么、满足什么标准。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考 contextSummary 的“验收标准”，但必须显式写出，不要留空或写“完成并验证”这类空话。" }),
     acceptanceCriteria: Type.Array(
       Type.Object({
@@ -2279,18 +2308,9 @@ export const dgoalProposeTool = defineTool({
       if (raw.verificationPolicyRecommendation !== "final_only" || raw.budgetPolicyRecommendation !== "bounded") {
         return { content: [{ type: "text", text: "Implicit start only permits final_only with a bounded budget." }], details: { error: "implicit policy violation" }, isError: true };
       }
-      // 动作范围硬校验：隐式启动禁止外部写/部署/推送/权限/付费/删除等高风险动作。
-      // 扫描 proposal 全体文本（phase/task description、验收条件和 guardrails 也不能藏入越界动作）。
-      const proposalText = JSON.stringify(raw);
-      const forbidden = [
-        /\b(git\s+push|git\s+remote\s+add|deploy(?:ment)?|publish|release|sudo|chmod|chown|delete\s+remote|drop\s+table|send\s+message|post\s+to|put\s+to|(?:curl\s+[^\n]*-X\s*)?(?:POST|PUT|PATCH|DELETE)\s+|upload(?:ing)?|docker\s+push|npm\s+publish|gh\s+(?:pr|issue)\s+create|purchase|pay|checkout|charge|invoice|provision|terraform\s+apply|kubectl\s+(?:apply|delete)|ssh\s+|scp\s+)\b/i,
-        /\bcurl\b[^\n]*\s-d(?:ata)?(?:=|\s)/i,
-        /\b(?:aws|gcloud|az|firebase|vercel|netlify|fly|heroku)\b[^\n]*\b(?:create|update|delete|set|deploy|push|publish|add|grant|put)\b/i,
-        /\b(?:grant|revoke|authorize|permission|role|invite|access\s+token)\b/i,
-        /\b(?:write|upload|put|post|patch|delete|modify)\b[^\n]*\b(?:external|remote|cloud|production|server|bucket|database|api)\b/i,
-      ];
-      if (forbidden.some((pattern) => pattern.test(proposalText))) {
-        return { content: [{ type: "text", text: "Implicit start forbids external writes, deploys, pushes, account/permission changes, or paid actions; use an explicit /dgoal." }], details: { error: "implicit action out of scope" }, isError: true };
+      // 全字段逐 clause 扫描：否定式边界说明可安全出现禁词，未否定的可执行动作仍 fail-closed。
+      if (implicitProposalContainsForbiddenAction(raw)) {
+        return { content: [{ type: "text", text: "Implicit start forbids destructive repository actions, external writes, deploys, pushes, account/permission changes, or paid actions; use an explicit /dgoal." }], details: { error: "implicit action out of scope" }, isError: true };
       }
       if (goal && goal.status !== "done") {
         return { content: [{ type: "text", text: "Implicit dgoal start requires a cold session." }], details: { error: "implicit start requires cold session" }, isError: true };
@@ -2912,6 +2932,105 @@ export function appendFinalAuditHistory(
   return [...(goal.finalAuditHistory ?? []), { ...entry, createdAt: Date.now() }];
 }
 
+const IMPLICIT_EXTERNAL_WRITE_PATTERNS = [
+  /\b(?:npm|pnpm|yarn|bun)\b[^\r\n;&|]*\bpublish\b/i,
+  /\b(?:docker|podman)\s+push\b/i,
+  /\bterraform\s+apply\b|\bkubectl\s+(?:apply|delete)\b/i,
+  /\bgh\s+(?:pr|issue|release|repo)\s+(?:create|edit|delete|close|merge|reopen|comment|upload)\b/i,
+  /\bcurl\b[^\r\n]*(?:\s-(?:d|F|T)\S*|\s--(?:data(?:-ascii|-binary|-raw|-urlencode)?|form|upload-file)(?:=|\s)|\s(?:-X|--request)(?:=|\s*)(?:POST|PUT|PATCH|DELETE)\b)/i,
+  /\bwget\b[^\r\n]*(?:--post-data|--post-file|--method\s*=\s*(?:POST|PUT|PATCH|DELETE))/i,
+  /\b(?:ssh|scp|sftp|telnet|nc|netcat|socat)\b|\/dev\/(?:tcp|udp)\b/i,
+  /\b(?:requests|axios)\.(?:post|put|patch|delete)\b|\burlopen\s*\([^\r\n]*\bdata\s*=|\bfetch\s*\([^\r\n]*\bmethod\s*:\s*['"]?(?:POST|PUT|PATCH|DELETE)\b/i,
+  /\b(?:sudo|purchase|pay|charge|invoice|provision)\b/i,
+];
+
+function tokenizeImplicitShellSegment(segment: string): string[] {
+  return segment.match(/(?:"[^"]*"|'[^']*'|[^\s]+)/g)?.map((token) => token.replace(/^['"]|['"]$/g, "")) ?? [];
+}
+
+function implicitShellMutatesGitMetadata(tokens: string[]): boolean {
+  const normalized = tokens.map((token) => token.replace(/^(?:of=|if=|\d*>{1,2})/, ""));
+  const targetsGitMetadata = normalized.some((token) => /\.git(?:[\\/]|$)/.test(token));
+  if (!targetsGitMetadata) return false;
+  const commands = tokens.map((token) => path.basename(token));
+  const directMutation = commands.some((command) => /^(?:rm|rmdir|mv|unlink|truncate|dd|chmod|chown|cp|install|touch|tee|mkdir|ln|rsync|python\d*|node|bun|deno|ruby|perl|php)$/.test(command));
+  const findDelete = commands.includes("find") && tokens.includes("-delete");
+  const sedInPlace = commands.includes("sed") && tokens.some((token) => /^-i/.test(token));
+  const redirects = tokens.some((token) => /^\d*>{1,2}/.test(token));
+  return directMutation || findDelete || sedInPlace || redirects;
+}
+
+function implicitShellDestroysWorkspace(tokens: string[], cwd: string): boolean {
+  const rmIndex = tokens.findIndex((token) => path.basename(token) === "rm");
+  if (rmIndex >= 0) {
+    const args = tokens.slice(rmIndex + 1);
+    const recursive = args.some((token) => token === "--recursive" || /^-[^-]*r/.test(token));
+    const rootTargets = [".", "./", "$PWD", "${PWD}", "$(pwd)", "`pwd`", path.resolve(cwd)];
+    const resolvesRepoRoot = (token: string): boolean => /git\s+rev-parse\b.*--show-toplevel/.test(token);
+    if (recursive && args.some((token) => rootTargets.includes(token.replace(/\/$/, "")) || resolvesRepoRoot(token))) return true;
+  }
+  const findIndex = tokens.findIndex((token) => path.basename(token) === "find");
+  if (findIndex < 0 || !tokens.includes("-delete")) return false;
+  const root = tokens[findIndex + 1]?.replace(/\/$/, "");
+  const rootTargets = [".", "./", "$PWD", "${PWD}", "$(pwd)", "`pwd`", path.resolve(cwd)];
+  return rootTargets.includes(root ?? "") || /git\s+rev-parse\b.*--show-toplevel/.test(root ?? "");
+}
+
+function implicitShellWritesGitRemote(tokens: string[]): boolean {
+  const gitIndex = tokens.findIndex((token) => path.basename(token) === "git");
+  if (gitIndex < 0) return false;
+  let index = gitIndex + 1;
+  while (index < tokens.length) {
+    const token = tokens[index];
+    if (["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix", "--config-env"].includes(token)) {
+      const value = tokens[index + 1] ?? "";
+      if (token === "-c" && /^alias\.[^=]+=(?:!.*\b)?(?:push|send-pack)\b|^alias\.[^=]+=!?git\s+(?:lfs\s+push|svn\s+dcommit|p4\s+submit)\b/i.test(value)) return true;
+      index += 2;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      index += 1;
+      continue;
+    }
+    if (token === "push" || token === "send-pack") return true;
+    const nextCommand = tokens.slice(index + 1).find((candidate) => !candidate.startsWith("-"));
+    return (token === "lfs" && nextCommand === "push")
+      || (token === "svn" && nextCommand === "dcommit")
+      || (token === "p4" && nextCommand === "submit");
+  }
+  return false;
+}
+
+function nestedImplicitShellCommands(tokens: string[]): string[] {
+  const nested: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const command = path.basename(tokens[index] ?? "");
+    if (command === "eval" && tokens[index + 1]) nested.push(tokens[index + 1]);
+    if (!/^(?:ba|z|da)?sh$/.test(command)) continue;
+    const commandFlag = tokens.slice(index + 1).findIndex((token) => /^-[^-]*c/.test(token));
+    if (commandFlag >= 0) {
+      const nestedCommand = tokens[index + commandFlag + 2];
+      if (nestedCommand) nested.push(nestedCommand);
+    }
+  }
+  return nested;
+}
+
+function validateImplicitShellCommand(command: string, cwd: string, depth = 0): string | undefined {
+  const segments = command.split(/(?:&&|\|\||[;\r\n])/).map((segment) => segment.trim()).filter(Boolean);
+  const violatesBoundary = segments.some((segment) => {
+    const tokens = tokenizeImplicitShellSegment(segment);
+    const nestedViolation = depth < 3 && nestedImplicitShellCommands(tokens)
+      .some((nested) => validateImplicitShellCommand(nested, cwd, depth + 1) !== undefined);
+    return nestedViolation
+      || implicitShellMutatesGitMetadata(tokens)
+      || implicitShellDestroysWorkspace(tokens, cwd)
+      || implicitShellWritesGitRemote(tokens)
+      || IMPLICIT_EXTERNAL_WRITE_PATTERNS.some((pattern) => pattern.test(segment));
+  });
+  return violatesBoundary ? "command violates the implicit safety boundary" : undefined;
+}
+
 /** v0.7.0 隐式轻量启动的运行时动作护栏；返回越界原因，undefined 表示允许。 */
 export function validateImplicitToolAction(toolName: string, args: unknown, cwd?: string): string | undefined {
   const name = toolName.trim().toLowerCase();
@@ -2960,8 +3079,14 @@ export function validateImplicitToolAction(toolName: string, args: unknown, cwd?
       return `tool ${toolName} targets a path outside the trusted project cwd`;
     }
     if (["write", "edit", "apply_patch"].includes(name)) {
-      const manifestPath = candidates.some((value) => typeof value === "string" && /(?:^|[\\/])(?:package\.json|package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$/.test(value));
-      if (manifestPath) return `tool ${toolName} cannot modify package lifecycle manifests during implicit start`;
+      const gitMetadataPath = candidates.some((value) => {
+        if (typeof value !== "string" || !resolvedCwd) return false;
+        const resolved = canonicalPath(cwd!, value);
+        if (!resolved) return false;
+        const relative = path.relative(resolvedCwd, resolved);
+        return relative === ".git" || relative.startsWith(`.git${path.sep}`);
+      });
+      if (gitMetadataPath) return `tool ${toolName} cannot modify .git during implicit start`;
       const linkedPath = candidates.some((value) => {
         try { return fs.lstatSync(path.resolve(cwd!, value as string)).nlink > 1; } catch { return false; }
       });
@@ -2969,19 +3094,10 @@ export function validateImplicitToolAction(toolName: string, args: unknown, cwd?
     }
   }
   if (/^(?:bash|sh|shell|terminal|exec|run)$/.test(name)) {
-    // Shell 的解释器能力无法静态证明“只写本地/只读外部”；隐式路径只放行可枚举的本地检查命令。
-    const safeShell = /^(?:git)\s+(?:status|diff|log|show|grep)\b|^(?:pwd|ls|grep|cat|head|tail|wc|stat|file)\b/i;
-    const forbidden = /\b(?:python\w*|node\w*|deno|ruby|perl|php|curl|wget|ssh|scp|sftp|nc|netcat|telnet|socat|openssl)\b|\b(?:git\s+[^\n]*\bpush\b|npm\s+(?:publish|install|add)|docker\s+push|terraform\s+apply|kubectl\s+(?:apply|delete))\b|https?:|\/dev\/(?:tcp|udp)\b|\$|~|`|[;|&<>\r\n]/i;
-    if (!safeShell.test(command) || forbidden.test(command)) return `command for tool ${toolName} is outside local/readonly implicit scope`;
+    // 全局授权后允许本地测试、构建、解释器和本地 Git 变更；只拦截必须改走显式 /dgoal 的高风险边界。
     if (!cwd) return `tool ${toolName} has no trusted project cwd`;
-    const shellTokens = command.match(/(?:"[^"]*"|'[^']*'|[^\s]+)/g)?.map((token) => token.replace(/^['"]|['"]$/g, "")) ?? [];
-    const gitCommand = /^git\s+(?:status|diff|log|show|grep)\b/i.test(command);
-    for (const token of shellTokens.slice(1)) {
-      if (gitCommand && token.startsWith("-")) return `command for tool ${toolName} uses a disallowed git option`;
-      if (token.startsWith("-") || token === "status" || token === "diff" || token === "log" || token === "show" || token === "grep") continue;
-      const looksLikePath = path.isAbsolute(token) || token.includes("/") || token.includes("\\") || token.startsWith(".") || fs.existsSync(path.resolve(cwd, token));
-      if (looksLikePath && !isWithinCwd(token)) return `command for tool ${toolName} targets a path outside the trusted project cwd`;
-    }
+    const violation = validateImplicitShellCommand(command, cwd);
+    if (violation) return `${violation} for tool ${toolName}`;
   }
   if (readonlyExternalTools.has(name) && /\b(?:POST|PUT|PATCH|DELETE|upload|write|publish|deploy)\b/i.test(text)) {
     return `request for tool ${toolName} is outside local/readonly implicit scope`;

@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **隐式 dgoal 允许完整本地执行**（ADR 0035）：全局授权后的隐式目标可运行本地测试、构建、解释器脚本、项目文件修改和本地 Git 变更；已识别的仓库销毁、`.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令会在 `tool_call` 执行前 fail-closed，须改走显式 `/dgoal`。该护栏是 best-effort 策略检查而非 OS sandbox，不能证明获准脚本内部没有隐藏副作用。
+
 ### Fixed
 
 - **语义预审 approve 不再回显完整验收契约**：启动闸门审核器批准计划时只需返回最小 `{"decision":"approve"}` JSON，运行时继续使用原冻结 `acceptanceCriteria`；避免长命令与多层 criteria 回显导致无效 JSON 或无意义格式改写，同时仍拒绝 approve 响应偷偷修改完成门。
+- **隐式启动边界与 schema 对齐**：proposal 的全部自由文本字段改为逐 clause 扫描，否定式安全声明不再因含 `push` / `publish` 被反向误判，未否定的命令式注入仍拒绝；动作护栏从 `tool_execution_start + abort` 移到真正执行前可 block 的 `tool_call`，并覆盖嵌套 shell、fd 重定向、cwd 变量删除、Git alias 与 curl 等号参数；`dgoal_propose` schema 允许墙钟宽限显式设为 `0`，与运行时和默认配置一致。
 
 ## [0.7.0] - 2026-07-15
 

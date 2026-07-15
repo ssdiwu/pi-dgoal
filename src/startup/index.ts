@@ -46,7 +46,7 @@ import { goalRuntimeState } from "../goal-runtime/state.ts";
 
 
 export function buildImplicitStartGuidance(): string {
-  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及外部写入、发布、推送、权限或付费动作。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。没有明确用户目标时不要自行启动，否则要求用户显式使用 /dgoal。\n</dgoal_implicit_start>";
+  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。没有明确用户目标时不要自行启动，否则要求用户显式使用 /dgoal。\n</dgoal_implicit_start>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {
@@ -116,27 +116,26 @@ export function registerDgoal(pi: ExtensionAPI) {
     };
   });
 
+  pi.on("tool_call", (event, ctx) => {
+    // tool_call 是 Pi 保证的执行前 preflight；必须在这里 block，不能等 tool_execution_start 后再 abort。
+    const goal = goalRuntimeState.currentGoal;
+    if (!goal?.implicitStart || !isGoalRunning(goal.status)) return;
+    const violation = validateImplicitToolAction(event.toolName, event.input, ctx.cwd);
+    if (!violation) return;
+    goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), {
+      pauseReason: "agent_blocked",
+      pauseReasonDetail: violation,
+    });
+    persistGoal(goalRuntimeState.currentGoal);
+    clearContinuation();
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    safeUpdatePlanOverlay();
+    safeNotify(ctx, `Implicit dgoal paused: ${violation}. Use explicit /dgoal to authorize this action.`, "warning");
+    return { block: true, reason: `Implicit dgoal blocked before execution: ${violation}` };
+  });
+
   pi.on("tool_execution_start", (event, ctx) => {
     trackFileToolExecutionStart(event.toolCallId, event.toolName, event.args, ctx.cwd);
-    // 隐式轻量启动拥有的是运行时动作许可，不只是 proposal 文本许可；越界工具一旦开始即安全暂停，且不再自动续跑。
-    const goal = goalRuntimeState.currentGoal;
-    if (goal?.implicitStart && isGoalRunning(goal.status)) {
-      const violation = validateImplicitToolAction(event.toolName, event.args, ctx.cwd);
-      if (violation) {
-        // 事件到达时 Pi 可能刚开始执行工具；立即中断当前 turn，并把暂停状态先落盘。
-        ctx.abort?.();
-        goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), {
-          pauseReason: "agent_blocked",
-          pauseReasonDetail: violation,
-        });
-        persistGoal(goalRuntimeState.currentGoal);
-        clearContinuation();
-        safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-        safeUpdatePlanOverlay();
-        safeNotify(ctx, `Implicit dgoal paused: ${violation}. Use explicit /dgoal to authorize this action.`, "warning");
-        return;
-      }
-    }
     // 本轮有工具调用，说明有实际推进，不计入空转。
     goalRuntimeState.turnHadToolExecution = true;
   });

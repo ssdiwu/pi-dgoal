@@ -4,6 +4,8 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
+> **Unreleased**: globally authorized implicit goals may run local tests, builds, scripts, project-file changes, and local Git mutations. A pre-execution `tool_call` policy gate blocks recognized destructive workspace / `.git` commands, Git remote writes, publishing, deployment, external writes, permission changes, and paid actions. This is best-effort policy enforcement, not an OS sandbox; allowed scripts may contain hidden side effects. See ADR 0035.
+>
 > **v0.7.0**: adds selectable `final_only` / `phased` acceptance policies, bounded/unbounded runtime budgets, proposal-owned context, and globally authorized bounded implicit starts with fail-closed local/readonly action guards. See `CHANGELOG.md` for details.
 >
 > **v0.6.3**: the startup-gate semantic preflight now uses a 60s idle timeout (any stream event resets it) instead of a 30s wall-clock kill, streams liveness via `onUpdate`, and separates `technical_error` (`isError:true`, not a plan-content issue) from semantic `rejected` (`isError:false`). Configurable via `proposalSemanticReviewIdleTimeoutSeconds` in `pi-dgoal.json`. See `CHANGELOG.md` for details.
@@ -132,7 +134,7 @@ Configure the phase and goal auditors independently with ordered lists of at mos
 }
 ```
 
-Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically. `contextSummarizerModels` is deprecated: as of v0.7.0 the startup background summarizer subprocess was removed (ADR 0033); the main agent may persist an optional `contextSummary` via `dgoal_propose`, and a missing summary no longer blocks startup. `implicitFinalOnlyStart` (global-only, default `false`) authorizes the agent to start bounded `final_only` goals without an explicit `/dgoal`; `implicitFinalOnlyBudget` overrides the safe default budget (base `24 turns / 60 min / 1 repair`, plus a 24-turn grace window).
+Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically. `contextSummarizerModels` is deprecated: as of v0.7.0 the startup background summarizer subprocess was removed (ADR 0033); the main agent may persist an optional `contextSummary` via `dgoal_propose`, and a missing summary no longer blocks startup. `implicitFinalOnlyStart` (global-only, default `false`) authorizes the agent to start bounded `final_only` goals without an explicit `/dgoal`; `implicitFinalOnlyBudget` overrides the safe default budget (base `24 turns / 60 min / 1 repair`, plus a 24-turn grace window). Authorized implicit goals may execute local tests, builds, scripts, project-file edits, and local Git mutations. A pre-execution policy gate blocks recognized destructive workspace / `.git` commands and remote writes, but it is not an OS sandbox and cannot prove that an allowed script has no hidden side effects (ADR 0035).
 
 Resolution order:
 

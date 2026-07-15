@@ -45,7 +45,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `paused-state-diagnostics.test.ts` | paused/missing/active 状态下工具的可读与可写边界：paused 下 list/get 只读、create/update/check/done 返回结构化 paused 结果与 resume 指引，不误报 noGoal；pauseReason 区分 user_abort/model_error；pending goal 不可完成（启动闸门保护）。 |
 | `no-progress-stall.test.ts` | 无进展续跑熔断纯函数 `decideNoProgressPause`：有工具调用清零、无工具累计、达 3 轮暂停、`MAX_NO_PROGRESS_TURNS=3`。 |
-| `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 before_agent_start → tool_execution_start → agent_end 回调，验证连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
+| `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 before_agent_start → tool_call/tool_execution_start → agent_end 回调，验证隐式越界工具在执行前 block、连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
 | `agent-pause-tool.test.ts` | `dgoal_pause` 主动暂停出口：active/rejected 状态立即进入 `paused(agent_blocked)`，reason 非空/有界，paused 结果可读，resume 清理 detail，UI 抛错仍先持久化，工具真实注册可见。 |
 | `budget-policy-stall.test.ts` | v0.7.0 预算策略：bounded/unbounded、宽限判定与状态栏宽限标记。 |
 | `final-only-phase-progress.test.ts` / `final-only-proposal-path.test.ts` | v0.7.0 `final_only`：阶段进度划线、拒绝 `dgoal_check`、真实 proposal 预审路径。 |

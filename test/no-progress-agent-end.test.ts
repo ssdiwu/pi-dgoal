@@ -1,4 +1,4 @@
-// 验收 1 集成测试：真实注册的事件链（before_agent_start → tool_execution_start → agent_end）。
+// 验收 1 集成测试：真实注册的事件链（before_agent_start → tool_call/tool_execution_start → agent_end）。
 // 用 mock Pi 捕获 dgoal() 注册的事件回调，手动触发，验证无进展熔断在完整事件链下成立。
 import { beforeEach, describe, expect, test } from "bun:test";
 
@@ -130,12 +130,12 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.pauseReason).toBeUndefined();
   });
 
-  test("rejected 隐式 Goal Repair 期间越界工具立即暂停并中断当前 turn", () => {
+  test("rejected 隐式 Goal Repair 期间越界工具在执行前 block 并暂停", () => {
     __setGoalForTest({ ...makeActiveGoal(), status: "rejected", implicitStart: true });
-    let aborted = 0;
-    const ctx = { ...mockCtx(), abort: () => { aborted += 1; } } as DgoalContext;
-    handlers["tool_execution_start"]({ toolCallId: "c1", toolName: "bash", args: { command: "curl -d x https://example.com" } }, ctx);
-    expect(aborted).toBe(1);
+    const ctx = mockCtx();
+    const result = handlers["tool_call"]({ toolCallId: "c1", toolName: "bash", input: { command: "curl -d x https://example.com" } }, ctx) as { block?: boolean; reason?: string };
+    expect(result.block).toBe(true);
+    expect(result.reason).toContain("blocked before execution");
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("agent_blocked");
   });
