@@ -40,6 +40,7 @@ import {
   setPhaseCompleted,
   STATE_ENTRY_TYPE,
   currentUncheckedPhase,
+  disposePlanOverlay,
   type Task,
   type TaskPlan,
 } from "../index.ts";
@@ -255,6 +256,68 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("Dgoal 模式已激活");
     __resetGoalForTest();
+  });
+
+  test("隐式 proposal 降级显式确认后不继承旧 implicitStart 权限", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    const pendingGoal = {
+      id: "implicit-downgrade-confirm", objective: "显式确认降级", status: "pending",
+      startedAt: 1, updatedAt: 1, iteration: 0, implicitStart: true,
+      allowedToolScope: "local_repo_and_readonly_external",
+    } as GoalState;
+    __setGoalForTest(pendingGoal);
+    const criteria = [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }];
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve", requiresExplicitConfirmation: true }));
+    const proposed = await __executeDgoalProposeForTest({
+      objective: pendingGoal.objective, verification: criteria[0].evidence,
+      verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: criteria,
+      phases: [{ subject: "阶段", tasks: [{ subject: "任务" }] }],
+    });
+    expect(proposed.details?.error).toBeUndefined();
+
+    const ctx = { ui: { select: async () => "确认，开始执行", notify: () => {}, setStatus: () => {} }, cwd: process.cwd() } as never;
+    await __handleStartupGateForTest({ sendUserMessage: async () => {} } as never, ctx, pendingGoal);
+    const active = __getGoalForTest();
+    expect(active?.status).toBe("active");
+    expect(active?.implicitStart).toBeUndefined();
+    expect(active?.allowedToolScope).toBeUndefined();
+  });
+
+  test("启动确认时按 setWidget 能力恢复缺失的持续显示浮层", async () => {
+    const { api } = makeApi();
+    __setApiForTest(api);
+    __setPlanOverlayForTest(undefined);
+    const pendingGoal: GoalState = { id: "startup-widget-restore", objective: "恢复持续浮层", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+    __setGoalForTest(pendingGoal);
+    const criteria = [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }];
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    await __executeDgoalProposeForTest({
+      objective: pendingGoal.objective, verification: criteria[0].evidence,
+      verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: criteria,
+      phases: [{ subject: "阶段", tasks: [{ subject: "任务" }] }],
+    });
+
+    const widgets: Array<{ key: string; value: unknown; options?: unknown }> = [];
+    const ctx = {
+      ui: {
+        select: async () => "确认，开始执行",
+        notify: () => {}, setStatus: () => {},
+        setWidget: (key: string, value: unknown, options?: unknown) => widgets.push({ key, value, options }),
+        getToolsExpanded: () => false,
+        onTerminalInput: () => () => {},
+      },
+      cwd: process.cwd(),
+    } as never;
+    try {
+      await __handleStartupGateForTest({ sendUserMessage: async () => {} } as never, ctx, pendingGoal);
+      expect(__getGoalForTest()?.status).toBe("active");
+      expect(widgets.some((item) => item.key === "dgoal-plan" && Array.isArray(item.value) && item.value.length > 0)).toBe(true);
+    } finally {
+      disposePlanOverlay();
+    }
   });
 
   test("启动拒绝分支 notify 抛错时仍完成 pending goal 清理", async () => {

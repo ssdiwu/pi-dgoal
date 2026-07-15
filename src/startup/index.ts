@@ -55,7 +55,7 @@ const NATURAL_START_NEGATED_PATTERN = new RegExp(
   String.raw`(?:不是(?:要|请)?|并非|不要|别|禁止|无需|不用|不准|没有授权|不(?:建议|推荐|允许|准备|打算|应该|应当|该)?|do\s+not|don't|never|must\s+not|should\s+not|without|not\s+going\s+to)\s*(?:(?:现在|再|继续|立即|直接|你|在本轮|currently|now|ever)\s*)*(?:用|使用|启动|开启|运行|执行|start|use|run|launch)?\s*${DGOAL_TOKEN_SOURCE}`,
   "i",
 );
-const NATURAL_START_PREFIX_SOURCE = String.raw`(?:(?:请|麻烦|直接|现在|接下来|继续|再|我授权你|我同意你|你可以|可以|帮我)\s*){0,3}`;
+const NATURAL_START_PREFIX_SOURCE = String.raw`(?:(?:(?:请|麻烦|直接|现在|接下来|继续|再|我授权你|我同意你|你可以|可以|帮我)\s*){0,3}|而是\s*(?:(?:需要|希望|要)\s*)?(?:请\s*)?你(?:自己)?\s*)`;
 const NATURAL_START_DIRECTIVE_PATTERNS = [
   new RegExp(String.raw`^${NATURAL_START_PREFIX_SOURCE}(?:用|使用|启动|开启|进入|运行|执行)(?:一下|下)?\s*${DGOAL_TOKEN_SOURCE}`, "i"),
   new RegExp(String.raw`^${NATURAL_START_PREFIX_SOURCE}(?:让|交给)\s*${DGOAL_TOKEN_SOURCE}\s*(?:来)?\s*(?:开始(?:工作)?|处理|完成|执行|解决|做|工作)`, "i"),
@@ -87,11 +87,11 @@ export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
 }
 
 export function buildNaturalLanguageStartGuidance(): string {
-  return "<dgoal_natural_language_start>\n用户在本轮自然语言中明确要求使用或启动 dgoal。冷会话下可直接调用 dgoal_propose，不设置 implicit；运行时会创建 pending 显式目标，并保留语义预审与用户确认 UI。该路径可提交 phased / unbounded 或包含外部动作的计划，不要求用户补输 /dgoal。若任务同时满足全局隐式轻量边界，仍可选择 implicit=true。\n</dgoal_natural_language_start>";
+  return "<dgoal_natural_language_start>\n用户在本轮自然语言中明确要求使用或启动 dgoal。冷会话下可直接调用 dgoal_propose，不设置 implicit；运行时只在结构与语义成功后创建 pending 显式目标，并保留用户确认 UI。该路径可提交 phased / unbounded 或包含外部动作的计划，不要求用户补输 /dgoal。若任务同时满足全局隐式轻量边界，仍可选择 implicit=true；语义预审可在只差确认授权时自动降级为普通显式确认。\n</dgoal_natural_language_start>";
 }
 
 export function buildImplicitStartGuidance(): string {
-  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。若用户已自然语言明确要求 dgoal、但任务不满足隐式边界，应调用 dgoal_propose 且不设置 implicit，进入显式 pending 确认路径；不要再要求用户补输 /dgoal。没有明确用户目标时不要自行启动。\n</dgoal_implicit_start>";
+  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。若用户已自然语言明确要求 dgoal、但任务不满足隐式边界，可直接调用 dgoal_propose 且不设置 implicit，或让 implicit 语义预审在只差确认授权时自动降级到显式 pending 确认；不要再要求用户补输 /dgoal。没有明确用户目标时不要自行启动。\n</dgoal_implicit_start>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {

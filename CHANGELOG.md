@@ -13,13 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **提案语义职责改为“轻提案、硬执行”**（ADR 0037）：`dgoal_propose` 的确定性层只校验结构、状态、策略/预算和授权，不再用 evidence 词表或自由文本关键词作泛化语义硬拒；当前会话 LLM 负责独立验收 / `userReviewItems` / 真实人工 blocker 分流，已识别的高风险动作继续由 `tool_call` 执行前 fail-closed，终审只核冻结结果。
+- **隐式 proposal 可自动降级显式确认**：语义预审返回 `requiresExplicitConfirmation` 时，运行时建立普通 pending goal 并弹现有确认 UI，不自动执行、也不要求用户重输 `/dgoal`；结构或语义失败不再留下半启动 goal。
 - **隐式 dgoal 允许完整本地执行**（ADR 0035）：全局授权后的隐式目标可运行本地测试、构建、解释器脚本、项目文件修改和本地 Git 变更；已识别的仓库销毁、`.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令会在 `tool_call` 执行前 fail-closed，须改走显式 `/dgoal`。该护栏是 best-effort 策略检查而非 OS sandbox，不能证明获准脚本内部没有隐藏副作用。
 
 ### Fixed
 
 - **`final_only` 语义预审空 phase 数组不再阻断启动**：审核器在 approve/rewrite 返回合法的 `phaseAcceptanceCriteria: []` 时，运行时按 proposal phase 数补齐缺失层并保留原值，不再误判 approve 偷改，也不再因 `rewrittenLayers[layer] is not iterable` 崩溃；额外 phase 层仍 fail-closed 拒绝。
 - **语义预审 approve 不再回显完整验收契约**：启动闸门审核器批准计划时只需返回最小 `{"decision":"approve"}` JSON，运行时继续使用原冻结 `acceptanceCriteria`；避免长命令与多层 criteria 回显导致无效 JSON 或无意义格式改写，同时仍拒绝 approve 响应偷偷修改完成门。
-- **隐式启动边界与 schema 对齐**：proposal 的全部自由文本字段改为逐 clause 扫描，否定式安全声明不再因含 `push` / `publish` 被反向误判，未否定的命令式注入仍拒绝；动作护栏从 `tool_execution_start + abort` 移到真正执行前可 block 的 `tool_call`，并覆盖嵌套 shell、fd 重定向、cwd 变量删除、Git alias 与 curl 等号参数；`dgoal_propose` schema 允许墙钟宽限显式设为 `0`，与运行时和默认配置一致。
+- **终审不再建立当前结果的自指完成门**：goal auditor 明确在当前 `dgoal_done` tool result 与 `status=done` 生成前运行；审核只核调用前冻结条件和工件，返回 `<APPROVED>` 后才由 runtime finalize。`final_only` 计划投影同时展示 `progressCompleted`，避免把进度已完成误读为仍未完成。
+- **自然语言转折祈使不再漏授权**：“不是要你跑脚本，而是需要你自己用 dgoal 测试”会按后半句明确动作授予一次性显式启动权；“不是要用 dgoal，而是讨论/解释它”等反例仍拒绝。
+- **持续显示浮层在激活与重载时可靠恢复**：PlanOverlay 初始化改以真实 `setWidget` 能力为准，不再依赖不同 Pi 版本可能缺失的 `hasUI` / `mode` 标记；active goal 激活与 session 重同步都会确保 widget 已挂载，UI 抛错仍不影响状态机。
+- **隐式启动执行护栏与 schema 对齐**：动作护栏从 `tool_execution_start + abort` 移到真正执行前可 block 的 `tool_call`，并覆盖嵌套 shell、fd 重定向、cwd 变量删除、Git alias 与 curl 等号参数；`dgoal_propose` schema 允许墙钟宽限显式设为 `0`，与运行时和默认配置一致。
 
 ## [0.7.0] - 2026-07-15
 

@@ -304,6 +304,28 @@ describe("acceptance check alignment", () => {
     expect(task).toContain("README");
   });
 
+  test("goal auditor prompt 明确 dgoal_done 审核因果时序并展示 final_only progress", () => {
+    const task = buildAuditorTask({
+      objective: "完成真实 dgoal 终审",
+      status: "rejected",
+      verificationPolicy: "final_only",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
+      finalFeedback: { report: "上轮错误要求当前 tool result 预先存在", rejectedCount: 1, createdAt: 1 },
+      plan: {
+        phases: [{ id: 1, subject: "交付", status: "in_progress", progressCompleted: true, tasks: [{ id: 2, subject: "实现", status: "done", evidence: "bun test" }] }],
+        nextId: 3,
+      },
+    } as any, "已完成", "bun test");
+    expect(task).toContain("当前 dgoal_done");
+    expect(task).toContain("成功 tool result");
+    expect(task).toContain("status=done");
+    expect(task).toContain("<APPROVED>");
+    expect(task).toContain("progressCompleted=true");
+    expect(task).toContain("不得新增冻结完成门");
+    expect(AUDITOR_SYSTEM_PROMPT).toContain("当前 dgoal_done");
+    expect(AUDITOR_SYSTEM_PROMPT).toContain("APPROVED 后才由 runtime");
+  });
+
   test("goal auditor prompt 明确禁止将未冻结规范或人工体验升级为 FAIL", () => {
     const task = buildAuditorTask({ objective: "o" } as any, "完成", "验证");
     expect(task).toContain("AGENTS 或人工 TUI/视觉/体验要求若未冻结，只能列入用户复核建议，不得 FAIL");

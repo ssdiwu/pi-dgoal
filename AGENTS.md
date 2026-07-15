@@ -50,7 +50,7 @@ pi-dgoal/
 
 - **轻提案、硬执行**：`dgoal_propose` 的代码层只硬校验结构、状态、策略/预算组合与用户授权；不得用命令名、文件扩展名、`API response JSON` 等词表代替语义理解。详见 ADR 0037。
 - **LLM 独占 proposal 语义判断**：语义预审判断任务能否自主闭环，并把候选条件分为独立验收条件、非阻塞 `userReviewItems`、真实人工 blocker；只有最后一类可阻塞启动。隐式路径若通过显式确认即可补足授权，应先降级显式；仍缺用户决策/信息/凭据/授权时才拒绝 proposal，不得扩张目标。
-- **LLM 不是安全边界**：真实高风险动作继续由 `tool_call` preflight 根据工具名、参数和项目边界 fail-closed；proposal 文本检测仅可处理高置信已知动作，含义不确定时降级显式确认，不得把 `nonGoals` / `guardrails` 的否定声明按关键词当成执行意图。
+- **LLM 不是安全边界**：真实高风险动作继续由 `tool_call` preflight 根据工具名、参数和项目边界 fail-closed；proposal 自由文本不作为平行安全硬门，含义不确定时由 LLM 降级显式确认，不得把 `nonGoals` / `guardrails` 的否定声明按关键词当成执行意图。
 - **先校验后落状态**：隐式 proposal 在权限、结构和语义预审成功前不得留下半启动 goal；若明确保留可重提 pending，错误结果必须说明当前状态和重试方式。
 - **终审不建自指完成门**：审核器只审冻结条件与调用前工件；当前 `dgoal_done` 的成功 response 必须等审核器返回 `<APPROVED>` 后生成，不得要求它预先存在，也不得因审核前 goal 仍为 active/rejected 而拒绝。
 - 修改 proposal/semantic preflight/implicit guard/final audit 时，回归测试至少覆盖：人工条件三分流、否定式边界、失败 proposal 状态原子性和 `dgoal_done` 审核→finalize→tool result 的因果时序。
@@ -58,7 +58,7 @@ pi-dgoal/
 ## TUI 边界防护
 
 - dgoal 的状态机、持久化和审计结果不能依赖 TUI 渲染成功；UI 只是展示层。
-- `finalizeGoal`、`dgoal_done`、`dgoal_check`、overlay/status 更新等路径必须防御 Pi 主程序 TUI 抛错（典型症状：`Spacer is not defined`）。
+- `finalizeGoal`、`dgoal_done`、`dgoal_check`、overlay/status 更新等路径必须防御 Pi 主程序 TUI 抛错（典型症状：`Spacer is not defined`）；持续浮层按真实 `setWidget` 能力初始化，不依赖宿主可缺失的 `hasUI` / `mode` 标记。
 - 终审通过后的 `persistGoal(null)`、失败报告注入、phase/task 状态推进必须先于或独立于 UI 展示；UI 抛错只能降级提示，不能阻断 goal 闭环。
 - 改动完成、审核、overlay、status、notification 相关代码时，必须补“UI 抛错仍保持状态正确”的红绿回归测试。
 

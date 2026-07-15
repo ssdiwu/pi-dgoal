@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __executeDgoalProposeForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, hasIndependentlyVerifiableEvidenceShape, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
+import { __executeDgoalProposeForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
 
@@ -109,34 +109,46 @@ describe("验收契约校验", () => {
     expect(validateProposalInput({ objective: "o", verification: "v", acceptanceCriteria: criteria, phaseCount: 1, phaseAcceptanceCriteria: [[{ criterion: "完成", evidence: " " }]] })?.error).toBe("no acceptance criteria");
   });
 
-  test("evidence 必须有可独立复验的证据形态", () => {
-    const validEvidence = [
-      "bun test test/startup-gate.test.ts 通过",
-      "README.md:12 包含新约束说明",
-      "curl /health 返回 HTTP 200 JSON response",
-      "截图文件 artifacts/confirm-flow.png",
-    ];
-    const invalidEvidence = [
-      "开发者声明已完成",
-      "AI 判断体验优秀",
-      "甲方认可验收通过",
-      "同事签字确认",
-      "真实用户试用后表示满意",
-      "完成说明写明功能已完成",
-      "文件已修改",
-      "测试结果通过",
-      "日志显示正常",
-    ];
+  test("非空 evidence 不靠魔法词过结构门并进入 LLM 语义预审", async () => {
+    const evidenceWithoutMagicWords = [{ criterion: "task 状态可读取", evidence: "dgoal_plan(action=list) 的工具返回" }];
+    expect(validateProposalInput({
+      objective: "o", verification: "v", acceptanceCriteria: evidenceWithoutMagicWords,
+      phaseCount: 1, phaseAcceptanceCriteria: [undefined], verificationPolicy: "final_only",
+    })).toBeNull();
 
-    expect(validEvidence.every(hasIndependentlyVerifiableEvidenceShape)).toBe(true);
-    expect(invalidEvidence.some(hasIndependentlyVerifiableEvidenceShape)).toBe(false);
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-evidence-semantics", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    let reviewCalls = 0;
+    __setProposalSemanticReviewForTest(() => {
+      reviewCalls += 1;
+      return { decision: "approve" };
+    });
+    const result = await __executeDgoalProposeForTest({
+      objective: "o", verification: "v", verificationPolicyRecommendation: "final_only",
+      acceptanceCriteria: evidenceWithoutMagicWords,
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
+    });
+    expect(result.details?.error).toBeUndefined();
+    expect(reviewCalls).toBe(1);
+    __resetGoalForTest();
   });
 
-  test("proposal gate 拒绝不可独立复验的 evidence", () => {
-    const invalid: AcceptanceCriterion[] = [{ criterion: "体验达标", evidence: "甲方认可验收通过" }];
-    const r = validateProposalInput({ objective: "o", verification: "v", acceptanceCriteria: invalid, phaseCount: 1, phaseAcceptanceCriteria: [criteria] });
-    expect(r?.error).toBe("no verifiable evidence");
-    expect(r?.message).toContain("userReviewItems");
+  test("语义预审 rewrite 可返回不含魔法词但非空的 evidence", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-rewrite-evidence-semantics", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticReviewForTest(() => ({
+      decision: "rewrite",
+      acceptanceCriteria: [{ criterion: "task 状态可读取", evidence: "dgoal_plan(action=list) 的工具返回" }],
+      migratedUserReviewItems: [{ sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" }],
+    }));
+    const result = await __executeDgoalProposeForTest({
+      objective: "o", verification: "v", verificationPolicyRecommendation: "final_only",
+      acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "npm test" }],
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
+    });
+    expect(result.details?.error).toBeUndefined();
+    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria?.[0].evidence).toBe("dgoal_plan(action=list) 的工具返回");
+    __resetGoalForTest();
   });
 
   test("语义预审拒绝人工 criterion + 合法 evidence，且不写入 pendingProposal", async () => {
@@ -474,6 +486,24 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
+  test("语义预审解析 requiresExplicitConfirmation 并保留原契约", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-confirm", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticCompletionForTest(() => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ decision: "approve", requiresExplicitConfirmation: true }) }],
+    }));
+    const ctx = {
+      model: {},
+      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
+    };
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    expect(result.details?.semanticReview).toBe("approve");
+    expect(result.details?.requiresExplicitConfirmation).toBe(true);
+    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria).toEqual(criteria);
+    __resetGoalForTest();
+  });
+
   test("语义预审 approve 显式携带非法 criteria 时 fail-closed", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-invalid-approve", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
@@ -484,6 +514,7 @@ describe("验收契约校验", () => {
     for (const payload of [
       { decision: "approve", acceptanceCriteria: "invalid" },
       { decision: "approve", phaseAcceptanceCriteria: "invalid" },
+      { decision: "approve", requiresExplicitConfirmation: "yes" },
     ]) {
       __setProposalSemanticCompletionForTest(() => ({
         stopReason: "stop",

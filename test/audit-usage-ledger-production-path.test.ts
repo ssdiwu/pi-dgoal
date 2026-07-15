@@ -9,6 +9,7 @@ import {
   __getGoalForTest,
   __resetGoalForTest,
   __setApiForTest,
+  __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
   __setSpawnManagedSubprocessForTest,
   __resetSpawnManagedSubprocessForTest,
@@ -165,6 +166,36 @@ test("goal 终审 APPROVED 优先于同一 message_end 的 WebSocket error", asy
   expect(result.details?.auditOutput).toContain("<APPROVED>");
   expect(__getGoalForTest()).toBeUndefined();
   expect(persisted.at(-1)?.data.goal).toBeNull();
+});
+
+test("dgoal_done 审核期间保持调用前状态，APPROVED 后才 finalize", async () => {
+  __setApiForTest({ appendEntry: () => {} });
+  for (const status of ["active", "rejected"] as const) {
+    __resetGoalForTest();
+    let observedStatus: string | undefined;
+    __setCompletionAuditorOverrideForTest(async () => {
+      observedStatus = __getGoalForTest()?.status;
+      return { approved: true, aborted: false, output: "<APPROVED>", modelId: "test/auditor", liveness: "approved" };
+    });
+    __setGoalForTest({
+      id: `causal-${status}`, objective: "终审因果时序", status,
+      startedAt: 1, updatedAt: 1, iteration: 0,
+      verification: "bun test", verificationPolicy: "final_only",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
+      plan: {
+        phases: [{ id: 1, subject: "交付", status: "in_progress", progressCompleted: true, tasks: [{ id: 2, subject: "实现", status: "done", evidence: "bun test" }] }],
+        nextId: 3,
+      },
+    } as never);
+    const result = await __executeDgoalDoneForTest({
+      summary: "完成", verification: "bun test",
+      verificationBundle: { changes: "none", acceptanceEvidence: "bun test", selfTest: "bun test", risks: "none" },
+    }, { cwd: process.cwd(), ui: { notify: () => {} } } as never);
+    expect(observedStatus).toBe(status);
+    expect(result.details?.audited).toBe(true);
+    expect(__getGoalForTest()).toBeUndefined();
+  }
+  __setCompletionAuditorOverrideForTest(undefined);
 });
 
 test("审核 child 的成功 bash 事件会持久化为可恢复 phase 检查点", async () => {

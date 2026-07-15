@@ -1,6 +1,6 @@
 # 13 - 启动闸门与 TUI 浮层
 
-> `/dgoal` 与自然语言显式启动流程、计划浮层。决策依据见 `../决策档案/0002-启动闸门与工具回调提交计划.md`、`../决策档案/0036-自然语言显式启动复用启动闸门.md`。
+> `/dgoal`、自然语言/隐式启动流程与计划浮层。决策依据见 `../决策档案/0002-启动闸门与工具回调提交计划.md`、`../决策档案/0036-自然语言显式启动复用启动闸门.md`、`../决策档案/0037-轻提案硬执行的语义职责分层.md`。
 
 ## 启动闸门流程
 
@@ -8,12 +8,15 @@
 /dgoal <objective>            # 路径 A：命令显式目标启动
 /dgoal                        # 路径 B：承接前文共识启动（v0.5.2）
 “请用 dgoal 处理……”           # 路径 C：自然语言显式启动（ADR 0036）
+implicit=true                   # 路径 D：全局授权的隐式轻量启动
   ↓
-A/B 先创建 pending goal；C 记录绑定当前真实用户 prompt 的一次性授权
+A/B 先创建 pending goal；C 只记录绑定当前真实用户 prompt 的一次性授权；D 此时也不写 goal
   ↓
-主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项；C 在 execute 时创建 pending goal)
+主代理读代码/前文 + 整理 plan（用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项）
   ↓
-dgoal_propose execute：结构校验 → 当前会话 LLM 计划语义预审（流式，60s idle timeout，可配置）→（通过或带完整精确迁移映射的改写后）写入 pendingProposal；再触发确认 UI
+dgoal_propose execute：结构/状态/策略/授权校验 → 当前会话 LLM 独占 proposal 语义预审（流式，60s idle timeout，可配置）→ 成功后写入 pendingProposal；C/D 同时原子写 goal，失败不留半启动状态
+  ↓
+A/B/C 触发确认 UI；D 若适合自动执行则直接 active，若仅需显式确认则降级为普通 pending goal 并触发相同确认 UI
   ↓
 弹 ctx.ui.select 确认 UI(默认列 goal + verification + 独立验收条件 + 用户复核项 + readiness + 边界/缺口提示 + phases + task 数量;用户可点入口查看 task 明细):
   ├─ 确认 → 写入 goal(pending→active),发 START prompt 进 loop
@@ -35,9 +38,9 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 ### 自然语言显式启动（路径 C，ADR 0036）
 
 - **目的**：用户已经明确说“使用/启动 dgoal”时，不再要求重复输入 `/dgoal`。
-- **授权来源**：只接受空闲状态下 Pi `input` 的真实用户来源 `interactive` / `rpc`；要求祈使动作 + 独立 dgoal token。`source=extension`、`steer/followUp`、引用/代码示例、解释讨论、能力问句、否定句和标识符后缀不授权。
+- **授权来源**：只接受空闲状态下 Pi `input` 的真实用户来源 `interactive` / `rpc`；要求祈使动作 + 独立 dgoal token。`source=extension`、`steer/followUp`、引用/代码示例、解释讨论、能力问句、仅否定使用 dgoal 的表达和标识符后缀不授权；“不是……而是需要你用 dgoal……”按后半句明确动作授权。
 - **输入绑定**：记录 dgoal handler 实际观察到的文本，`before_agent_start` 要求 prompt 完全一致；后加载扩展的 transform 会清除授权。Pi 0.80.7 不提供不可变 `originalText`，所以早于 dgoal 执行的受信任 transform 可改变其观察文本；Pi 扩展本来就拥有完整本机权限，该限制不是恶意扩展 sandbox。
-- **消费方式**：冷会话的 `dgoal_propose` 不设置 `implicit`，消费一次性授权并创建普通 pending goal，继续结构校验、语义预审和阻塞式确认 UI。
+- **消费方式**：冷会话的 `dgoal_propose` 不设置 `implicit` 即可提交；结构校验与语义预审成功后才消费一次性授权并创建普通 pending goal，再进入阻塞式确认 UI。失败不消费授权、不留半启动 goal。
 - **能力边界**：可提交 `phased` / `unbounded` 及计划中的外部动作，因为它复用完整显式确认；这不扩大 `implicit=true` 的权限。已有 goal 时不静默替换，仍走原命令流程。
 - **生命周期**：授权只保存在 Goal Runtime 内存，消费、session/tree 结束或 agent settled 后清除，不进入 goal 持久态。
 
@@ -51,7 +54,7 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 
 v0.7.0 支持两种策略：`phased` 在每个 phase 结束时运行独立 `dgoal_check`；`final_only` 将 phase 划线仅作为进度完成事实，跳过阶段独立审核，只在 `dgoal_done` 运行 goal 级终审。`final_only` 的 `complete_progress` 不能替代 task 完成，也不能绕过阶段顺序。预算策略支持 `bounded`（首次达到上限进入一次宽限，宽限耗尽才暂停）与 `unbounded`（不因预算或固定次数拒绝暂停，但保留模型错误、无进展、审核错误和 agent_blocked 等安全出口）。
 
-`dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成。语义预审 `approve` 只返回决策，运行时继续使用原冻结契约，不要求模型回显长命令与多层 criteria；若 approve 响应携带被修改的 criteria 仍 fail-closed。`rewrite` 必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求，不能静默丢弃。审核器只能复核冻结条件，不能在 loop 运行中依据 AGENTS/README 或自身判断扩容完成门。
+`dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。工具层只校验非空结构，不用命令名、文件扩展名或 `API response JSON` 等 evidence 词表代替语义判断；当前会话 LLM 是 proposal 唯一语义判断层。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成；真实人工 blocker 才拒绝。隐式 proposal 若显示计划即可补足授权，则返回 `requiresExplicitConfirmation` 并降级显式确认。语义预审 `approve` 只返回决策，运行时继续使用原冻结契约；`rewrite` 必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求。审核器只能复核冻结条件，不能在 loop 运行中扩容完成门，也不得要求当前 `dgoal_done` 成功结果或 `status=done` 在 `<APPROVED>` 之前存在。
 
 ### 为什么用工具回调(不用文本解析)
 
@@ -61,7 +64,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 
 照搬 `todo-overlay.ts` 结构,`placement: "aboveEditor"`:
 
-- **注册**:`pi.setWidget("dgoal-plan", factory, { placement: "aboveEditor" })`
+- **注册**：`pi.setWidget("dgoal-plan", factory, { placement: "aboveEditor" })`；运行时以 `setWidget` 能力本身作为 TUI 边界，不依赖不同宿主版本可能缺失的 `hasUI` / `mode` 标记。
 - **heading**:`🎯 <objective 首行> (X/Y)`,X/Y 为 phase 完成数。
 - **每行**:`├─ [符] phase subject`,符 ○ pending / ◐ in_progress / ✓ done / ⚠ blocked;done 的 phase/task 标题文本带删除线,状态字符和树形符号不带(ADR 0009)。
 - **task 默认隐藏**:双可见性轴。持续显示浮层的展开态跟随 Pi 的 `app.tools.expand`(默认 `Ctrl+O`)，但只展开 `pending / in_progress` phase 的 task；`done phase` 持久显示标题行，不再在持续显示展开态里露出其 task。浮层底部同一行固定提示快捷键 + 常用命令说明。
@@ -70,7 +73,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **done phase 持久显示**:phase 是用户确认过的进度主干,完成后仍持续显示(✓),不因 `agent_start` 或 `/reload` 隐藏;只有整个 goal done / clear 后浮层才消失。Goal Repair 期间为支持终审回查，system prompt 暂停 done phase 的软遗忘，保留全量 phase/task 上下文；判据是 `status === rejected`、`paused(audit_failed_3x)`，或 `finalFeedback` 存在（含 resume 后 status 已回 active 的修复期）。
 - **10 行折叠**:浮层自身最多渲 10 行(heading + body + 底部 hint),给 Pi core 的 widget 区域留余量,避免触发 `(widget truncated)`;溢出时保留底部 `Ctrl+O 显示/隐藏 task` hint,并用 `+N more` 摘要。
 - **空时隐藏**:无 plan 或 goal 为 pending/已 clear 时 `setWidget(key, undefined)`；paused goal 保留冻结的 plan 浮层供只读查看。
-- **刷新时机**:`tool_execution_end`(toolName 是 dgoal_plan/dgoal_check)+ `agent_end` 推进 iteration 时。注意 `tool_execution_end` 只读 `getState()`,不 replay(branch stale)。
+- **刷新时机**：goal 激活、`session_start` / `session_tree` / `session_compact` 重同步时先确保 overlay 实例存在；`tool_execution_end`（toolName 是 dgoal_plan/dgoal_check）和 `agent_end` 推进 iteration 时刷新。注意 `tool_execution_end` 只读 `getState()`，不 replay（branch stale）。
 
 ### 状态栏(现有,保留)
 
@@ -99,7 +102,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 - **滚动**:vim 风格 `j` 下、`k` 上;`↑↓` 方向键、`PgDn/PgUp` 跳 10、`End/G` 跳底、`Home/g` 跳顶、`ESC` 退出
 - **overlay 配置**：`anchor: "center"`, `width: "100%"`, `maxHeight: "85%"`, `margin: 1`（原 top-center，v0.5+ 切 center，见 ADR 0008 追加决策）
 - **空状态**：没有 goal 时弹同一个 center modal，显示“当前没有进行中的 dgoal”、`/dgoal <goal>` 引导和 `ESC/Ctrl+C` 关闭提示；paused goal 仍存在，`/dgoal status` 展示其 plan 只读内容；非 TUI / custom 不可用时降级为 notify。
-- **浮层恢复**：当持续 `aboveEditor` 浮层因 `/reload`、TUI 渲染异常或其它原因丢失时，`/dgoal s` 在打开详细 Modal 前只重绑当前 UI 并重绘 `dgoal-plan`；该路径不调用 session 重同步、不清理审核快照/续跑计数/工作目录追踪。`setWidget` 或 `custom` 抛错均只降级展示，不改变 goal 与审核运行态。
+- **浮层恢复**：goal 激活和 session 重同步都会按 `setWidget` 能力幂等初始化并重绘 `dgoal-plan`，所以 `/reload` 可自动恢复；`/dgoal s` 仍可在打开详细 Modal 前主动重绑当前 UI。所有路径均保持展示与业务状态解耦；`setWidget` 或 `custom` 抛错只降级展示，不改变 goal 与审核运行态。
 
 **为什么 modal 本次彩色化、持续浮层暂不**:持续浮层彩色化涉及把 `aboveEditor widget` 从 `string[]` 升级为 theme-aware factory,会引入新的 TUI 渲染 bug 面;本次浮层只统一状态字符、结构和 done 删除线,彩色化延后到下一版本(见 `doc/30-路线图/30-项目路线图.md`)。
 

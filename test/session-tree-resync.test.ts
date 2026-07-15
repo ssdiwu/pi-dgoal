@@ -13,6 +13,8 @@ import dgoal, {
   __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
   __setPhaseCheckOverrideForTest,
+  __setPlanOverlayForTest,
+  disposePlanOverlay,
   resyncGoalFromSession,
   type GoalState,
   type Phase,
@@ -160,6 +162,28 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
 
     // done/pending 状态 loadGoal 不返回 → currentGoal 清空
     expect(__getGoalForTest()).toBeUndefined();
+  });
+
+  test("reload/tree 无 hasUI/mode 标记时仍按 setWidget 能力恢复持续浮层", () => {
+    __resetGoalForTest();
+    __setPlanOverlayForTest(undefined);
+    const newGoal = makeGoal({ updatedAt: 777 });
+    const widgets: Array<{ key: string; value: unknown }> = [];
+    const ctx = {
+      ...makeCtx([dgoalEntry(newGoal)]),
+      ui: {
+        confirm: async () => true, notify: () => {}, setStatus: () => {},
+        setWidget: (key: string, value: unknown) => widgets.push({ key, value }),
+        getToolsExpanded: () => false,
+        onTerminalInput: () => () => {},
+      },
+    };
+    try {
+      resyncGoalFromSession(ctx as never);
+      expect(widgets.some((item) => item.key === "dgoal-plan" && Array.isArray(item.value) && item.value.length > 0)).toBe(true);
+    } finally {
+      disposePlanOverlay();
+    }
   });
 
   test("UI 抛错不阻断状态重同步（TUI 边界防护）", () => {

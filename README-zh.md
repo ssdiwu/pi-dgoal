@@ -4,7 +4,7 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **Unreleased**：用户在自然语言中明确说“使用/启动 dgoal”后，冷会话可直接进入普通 pending 启动闸门，不再重复要求输入 `/dgoal`；该路径保留语义预审与阻塞式确认 UI，并支持完整验收/预算策略及计划中的外部动作。详见 ADR 0036。
+> **Unreleased**：用户在自然语言中明确说“使用/启动 dgoal”后，冷会话可直接向普通 pending 启动闸门提交；结构与语义成功后才写状态，不再重复要求 `/dgoal` 或留下半启动 goal。proposal 语义改为 ADR 0037 的“轻提案、硬执行”，隐式 proposal 可自动降级到同一显式确认框。详见 ADR 0036/0037。
 >
 > 全局授权的隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更；`tool_call` 执行前策略门会阻止已识别的工作仓库 / `.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令。它是 best-effort 策略检查而非 OS sandbox，获准脚本内部仍可能隐藏副作用。详见 ADR 0035。
 >
@@ -41,14 +41,14 @@ pi install npm:pi-dgoal
 
 也可以在空闲冷会话直接用祈使句说“用 dgoal 和 dteam 自己处理掉”。这条指令会形成一次性显式授权，允许 `dgoal_propose` 建立普通 pending goal，不再要求补输 `/dgoal`。能力问句、引用/代码示例、解释讨论、否定句、`mydgoal` 等标识符后缀、处理中追加输入与 `interactive` / `rpc` 之外的来源（含 `source=extension`）不会授权；已有 goal 也不会被静默替换。授权精确绑定 dgoal 实际观察到的 input/prompt；Pi 没有不可变输入原文，早于 dgoal 的受信任 input transform 属于扩展全权限信任边界。
 
-启动闸门先做结构校验，再用当前会话模型做计划级语义预审，之后才写入 `pendingProposal`。预审以流式接收模型响应，默认 60s idle timeout（可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置）；收到任意流事件即重置计时器，慢但活跃的响应不会被误杀。人工或主观完成条件会被拒绝或改写到 `userReviewItems`。预审终态区分 `approved` / `rewritten` / `rejected`（语义打回，`isError:false`，带可修正原因）与 `technical_error`（认证、空闲超时、网络、非终止、JSON 解析等基础设施失败，`isError:true`，不是计划内容问题）。显式启动的预审通过后，对话框默认展示阶段级摘要（goal + verification + 验收/预算策略推荐 + acceptanceCriteria + userReviewItems + readiness + 边界信号/缺口提示 + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。`final_only` 可省略 phase 级验收条件；全局授权的隐式轻量启动跳过阻塞式计划确认，但仍经过 proposal 校验、语义预审与终审。
+启动闸门遵循 ADR 0037 的“轻提案、硬执行”：确定性代码只校验非空结构、状态、策略/预算组合和授权，不再靠 evidence 魔法词或自由文本关键词猜语义；当前会话模型是 proposal 唯一语义判断层，负责保留独立验收条件、把主观/体验项迁移到 `userReviewItems`、拒绝仍缺用户专属输入的真实 blocker，并在“显示计划即可补足授权”时返回 `requiresExplicitConfirmation`。新隐式或自然语言启动只有在结构校验和语义预审成功后才写入 goal/pendingProposal，失败不留下半启动状态，也不提前消费自然语言授权。预审保持可配置的 60s idle timeout，并区分 `approved` / `rewritten` / `rejected` 与基础设施 `technical_error`。显式启动正常弹确认框；全局授权的隐式 proposal 只有适合自动执行时才自动开始，否则自动降级为普通 pending goal 并弹同一确认框，不要求用户补输 `/dgoal`。已识别的高风险动作继续由 `tool_call` 执行前 fail-closed，终审仍独立。
 
 dgoal 执行中：
 
 - agent 用 `dgoal_plan` 推进任务状态（`pending → in_progress → done | blocked`）；`final_only` 另用 `complete_progress` 记录阶段进度划线
 - `phased` 下每个 phase 完成都通过 `dgoal_check` 独立审核；`final_only` 下 phase 只记录进度完成，goal 最后进行一次独立终审，且 `dgoal_done` 必须携带 `verificationBundle`
 - 有界预算首次达到上限进入一次非阻塞宽限，宽限耗尽才以 `pauseReason=budget_exhausted` 暂停；`unbounded` 不因预算或拒绝次数暂停，但保留安全暂停出口
-- editor 上方的持续显示浮层展示 phase 进度；task 默认隐藏，持续显示展开态跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`），但只展开 pending / in_progress phase；done phase 仍持久显示标题行，不再展开其 task。底部同一行提示快捷键与常用命令说明
+- editor 上方的持续显示浮层展示 phase 进度；task 默认隐藏，持续显示展开态跟随 Pi 的 `app.tools.expand`（默认 `Ctrl+O`），但只展开 pending / in_progress phase；done phase 仍持久显示标题行，不再展开其 task。激活和会话重同步按真实 `setWidget` 能力初始化，不再依赖宿主可缺失的 `hasUI` / `mode` 标记，因此 `/reload` 可恢复丢失浮层。底部同一行提示快捷键与常用命令说明
 - 安装 `pi-di18n` 时，浮层、状态栏、通知和启动闸门等用户可见文案可跟随 locale；模型侧 prompt 和工具 schema 保持不变
 
 控制目标：
@@ -68,7 +68,7 @@ agent 调 `dgoal_done(summary, verification, whatChanged?, userReview?, verifica
 
 | 工具 | 用途 |
 |---|---|
-| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks + 冻结 goal `acceptanceCriteria`（仅 `phased` 要求 phase 条件）+ 验收/预算策略推荐 + 可选背景/用户复核项；显式命令或自然语言显式启动需用户确认，全局授权隐式启动可自动确认 |
+| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks + 冻结 goal `acceptanceCriteria`（仅 `phased` 要求 phase 条件）+ 验收/预算策略推荐 + 可选背景/用户复核项；LLM 语义预审分流人工依赖，显式启动需用户确认，全局授权隐式启动可自动确认或降级到同一确认框 |
 | `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
 | `dgoal_check` | `phased` 的 phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具）；`final_only` 明确不调用该工具 |
 | `dgoal_done` | 按策略完成所有 phase 后声明 goal 完成：`phased` 使用 `dgoal_check`，`final_only` 使用 `complete_progress`；随后进行 goal 级终审，且 `final_only` 必须携带 `verificationBundle`，是关闭 goal 的唯一方式 |
@@ -79,6 +79,7 @@ agent 调 `dgoal_done(summary, verification, whatChanged?, userReview?, verifica
 - 会话内单 goal，不做多目标池
 - Task Plan 必选：通过命令或自然语言显式启动 dgoal 即进入复合目标，不允许空 plan 完成
 - Goal 方向与 goal/phase 的 `acceptanceCriteria` 在确认后冻结；dgoal 执行中只可调整 phase/task 的执行进度、task 分解和 evidence，不提供验收条件更新入口
+- proposal 语义归模型、不归关键词：确定性代码校验结构与授权，真实动作由 `tool_call` 守边界，审核器只核冻结结果
 - done task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
 - 独立审核：审核员是独立 `pi` 子进程，fresh 上下文、无主会话历史、禁 skills/extensions，只带受限核验工具（`read`、`grep`、`find`、`ls`、`bash`），完成不自证
 - 不自动 Git 操作，不替代项目测试，不做固定 workflow engine

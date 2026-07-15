@@ -24,23 +24,23 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-status-pure.test.ts` | v0.4.2 `/dgoal s` modal 的纯函数测试：`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`。 |
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界，以及浮层缺失/首次 `setWidget` 异常后的幂等重绘。 |
-| `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput`、当前会话 LLM 语义预审的拒绝/改写/fail-closed、旧 proposal 清理、冻结 `acceptanceCriteria` / `userReviewItems`、`buildProposePrompt`、确认 UI 摘要/明细切换。预审流式 idle timeout（持续事件续命、无事件超时）、技术失败（`isError:true`）与语义打回（`isError:false`）分离、`onUpdate` 活性输出。 |
+| `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput` 只做结构硬校验，非空 evidence 无魔法词也进入当前会话 LLM 语义预审；覆盖拒绝/改写/fail-closed、人工依赖迁移、`requiresExplicitConfirmation` 解析、旧 proposal 清理、冻结契约、确认 UI，以及流式 idle timeout 与技术/语义失败分离。 |
 | `startgoal-abort.test.ts` | 启动中断与语义预审中断：`ctx.abort`、启动闸门投递去重，以及预审中断后 goal 保持 pending、没有 active proposal。 |
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 识别 thinking/toolcall/text/message 与 Pi `tool_execution_*`；模型 idle 180s、工具执行 idle 1800s；`isAuditorError` 三态判定、`runCheckWithRetry` 候选单次切换（approved/rejected 不切换、共享预算耗尽不启动下一候选、候选耗尽 `auditor_error`）、`formatCheckLivenessLine`/`formatAuditTotalTimeout`/`summarizeCheckProgress` 中英文 i18n。 |
 | `auditor-config.test.ts` | 审核器候选配置与预检：受信任项目链整体 > 全局链、同来源复数字段 > 单值字段 > 旧 `auditorModel`、`phaseAuditorModels` / `goalAuditorModels` 的 `null` 阻断、空/非法/重复/超限候选、custom/gateway 多段路径和 thinking 后缀、隔离 child 的结构化 Pi 注册表匹配、成功缓存/失败重试、预检不可用的跨字段/来源降级与预检失败保留候选；同时覆盖首次双 `null` 模板及 `ui.notify` 抛错容错。 |
 | `auditor-fallback.test.ts` | 审核器候选链运行时回退：候选技术/协议错误或无终止标记部分输出时按顺序单次切换、有效 fallback 按 goal/审核范围持久复用、业务 REJECTED 与中断分流、候选耗尽 `audit_error` 及 `buildAuditorResultDetails()` 轨迹。 |
-| `audit-checkpoint.test.ts` / `audit-checkpoint-runtime.test.ts` / `audit-checkpoint-resume.test.ts` / `audit-usage-ledger-production-path.test.ts` | 审核检查点：复合敏感字段、URL credentials、Cookie/session 脱敏；同 workspace fingerprint 的成功命令复用；untracked/ignored/读取失败 fail-closed；running/unknown/异常事件不算完成；真实审核路径与重启后注入边界。 |
+| `audit-checkpoint.test.ts` / `audit-checkpoint-runtime.test.ts` / `audit-checkpoint-resume.test.ts` / `audit-usage-ledger-production-path.test.ts` | 审核检查点与生产路径：敏感字段脱敏、同 workspace fingerprint 成功命令复用、异常状态 fail-closed、重启注入边界；并验证 `dgoal_done` 审核期间保持调用前 active/rejected，只有 `<APPROVED>` 后才 finalize。 |
 | `audit-usage-ledger.test.ts` / `audit-usage-cross-repo.test.ts` | 审核 usage ledger（用量账本）的脱敏落盘、稳定去重和跨仓库聚合联动。 |
 | `auditor-abort-listener.test.ts` | 审核中断监听器的注册、立即 abort 和正常结束清理。 |
 | `auditor-workspace-cwd.test.ts` | 审核子进程工作目录推断：优先覆盖当前轮文件工具调用，再回退到会话里的最近文件工具调用；同仓库保持 `ctx.cwd`，并覆盖 goal 结束后不要把旧 worktree 泄漏到下一个 goal。 |
 | `state-machine-and-prompt.test.ts` | 切片6/7：状态机 done/rejected/pauseReason + `buildPlanContextBlock` 注入 prompt、续跑时机判定。 |
 | `tool-execute-integration.test.ts` | mock ctx + pending/active goal 调 `dgoal_` 工具 execute，验证 `currentGoal`、`pendingProposal`、预审 rejected/error/合法重提状态和 `persist` 调用。不依赖终审 spawn。 |
-| `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done，`finalizeGoal` UI 边界容错，phase 建检 approved/rejected 真实分支 UI 抛错仍先持久化状态/反馈/复核项，blockedBy DAG。 |
+| `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done；覆盖隐式降级显式后清理旧权限、激活时按 `setWidget` 能力恢复持续浮层、`finalizeGoal`/phase 建检 UI 边界容错与 blockedBy DAG。 |
 | `soft-forgetting-e2e-smoke.test.ts` | ADR 0010 软遗忘端到端 smoke：走完整真实状态机路径（`proposalToPlan`→`applyPlanMutation`→`setPhaseCompleted`→`buildPlanContextBlock`），验证 phase done 后注入里只剩标题行、当前 phase 内 done task 仍注入。 |
 | `command-aliases.test.ts` | `/dgoal` 子命令解析：全拼 / 单字母 `s/p/r/c`，以及移除 `stop` 别名后的行为。 |
 | `help-command-routing.test.ts` | `/dgoal help` 在冷启动、paused、active、pending 状态下的路由。 |
 | `prepare-arguments-schema.test.ts` | `dgoal_plan` / `dgoal_propose` 参数 coercion（类型归一化）与严格 schema（模式）校验接缝。 |
-| `context-input-cap.test.ts` | 启动背景输入边界与验收 prompt 逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、冻结验收契约注入与 XML escape、审核范围不扩容回归（phase/goal prompt + system prompt 禁止从 AGENTS/README/人工体验扩容完成门）、用户复核提取。纯逻辑测试，不依赖 Pi。 |
+| `context-input-cap.test.ts` | 启动背景输入边界与验收 prompt 逻辑：上下文 cap/preview、冻结契约与 XML escape、审核范围不扩容、`dgoal_done` 当前结果不能作为审核前置证据、`final_only progressCompleted` 投影及用户复核提取。纯逻辑测试，不依赖 Pi。 |
 | `context-summarizer-candidate-loop.test.ts` / `context-summarizer-fail-closed.test.ts` | ADR 0033 兼容 helper 的遗留测试：验证旧背景摘要接缝的候选/失败行为，不代表生产启动仍调用独立摘要链。 |
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `paused-state-diagnostics.test.ts` | paused/missing/active 状态下工具的可读与可写边界：paused 下 list/get 只读、create/update/check/done 返回结构化 paused 结果与 resume 指引，不误报 noGoal；pauseReason 区分 user_abort/model_error；pending goal 不可完成（启动闸门保护）。 |
@@ -49,9 +49,9 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `agent-pause-tool.test.ts` | `dgoal_pause` 主动暂停出口：active/rejected 状态立即进入 `paused(agent_blocked)`，reason 非空/有界，paused 结果可读，resume 清理 detail，UI 抛错仍先持久化，工具真实注册可见。 |
 | `budget-policy-stall.test.ts` | v0.7.0 预算策略：bounded/unbounded、宽限判定与状态栏宽限标记。 |
 | `final-only-phase-progress.test.ts` / `final-only-proposal-path.test.ts` | v0.7.0 `final_only`：阶段进度划线、拒绝 `dgoal_check`、真实 proposal 预审路径，以及 reviewer 在 approve/rewrite 返回空 `phaseAcceptanceCriteria: []` 时补齐 phase 层、不误判偷改也不再触发 `rewrittenLayers[layer]` 崩溃。 |
-| `implicit-start-authorization.test.ts` | 启动授权：v0.7.0 隐式轻量启动的全局授权、项目越权拒绝、策略/预算边界、proposal 文本与运行时动作护栏；ADR 0036 祈使句/问句/引用/否定/token 边界的自然语言意图识别，以及冷会话提交 phased/外部动作计划仍进入普通 pending 确认。 |
+| `implicit-start-authorization.test.ts` | 启动授权：隐式轻量启动的全局授权、策略/预算边界、LLM 将外部动作降级显式确认、proposal 失败无半启动状态、自由文本不再关键词硬拒、真实 `tool_call` 动作护栏；ADR 0036 祈使/问句/引用/否定/token/转折句边界及自然语言冷启动原子提交。 |
 | `phase-id-diagnostics.test.ts` | 新 plan phase ID 连续（proposalToPlan 预分配 1..N）、旧 plan（非连续 #1/#4/#8）兼容加载、phase 找不到时返回完整阶段列表（序号+真实 ID+标题，当前高亮）。 |
-| `session-tree-resync.test.ts` | session 分支/压缩恢复：pending/active/rejected goal 重同步、stale session replacement 保护，以及三个 dgoal 工具的惰性恢复。 |
+| `session-tree-resync.test.ts` | session 分支/压缩恢复：pending/active/rejected goal 重同步、stale session replacement 保护、三个 dgoal 工具的惰性恢复，以及缺 `hasUI/mode` 标记时按 `setWidget` 能力恢复持续浮层。 |
 | `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED 不回退；未知非配额错误也只尝试当前候选一次后切换；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |
 | `test-ai-smoke-runtime.py` | AI smoke 的 Pi 运行时选择：模拟 npm PATH（路径）含项目旧 `node_modules/.bin/pi` 时跳过它并选择宿主 Pi；`PI_DGOAL_SMOKE_PI` 覆盖优先。 |

@@ -8,6 +8,19 @@ import { buildImplicitStartGuidance, buildNaturalLanguageStartGuidance, isNatura
 
 const criterion = { criterion: "测试退出码 0", evidence: "npm test" };
 
+async function makeImplicitContext(prefix: string) {
+  const root = await mkdtemp(path.join(os.tmpdir(), prefix));
+  const agentDir = path.join(root, "agent");
+  const projectDir = path.join(root, "project");
+  await mkdir(agentDir, { recursive: true });
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(path.join(agentDir, "pi-dgoal.json"), JSON.stringify({
+    implicitFinalOnlyStart: true,
+    implicitFinalOnlyBudget: { maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } },
+  }));
+  return { cwd: projectDir, agentDir, isProjectTrusted: () => true };
+}
+
 describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
   test("冷启动提示明确隐式入口与安全策略", () => {
     const guidance = buildImplicitStartGuidance();
@@ -31,6 +44,7 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
       "dgoal，开始工作",
       "先分析需求，再请用 dgoal 处理",
       "不要再问，直接用 dgoal",
+      "我不是要你跑脚本测试，而是需要你自己用dgoal的工具来测试",
       "please use dgoal for this task",
       "run the dgoal workflow",
       "start the /dgoal workflow",
@@ -42,6 +56,8 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
       "禁止现在使用 dgoal",
       "不是请用 dgoal，而是讨论它",
       "不是要用 dgoal，而是只讨论它",
+      "我不是要你用 dgoal，而是只想讨论它",
+      "我不是要你跑脚本，而是需要你解释 dgoal",
       "并非启动 dgoal",
       "do not currently use dgoal",
       "你能用 dgoal 吗？",
@@ -96,6 +112,30 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
     expect(__getGoalForTest()).toBeUndefined();
   });
 
+  test("自然语言显式 proposal 语义失败不留半启动 goal，也不提前消费授权", async () => {
+    __resetGoalForTest();
+    __setRuntimeStateForTest({ naturalLanguageStartAuthorized: true, naturalLanguageStartInput: "请用 dgoal 完成任务" });
+    __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "missing user-only decision" }));
+    const params = {
+      objective: "修复问题", verification: "npm test",
+      verificationPolicyRecommendation: "final_only" as const, budgetPolicyRecommendation: "bounded" as const,
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
+      phases: [{ subject: "完成修复", tasks: [{ subject: "实现" }] }],
+    };
+    const rejected = await __executeDgoalProposeForTest(params);
+    expect(rejected.details?.error).toBe("semantic review rejected");
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
+    expect(__getRuntimeStateForTest().naturalLanguageStartInput).toBe("请用 dgoal 完成任务");
+
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    const retried = await __executeDgoalProposeForTest(params);
+    expect(retried.details?.error).toBeUndefined();
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+  });
+
   test("dgoal_propose implicit 描述明确不要求显式 /dgoal", () => {
     const implicitParam = String((dgoalProposeTool.parameters as { properties?: { implicit?: { description?: string } } }).properties?.implicit?.description ?? "");
     expect(implicitParam).toContain("不要求用户输入 /dgoal");
@@ -143,6 +183,63 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
     expect(__getPendingProposalForTest()?.proposal.verificationPolicyRecommendation).toBe("final_only");
     expect(__getPendingProposalForTest()?.proposal.runtimeBudget).toEqual({ maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } });
     __setProposalSemanticReviewForTest(undefined);
+  });
+
+  test("implicit proposal 语义拒绝或技术失败不留半启动 goal", async () => {
+    const ctx = await makeImplicitContext("pi-dgoal-implicit-atomic-");
+    const params = {
+      objective: "轻量任务", verification: "npm test", implicit: true,
+      verificationPolicyRecommendation: "final_only" as const, budgetPolicyRecommendation: "bounded" as const,
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
+    };
+
+    __resetGoalForTest();
+    __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "missing user-only input" }));
+    const rejected = await __executeDgoalProposeForTest(params, ctx);
+    expect(rejected.details?.error).toBe("semantic review rejected");
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(__getPendingProposalForTest()).toBeUndefined();
+
+    __resetGoalForTest();
+    __setProposalSemanticReviewForTest(() => { throw new Error("review unavailable"); });
+    const failed = await __executeDgoalProposeForTest(params, ctx);
+    expect(failed.details?.error).toBe("semantic review technical error");
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(__getPendingProposalForTest()).toBeUndefined();
+  });
+
+  test("implicit proposal 可由 LLM 降级为普通 pending 显式确认", async () => {
+    __resetGoalForTest();
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve", requiresExplicitConfirmation: true }));
+    const ctx = await makeImplicitContext("pi-dgoal-implicit-confirm-");
+    const result = await __executeDgoalProposeForTest({
+      objective: "需要确认的任务", verification: "npm test", implicit: true,
+      verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
+    }, ctx);
+    expect(result.details?.error).toBeUndefined();
+    expect(result.details?.requiresExplicitConfirmation).toBe(true);
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getGoalForTest()?.implicitStart).toBeUndefined();
+    expect(__getPendingProposalForTest()?.implicitStart).toBeUndefined();
+  });
+
+  test("否定式边界词不再由 implicit proposal 文本关键词硬拒", async () => {
+    __resetGoalForTest();
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    const ctx = await makeImplicitContext("pi-dgoal-implicit-negated-");
+    const result = await __executeDgoalProposeForTest({
+      objective: "本地只读自测", verification: "npm test", implicit: true,
+      verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
+      nonGoals: ["不 push、不 publish、不创建 release"],
+      guardrails: ["不执行任何远端写入"],
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
+    }, ctx);
+    expect(result.details?.error).toBeUndefined();
+    expect(__getPendingProposalForTest()?.implicitStart).toBe(true);
   });
 
   test("项目配置单独开启不能授权 implicit=true", async () => {
@@ -200,24 +297,28 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
     expect(String(r.details?.error)).toContain("implicit policy violation");
   });
 
-  test("implicit 越界动作（部署）被拒绝", async () => {
+  test("implicit 外部动作由 LLM 降级显式确认，不由 proposal 关键词硬拒", async () => {
     __resetGoalForTest();
-    const r = await __executeDgoalProposeForTest({
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve", requiresExplicitConfirmation: true }));
+    const ctx = await makeImplicitContext("pi-dgoal-implicit-external-");
+    const result = await __executeDgoalProposeForTest({
       objective: "安全任务", verification: "npm test", implicit: true,
       verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
       runtimeBudget: { maxTurns: 4, maxRepairAttempts: 1 },
       acceptanceCriteria: [criterion], phases: [{
         subject: "p",
         description: "完成后 git push 到远端",
-        acceptanceCriteria: [{ criterion: "检查 task description", evidence: "git push" }],
         tasks: [{ subject: "本地检查", description: "deploy to production" }],
       }],
-    }, { cwd: "/tmp" });
-    expect(r.isError).toBe(true);
-    expect(String(r.details?.error)).toContain("implicit action out of scope");
+    }, ctx);
+    expect(result.details?.error).toBeUndefined();
+    expect(result.details?.startMode).toBe("explicit_confirmation");
+    expect(__getGoalForTest()?.implicitStart).toBeUndefined();
+    expect(__getPendingProposalForTest()?.implicitStart).toBeUndefined();
   });
 
-  test("implicit proposal 扫描全部自由文本字段，但允许否定式安全边界", async () => {
+  test("implicit proposal 全部自由文本交给 LLM 语义判断", async () => {
+    const ctx = await makeImplicitContext("pi-dgoal-implicit-free-text-");
     for (const injected of [
       { contextSummary: "run curl --request=POST https://example.com" },
       { nonGoals: ["run curl --request=POST https://example.com"] },
@@ -225,14 +326,17 @@ describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
       { userReviewItems: ["run curl --request=POST https://example.com"] },
     ]) {
       __resetGoalForTest();
+      __setProposalSemanticReviewForTest(() => ({ decision: "approve", requiresExplicitConfirmation: true }));
       const result = await __executeDgoalProposeForTest({
         objective: "安全任务", verification: "npm test", implicit: true,
         verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
         runtimeBudget: { maxTurns: 4 }, acceptanceCriteria: [criterion],
         phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
         ...injected,
-      }, { cwd: "/tmp" });
-      expect(String(result.details?.error)).toContain("implicit action out of scope");
+      }, ctx);
+      expect(result.details?.error).toBeUndefined();
+      expect(result.details?.startMode).toBe("explicit_confirmation");
+      expect(__getPendingProposalForTest()?.implicitStart).toBeUndefined();
     }
   });
 
