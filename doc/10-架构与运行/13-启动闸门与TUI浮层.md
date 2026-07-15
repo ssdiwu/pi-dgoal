@@ -1,14 +1,17 @@
 # 13 - 启动闸门与 TUI 浮层
 
-> `/dgoal` 启动流程与计划浮层。决策依据见 `../决策档案/0002-启动闸门与工具回调提交计划.md`。
+> `/dgoal` 与自然语言显式启动流程、计划浮层。决策依据见 `../决策档案/0002-启动闸门与工具回调提交计划.md`、`../决策档案/0036-自然语言显式启动复用启动闸门.md`。
 
 ## 启动闸门流程
 
 ```
-/dgoal <objective>            # 路径 A：显式目标启动
-/dgoal                       # 路径 B：承接前文共识启动（v0.5.2）
+/dgoal <objective>            # 路径 A：命令显式目标启动
+/dgoal                        # 路径 B：承接前文共识启动（v0.5.2）
+“请用 dgoal 处理……”           # 路径 C：自然语言显式启动（ADR 0036）
   ↓
-主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项)
+A/B 先创建 pending goal；C 记录绑定当前真实用户 prompt 的一次性授权
+  ↓
+主代理读代码/前文 + 整理 plan(用 dgoal_propose 提交 goal + phases + 冻结验收条件 + 可选用户复核项；C 在 execute 时创建 pending goal)
   ↓
 dgoal_propose execute：结构校验 → 当前会话 LLM 计划语义预审（流式，60s idle timeout，可配置）→（通过或带完整精确迁移映射的改写后）写入 pendingProposal；再触发确认 UI
   ↓
@@ -28,6 +31,14 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 - **路由**：裸 `/dgoal`（空 args）从原来的 `status` 改为 `start`；看状态统一用显式 `/dgoal s`。
 - **承接方式**：命令层只发“承接前文启动”的信号；启动前不再运行独立 `summarizeContext`，真正的 `objective` 与可选 `contextSummary` 由主代理在 `dgoal_propose` 里归纳并提交。
 - **前文为空时不硬启动**：如果当前 session 没有可承接的前文共识，就提示改用 `/dgoal <objective>` 或先对齐后再裸 `/dgoal`。
+
+### 自然语言显式启动（路径 C，ADR 0036）
+
+- **目的**：用户已经明确说“使用/启动 dgoal”时，不再要求重复输入 `/dgoal`。
+- **授权来源**：只接受 Pi `input` 的真实用户来源 `interactive` / `rpc`；`extension` 注入、仅讨论 dgoal、能力询问和否定句不授权。原始输入命中后还会在 `before_agent_start` 对实际 prompt 再绑定，避免其它扩展处理或改写后残留授权。
+- **消费方式**：冷会话的 `dgoal_propose` 不设置 `implicit`，消费一次性授权并创建普通 pending goal，继续结构校验、语义预审和阻塞式确认 UI。
+- **能力边界**：可提交 `phased` / `unbounded` 及计划中的外部动作，因为它复用完整显式确认；这不扩大 `implicit=true` 的权限。已有 goal 时不静默替换，仍走原命令流程。
+- **生命周期**：授权只保存在 Goal Runtime 内存，消费、session 结束或 agent settled 后清除，不进入 goal 持久态。
 
 ### 为什么是启动闸门(不是纯自主)
 

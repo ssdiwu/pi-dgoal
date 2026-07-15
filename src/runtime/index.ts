@@ -1791,8 +1791,15 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
   const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
   if (review.decision === "approve") {
     // Approve keeps the original frozen contract; criteria are optional in the response to avoid fragile JSON echoing.
+    // final_only reviewer 常把“无 phase 条件”回显成 []；按 proposal 基数补齐后再比较，空数组不算偷改。
+    if (finalOnly && review.phaseAcceptanceCriteria && review.phaseAcceptanceCriteria.length > originalPhases.length) {
+      return "semantic reviewer approve response changed criteria without using rewrite";
+    }
+    const approvedPhases = finalOnly && review.phaseAcceptanceCriteria
+      ? originalPhases.map((criteria, index) => review.phaseAcceptanceCriteria?.[index] ?? criteria)
+      : review.phaseAcceptanceCriteria;
     if ((review.acceptanceCriteria && JSON.stringify(review.acceptanceCriteria) !== JSON.stringify(proposal.acceptanceCriteria))
-      || (review.phaseAcceptanceCriteria && JSON.stringify(review.phaseAcceptanceCriteria) !== JSON.stringify(originalPhases))) {
+      || (approvedPhases && JSON.stringify(approvedPhases) !== JSON.stringify(originalPhases))) {
       return "semantic reviewer approve response changed criteria without using rewrite";
     }
     return undefined;
@@ -1800,7 +1807,7 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
   if (!review.acceptanceCriteria?.length) {
     return "semantic reviewer returned incomplete rewrite acceptance criteria";
   }
-  // final_only 下 phase 仅组织进度，phase 级验收条件可选；不要求长度一致或非空。
+  // final_only 下 phase 仅组织进度，reviewer 可省略或返回较短/空数组；后续按 proposal phase 数补齐，额外层仍拒绝。
   if (!finalOnly && review.phaseAcceptanceCriteria?.length !== proposal.phases.length) {
     return "semantic reviewer returned incomplete rewrite acceptance criteria";
   }
@@ -1812,11 +1819,22 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
       proposal.acceptanceCriteria ?? [],
       ...originalPhases,
     ];
-    const reviewedPhases = review.phaseAcceptanceCriteria ?? originalPhases;
+    const suppliedReviewedPhases = review.phaseAcceptanceCriteria ?? [];
+    if (finalOnly && suppliedReviewedPhases.length > originalPhases.length) {
+      return "semantic reviewer returned extra final_only phase acceptance criteria";
+    }
+    // final_only 允许审核器省略 phase 条件或返回 []；缺失层必须保留原值并补齐到 proposal phase 数，
+    // 否则逐层 rewrite 校验会索引到 undefined（生产症状：rewrittenLayers[layer] is not iterable）。
+    const reviewedPhases = finalOnly
+      ? originalPhases.map((criteria, index) => suppliedReviewedPhases[index] ?? criteria)
+      : suppliedReviewedPhases;
     const rewrittenLayers = [
       review.acceptanceCriteria,
       ...reviewedPhases,
     ];
+    if (rewrittenLayers.length !== originalLayers.length) {
+      return "semantic reviewer returned incomplete rewrite acceptance criteria";
+    }
     const criteriaUnchanged = JSON.stringify(review.acceptanceCriteria) === JSON.stringify(proposal.acceptanceCriteria)
       && JSON.stringify(reviewedPhases) === JSON.stringify(originalPhases);
     if (criteriaUnchanged) {
@@ -2206,7 +2224,7 @@ export const dgoalProposeTool = defineTool({
   name: DGOAL_PROPOSE_TOOL_NAME,
   label: "Dgoal Propose",
   description:
-    "启动闸门：提交 /dgoal 目标的计划提案（objective + phases + 可选初始 task）。主代理读完代码、整理出「这件事怎么做」后调用。调用后用户会看到确认 UI（确认/拒绝/输入反馈）。确认后计划写入 goal 并开始执行 dgoal。",
+    "启动闸门：提交 /dgoal 目标的计划提案（objective + phases + 可选初始 task）。显式 /dgoal 已创建 pending goal 时直接提交；冷会话中若用户本轮自然语言明确要求使用/启动 dgoal，也可直接提交且无需补输 /dgoal，运行时会建立显式 pending goal。调用后用户会看到确认 UI（确认/拒绝/输入反馈），确认后计划写入 goal 并开始执行。",
   promptSnippet: "提交 /dgoal 目标的结构化计划供用户确认",
   promptGuidelines: [
     "/dgoal 启动后，先读相关代码，整理出 goal 该怎么做的计划，用本工具提交。",
@@ -2214,7 +2232,7 @@ export const dgoalProposeTool = defineTool({
     "计划要具体可执行：phase subject 是阶段性目标，不要写空泛的「调研」「实现」。",
     "每个 goal 都必须提供 LLM 可独立核验的 acceptanceCriteria（criterion + evidence）；phased 的每个 phase 也必须提供，final_only 的 phase 条件可省略；人工体验/视觉事项放入 userReviewItems，不得作为完成门。",
     "若前文已明确这个 goal 不做什么、高风险边界或成本预期，请分别写入 nonGoals / guardrails / budget；若缺失，也应让缺口在计划里显式暴露。",
-    "显式 /dgoal 启动时，提交后等用户确认；若用户反馈意见，按反馈调整后重新提交。全局授权的隐式轻量启动可设置 implicit=true 跳过阻塞式确认，但不跳过结构校验、语义预审、预算和动作护栏。",
+    "显式 /dgoal 启动时，提交后等用户确认；若用户反馈意见，按反馈调整后重新提交。用户在当前自然语言输入中明确要求使用/启动 dgoal 时，冷会话也可直接调用 dgoal_propose 且不设置 implicit，进入同样的显式 pending + 确认 UI，不要要求用户补输 /dgoal。全局授权的隐式轻量启动可设置 implicit=true 跳过阻塞式确认，但不跳过结构校验、语义预审、预算和动作护栏。",
   ],
   parameters: Type.Object({
     objective: Type.String({ description: "goal 的简述（一句话，用户确认的方向）" }),
@@ -2321,6 +2339,21 @@ export const dgoalProposeTool = defineTool({
       }
       // Project config is deliberately ignored for this permission.
       goal = { ...createGoal(String((params as Record<string, unknown>).objective ?? "").trim()), implicitStart: true };
+      goalRuntimeState.naturalLanguageStartAuthorized = false;
+      goalRuntimeState.currentGoal = goal;
+      persistGoal(goal);
+    }
+    if (!goal && !requestedImplicit && goalRuntimeState.naturalLanguageStartAuthorized) {
+      // 用户本轮自然语言已明确要求 dgoal：等价于打开显式启动闸门，但仍须 semantic preflight + 确认 UI。
+      goalRuntimeState.naturalLanguageStartAuthorized = false;
+      goalRuntimeState.pendingProposal = undefined;
+      goalRuntimeState.proposalRetryCount = 0;
+      goalRuntimeState.consecutiveErrors = 0;
+      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      goalRuntimeState.turnHadToolExecution = false;
+      clearContinuation();
+      resetAuditorWorkspaceTracker();
+      goal = createGoal(String((params as Record<string, unknown>).objective ?? "").trim());
       goalRuntimeState.currentGoal = goal;
       persistGoal(goal);
     }
@@ -6119,6 +6152,7 @@ export function __getRuntimeStateForTest() {
   return {
     proposalRetryCount: goalRuntimeState.proposalRetryCount,
     startGoalInProgress: goalRuntimeState.startGoalInProgress,
+    naturalLanguageStartAuthorized: goalRuntimeState.naturalLanguageStartAuthorized,
     consecutiveErrors: goalRuntimeState.consecutiveErrors,
     consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
     turnHadToolExecution: goalRuntimeState.turnHadToolExecution,

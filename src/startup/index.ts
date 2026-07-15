@@ -45,8 +45,27 @@ import {
 import { goalRuntimeState } from "../goal-runtime/state.ts";
 
 
+export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
+  return text.split(/[。！？；;，,\r\n]+/).some((clause) => {
+    const trimmed = clause.trim();
+    const negated = /(?:不要|别|禁止|无需|不用|不准|没有授权|do\s+not|don't|never|must\s+not|without)\s*(?:(?:现在|再|继续|立即|你|在本轮|currently|now|ever)\s*)*(?:用|使用|启动|开启|运行|执行|start|use|run|launch)?\s*\/?dgoal\b/i.test(trimmed);
+    if (!trimmed || negated) return false;
+    const chineseDirective = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|我授权你|我同意你|帮我)\s*(?:用|使用|启动|开启|进入|运行|执行)(?:一下|下)?\s*\/?dgoal\b/i.test(trimmed);
+    const delegatedDirective = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|我授权你|我同意你|帮我)\s*(?:让|交给)\s*\/?dgoal\s*(?:来)?(?:处理|完成|执行|解决|做)/i.test(trimmed);
+    const taskQuestion = /(?:你能|能不能|能否)\s*(?:用|使用|启动|运行)?\s*\/?dgoal\b[^。！？]{0,12}(?:处理|完成|修复|解决|执行|做)/i.test(trimmed);
+    const startAroundDgoal = /(?:^|请|麻烦|直接|现在|接下来|继续|你可以|可以|帮我)\s*(?:开始|启动|开启).{0,16}\/?dgoal\b/i.test(trimmed);
+    const englishDirective = /(?:^|\b(?:please|now|you\s+(?:may|can)|go\s+ahead\s+and|i\s+authorize\s+you\s+to)\s+)(?:use|start|launch|run|activate|enter)\s+\/?dgoal\b/i.test(trimmed);
+    const englishTaskQuestion = /\b(?:can|could|would)\s+you\s+(?:please\s+)?(?:use|start|run)\s+\/?dgoal\b(?=\s+(?:to|for)\b)/i.test(trimmed);
+    return chineseDirective || delegatedDirective || taskQuestion || startAroundDgoal || englishDirective || englishTaskQuestion;
+  });
+}
+
+export function buildNaturalLanguageStartGuidance(): string {
+  return "<dgoal_natural_language_start>\n用户在本轮自然语言中明确要求使用或启动 dgoal。冷会话下可直接调用 dgoal_propose，不设置 implicit；运行时会创建 pending 显式目标，并保留语义预审与用户确认 UI。该路径可提交 phased / unbounded 或包含外部动作的计划，不要求用户补输 /dgoal。若任务同时满足全局隐式轻量边界，仍可选择 implicit=true。\n</dgoal_natural_language_start>";
+}
+
 export function buildImplicitStartGuidance(): string {
-  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。没有明确用户目标时不要自行启动，否则要求用户显式使用 /dgoal。\n</dgoal_implicit_start>";
+  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。若用户已自然语言明确要求 dgoal、但任务不满足隐式边界，应调用 dgoal_propose 且不设置 implicit，进入显式 pending 确认路径；不要再要求用户补输 /dgoal。没有明确用户目标时不要自行启动。\n</dgoal_implicit_start>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {
@@ -64,6 +83,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("session_start", (event, ctx) => {
+    goalRuntimeState.naturalLanguageStartAuthorized = false;
     if (event.reason === "reload") clearAuditorModelRegistryCache();
     resyncGoalFromSession(ctx);
   });
@@ -72,6 +92,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   // 只发 session_tree 通知。不重同步会导致 goalRuntimeState.currentGoal 停在旧分支、overlay 显示陈旧状态
   // （阶段明明完成了还显示未完成，计时器也冻住）。与 session_start 复用同一套重同步。
   pi.on("session_tree", (_event, ctx) => {
+    goalRuntimeState.naturalLanguageStartAuthorized = false;
     resyncGoalFromSession(ctx);
   });
 
@@ -81,6 +102,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
+    goalRuntimeState.naturalLanguageStartAuthorized = false;
     if (goalRuntimeState.currentGoal) persistGoal(goalRuntimeState.currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
@@ -90,12 +112,21 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("input", (event) => {
-    if (event.source !== "extension") return;
-    if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
+    if (event.source === "extension") {
+      if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
+      return;
+    }
+    goalRuntimeState.naturalLanguageStartAuthorized = !goalRuntimeState.currentGoal
+      && isNaturalLanguageDgoalStartRequest(event.text);
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
+    // input 只做原始输入预授权；在真正 agent prompt 上再次绑定，避免被其它扩展 handled/transform 后留下陈旧授权。
+    if (!goalRuntimeState.currentGoal && goalRuntimeState.naturalLanguageStartAuthorized
+      && !isNaturalLanguageDgoalStartRequest(event.prompt)) {
+      goalRuntimeState.naturalLanguageStartAuthorized = false;
+    }
     // 新 agent turn 重置本轮工具调用标记。
     goalRuntimeState.turnHadToolExecution = false;
     // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
@@ -108,12 +139,19 @@ export function registerDgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // 冷启动时把全局隐式授权告知主模型；校验、语义预审和运行时护栏仍由 dgoal_propose/工具钩子执行。
+    // 冷启动时分别注入本轮自然语言显式授权与全局隐式授权；二者都仍经过 dgoal_propose 的结构/语义校验。
+    const guidance: string[] = [];
+    if (goalRuntimeState.naturalLanguageStartAuthorized) guidance.push(buildNaturalLanguageStartGuidance());
     const loaded = await loadDgoalConfig(ctx).catch(() => undefined);
-    if (!loaded?.globalConfig.implicitFinalOnlyStart) return;
+    if (loaded?.globalConfig.implicitFinalOnlyStart) guidance.push(buildImplicitStartGuidance());
+    if (!guidance.length) return;
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${buildImplicitStartGuidance()}`,
+      systemPrompt: `${event.systemPrompt}\n\n${guidance.join("\n\n")}`,
     };
+  });
+
+  pi.on("agent_settled", () => {
+    if (!goalRuntimeState.currentGoal) goalRuntimeState.naturalLanguageStartAuthorized = false;
   });
 
   pi.on("tool_call", (event, ctx) => {

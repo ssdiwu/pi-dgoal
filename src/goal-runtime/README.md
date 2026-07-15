@@ -1,6 +1,6 @@
 # src/goal-runtime — Goal Runtime（可变会话状态）
 
-Goal Runtime 独占当前 goal、pending proposal、续跑状态、计数器、终审反馈与修复账本等可变 session 状态（ADR 0025）。其他模块只通过 `goalRuntimeState` 单例对象读写状态。
+Goal Runtime 独占当前 goal、pending proposal、续跑状态、计数器、自然语言显式启动的一次性授权、终审反馈与修复账本等可变 session 状态（ADR 0025）。其他模块只通过 `goalRuntimeState` 单例对象读写状态。
 
 ## 文件
 

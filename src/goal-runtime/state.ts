@@ -22,6 +22,8 @@ export interface GoalRuntimeState {
   pendingProposal: PendingProposalState | undefined;
   proposalRetryCount: number;
   startGoalInProgress: boolean;
+  /** One-shot authorization from the latest real user input that explicitly asks to use/start dgoal. */
+  naturalLanguageStartAuthorized: boolean;
   consecutiveErrors: number;
   consecutiveNoProgressTurns: number;
   turnHadToolExecution: boolean;
@@ -38,6 +40,7 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     pendingProposal: undefined,
     proposalRetryCount: 0,
     startGoalInProgress: false,
+    naturalLanguageStartAuthorized: false,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
     turnHadToolExecution: false,

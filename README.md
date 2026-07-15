@@ -4,7 +4,9 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **Unreleased**: globally authorized implicit goals may run local tests, builds, scripts, project-file changes, and local Git mutations. A pre-execution `tool_call` policy gate blocks recognized destructive workspace / `.git` commands, Git remote writes, publishing, deployment, external writes, permission changes, and paid actions. This is best-effort policy enforcement, not an OS sandbox; allowed scripts may contain hidden side effects. See ADR 0035.
+> **Unreleased**: an explicit natural-language request such as “use dgoal for this” can now open the normal pending startup gate from a cold session; the agent no longer asks for a redundant `/dgoal`. This path retains semantic preflight and the blocking confirmation UI, and supports full policy/budget choices and proposed external actions. See ADR 0036.
+>
+> Globally authorized implicit goals may run local tests, builds, scripts, project-file changes, and local Git mutations. A pre-execution `tool_call` policy gate blocks recognized destructive workspace / `.git` commands, Git remote writes, publishing, deployment, external writes, permission changes, and paid actions. This is best-effort policy enforcement, not an OS sandbox; allowed scripts may contain hidden side effects. See ADR 0035.
 >
 > **v0.7.0**: adds selectable `final_only` / `phased` acceptance policies, bounded/unbounded runtime budgets, proposal-owned context, and globally authorized bounded implicit starts with fail-closed local/readonly action guards. See `CHANGELOG.md` for details.
 >
@@ -40,6 +42,8 @@ Start a goal with a Task Plan:
 ```
 
 Or, after you've already aligned the goal in the current conversation, use bare `/dgoal` to carry that prior discussion into the startup gate. If there is no prior discussion to carry, dgoal does not hard-start; it asks for an explicit objective instead. Use explicit `/dgoal s` (not bare `/dgoal`) to view status.
+
+You may also state the intent naturally—for example, “use dgoal and dteam to handle this.” From a cold session, that one-shot explicit authorization lets `dgoal_propose` create the normal pending goal without asking you to type `/dgoal` again. Mere discussion, capability questions, negation, and extension-injected messages do not authorize a start. Existing goals are not silently replaced.
 
 The startup gate runs structure validation, then a semantic preflight with the current session model, before writing `pendingProposal`. The preflight streams the model response with a 60s idle timeout (configurable via `proposalSemanticReviewIdleTimeoutSeconds` in `pi-dgoal.json`); any stream event resets the timer, so a slow but active response is not killed. Manual or subjective completion conditions are rejected or rewritten into `userReviewItems`. The preflight outcome distinguishes `approved` / `rewritten` / `rejected` (semantic, `isError:false`, with fixable reasons) from `technical_error` (auth, idle timeout, network, non-terminal, JSON parse; `isError:true`, not a plan-content issue). For an explicit start, the dialog shows a phase-level summary by default (goal + verification + acceptanceCriteria + policy/budget recommendations + userReviewItems + readiness + boundary gaps/signals + phases + task counts). The user may approve, reject, or give feedback before execution; `final_only` may omit phase-level acceptance criteria. When globally authorized, implicit lightweight starts skip this blocking plan confirmation but retain proposal validation, semantic preflight, and final audit.
 
@@ -77,7 +81,7 @@ The agent calls `dgoal_done(summary, verification, whatChanged?, userReview?, ve
 ## Design Boundaries
 
 - Session-scoped: one active goal per Pi session. No global goal pool.
-- Task Plan is mandatory: using `/dgoal` implies a compound goal that requires a plan. No empty-plan completion.
+- Task Plan is mandatory: starting dgoal by command or explicit natural language implies a compound goal that requires a plan. No empty-plan completion.
 - Goal direction and goal/phase acceptance criteria are frozen at gate confirmation; during execution only phase/task progress, task decomposition, and evidence are adjustable. Acceptance criteria have no runtime update path.
 - Completed tasks don't roll back. A wrong step gets a follow-up task (`blockedBy` → original).
 - Independent audit: the verifier is a separate `pi` subprocess with fresh context, no main-session history, no skills/extensions, and only limited verification tools (`read`, `grep`, `find`, `ls`, `bash`). Completion is not self-reported.

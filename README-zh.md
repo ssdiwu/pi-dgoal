@@ -4,7 +4,9 @@
 
 让 agent 围绕一个目标持续工作，直到独立审核员确认完成——通过 Task Plan 和建检循环。
 
-> **Unreleased**：全局授权的隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更；`tool_call` 执行前策略门会阻止已识别的工作仓库 / `.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令。它是 best-effort 策略检查而非 OS sandbox，获准脚本内部仍可能隐藏副作用。详见 ADR 0035。
+> **Unreleased**：用户在自然语言中明确说“使用/启动 dgoal”后，冷会话可直接进入普通 pending 启动闸门，不再重复要求输入 `/dgoal`；该路径保留语义预审与阻塞式确认 UI，并支持完整验收/预算策略及计划中的外部动作。详见 ADR 0036。
+>
+> 全局授权的隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更；`tool_call` 执行前策略门会阻止已识别的工作仓库 / `.git` 破坏、Git 远端写入、发布部署、外部写入、权限与付费命令。它是 best-effort 策略检查而非 OS sandbox，获准脚本内部仍可能隐藏副作用。详见 ADR 0035。
 >
 > **v0.7.0**：新增可选 `final_only` / `phased` 验收策略、有界/无上限运行预算、proposal 主导背景固化，以及带 fail-closed 本地/只读动作护栏的全局授权隐式轻量启动。详见 `CHANGELOG.md`。
 >
@@ -37,6 +39,8 @@ pi install npm:pi-dgoal
 
 如果前文里已经把目标对齐清楚，也可以直接用裸 `/dgoal` 承接前文共识进入启动闸门；如果当前没有可承接的前文，dgoal 不会硬启动，而是提示改用 `/dgoal <objective>`。看状态统一用显式 `/dgoal s`，不再复用裸 `/dgoal`。
 
+也可以直接自然语言说“用 dgoal 和 dteam 自己处理掉”。冷会话会把这条真实用户指令记为一次性显式授权，允许 `dgoal_propose` 建立普通 pending goal，不再要求补输 `/dgoal`。仅讨论 dgoal、能力询问、否定句与 extension 注入不会授权；已有 goal 也不会被静默替换。
+
 启动闸门先做结构校验，再用当前会话模型做计划级语义预审，之后才写入 `pendingProposal`。预审以流式接收模型响应，默认 60s idle timeout（可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置）；收到任意流事件即重置计时器，慢但活跃的响应不会被误杀。人工或主观完成条件会被拒绝或改写到 `userReviewItems`。预审终态区分 `approved` / `rewritten` / `rejected`（语义打回，`isError:false`，带可修正原因）与 `technical_error`（认证、空闲超时、网络、非终止、JSON 解析等基础设施失败，`isError:true`，不是计划内容问题）。显式启动的预审通过后，对话框默认展示阶段级摘要（goal + verification + 验收/预算策略推荐 + acceptanceCriteria + userReviewItems + readiness + 边界信号/缺口提示 + phases + task 数量），需要时可点入口查看 task 明细；确认 / 拒绝 / 反馈后再开始执行 dgoal。`final_only` 可省略 phase 级验收条件；全局授权的隐式轻量启动跳过阻塞式计划确认，但仍经过 proposal 校验、语义预审与终审。
 
 dgoal 执行中：
@@ -64,7 +68,7 @@ agent 调 `dgoal_done(summary, verification, whatChanged?, userReview?, verifica
 
 | 工具 | 用途 |
 |---|---|
-| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks + 冻结 goal `acceptanceCriteria`（仅 `phased` 要求 phase 条件）+ 验收/预算策略推荐 + 可选背景/用户复核项；显式启动用户确认，全局授权隐式启动可自动确认 |
+| `dgoal_propose` | 启动闸门：提交 goal + phases + 初始 tasks + 冻结 goal `acceptanceCriteria`（仅 `phased` 要求 phase 条件）+ 验收/预算策略推荐 + 可选背景/用户复核项；显式命令或自然语言显式启动需用户确认，全局授权隐式启动可自动确认 |
 | `dgoal_plan` | task 的 CRUD（create / update / list / get），四态状态机，`blockedBy` 依赖追踪 + 环检测 |
 | `dgoal_check` | `phased` 的 phase 完成门（spawn 独立验收子进程，fresh 上下文 + 受限核验工具）；`final_only` 明确不调用该工具 |
 | `dgoal_done` | 按策略完成所有 phase 后声明 goal 完成：`phased` 使用 `dgoal_check`，`final_only` 使用 `complete_progress`；随后进行 goal 级终审，且 `final_only` 必须携带 `verificationBundle`，是关闭 goal 的唯一方式 |
@@ -73,7 +77,7 @@ agent 调 `dgoal_done(summary, verification, whatChanged?, userReview?, verifica
 ## 设计边界
 
 - 会话内单 goal，不做多目标池
-- Task Plan 必选：`/dgoal` 即复合目标，不允许空 plan 完成
+- Task Plan 必选：通过命令或自然语言显式启动 dgoal 即进入复合目标，不允许空 plan 完成
 - Goal 方向与 goal/phase 的 `acceptanceCriteria` 在确认后冻结；dgoal 执行中只可调整 phase/task 的执行进度、task 分解和 evidence，不提供验收条件更新入口
 - done task 不回退：做错了新建接续 task（`blockedBy` 指向原 task）
 - 独立审核：审核员是独立 `pi` 子进程，fresh 上下文、无主会话历史、禁 skills/extensions，只带受限核验工具（`read`、`grep`、`find`、`ls`、`bash`），完成不自证

@@ -1,14 +1,14 @@
-// 隐式启动权限硬校验（ADR 0034/0035）：默认拒绝、越界策略拒绝、冷会话要求与本地执行边界。
+// 启动授权硬校验（ADR 0034/0035/0036）：隐式边界 + 自然语言显式一次性授权。
 import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { __executeDgoalProposeForTest, __getPendingProposalForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, dgoalProposeTool, validateImplicitToolAction, type GoalState } from "../index.ts";
-import { buildImplicitStartGuidance } from "../src/startup/index.ts";
+import { __executeDgoalProposeForTest, __getGoalForTest, __getPendingProposalForTest, __getRuntimeStateForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, __setRuntimeStateForTest, dgoalProposeTool, validateImplicitToolAction, type GoalState } from "../index.ts";
+import { buildImplicitStartGuidance, buildNaturalLanguageStartGuidance, isNaturalLanguageDgoalStartRequest } from "../src/startup/index.ts";
 
 const criterion = { criterion: "测试退出码 0", evidence: "npm test" };
 
-describe("v0.7.0 · 隐式轻量启动权限", () => {
+describe("启动授权 · 隐式轻量与自然语言显式路径", () => {
   test("冷启动提示明确隐式入口与安全策略", () => {
     const guidance = buildImplicitStartGuidance();
     expect(guidance).toContain("implicit=true");
@@ -17,7 +17,55 @@ describe("v0.7.0 · 隐式轻量启动权限", () => {
     expect(guidance).toContain("本地测试、构建、脚本");
     expect(guidance).toContain("破坏整个工作仓库或 .git");
     expect(guidance).toContain("没有明确用户目标时不要自行启动");
-    expect(guidance).toContain("显式使用 /dgoal");
+    expect(guidance).toContain("不要再要求用户补输 /dgoal");
+  });
+
+  test("自然语言显式启动只识别明确指令，不把讨论或否定句当授权", () => {
+    for (const text of [
+      "请用 dgoal 完成这个任务",
+      "你可以用dgoal和dteam自己处理掉",
+      "启动 /dgoal",
+      "麻烦用一下 dgoal 完成这个任务",
+      "交给 dgoal 来处理",
+      "你能用 dgoal 修复这个问题吗？",
+      "我重载你了，你是否可以开始自己测试dgoal呢？",
+      "please use dgoal for this task",
+      "could you use dgoal to fix this?",
+    ]) expect(isNaturalLanguageDgoalStartRequest(text)).toBe(true);
+    for (const text of [
+      "dgoal 是什么？",
+      "为什么 dgoal 没启动？",
+      "不要用 dgoal",
+      "禁止现在使用 dgoal",
+      "do not currently use dgoal",
+      "你能用 dgoal 吗？",
+      "could you use dgoal?",
+      "请完善 dgoal 产品缺口",
+    ]) expect(isNaturalLanguageDgoalStartRequest(text)).toBe(false);
+    expect(buildNaturalLanguageStartGuidance()).toContain("不设置 implicit");
+    expect(buildNaturalLanguageStartGuidance()).toContain("不要求用户补输 /dgoal");
+  });
+
+  test("自然语言显式授权可从冷会话提交 phased 外部动作计划", async () => {
+    __resetGoalForTest();
+    __setRuntimeStateForTest({ naturalLanguageStartAuthorized: true, proposalRetryCount: 2, consecutiveErrors: 2, consecutiveNoProgressTurns: 2 });
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    const result = await __executeDgoalProposeForTest({
+      objective: "创建 issue、修复并推送 PR", verification: "测试通过并查询远端状态",
+      verificationPolicyRecommendation: "phased", budgetPolicyRecommendation: "bounded",
+      runtimeBudget: { maxTurns: 20 }, acceptanceCriteria: [criterion],
+      phases: [{ subject: "交付修复", acceptanceCriteria: [criterion], tasks: [{ subject: "创建 issue 并实现" }] }],
+    }, { cwd: "/tmp" });
+    expect(result.details?.error).toBeUndefined();
+    expect(__getGoalForTest()?.status).toBe("pending");
+    expect(__getGoalForTest()?.implicitStart).toBeUndefined();
+    expect(__getPendingProposalForTest()?.proposal.verificationPolicyRecommendation).toBe("phased");
+    expect(__getPendingProposalForTest()?.implicitStart).toBeUndefined();
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+    expect(__getRuntimeStateForTest().proposalRetryCount).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveErrors).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    __setProposalSemanticReviewForTest(undefined);
   });
 
   test("dgoal_propose implicit 描述明确不要求显式 /dgoal", () => {
