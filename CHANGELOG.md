@@ -7,13 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-- **运行预算按真实 agent 执行回合计数**：`toolUse`、`length` 和正常 `stop` 结束的 active goal 回合均计入 `budgetUsage.turns`，不再只统计 `stop`，默认隐式启动预算调整为基础 24 turns、60 分钟和 1 次终审修复，turn 宽限再给 24 turns。
-
-### Fixed
-
-- **会话压缩后恢复 dgoal goal**：监听 `session_compact`，并为 `dgoal_plan` / `dgoal_check` / `dgoal_done` 增加持久化 goal 惰性恢复；重同步区分 stale session replacement 与真实读取错误，避免压缩或切 session 后误报没有目标。
-- **收紧隐式启动动作边界**：禁止隐式 shell/test 执行，统一校验本地路径型工具、Git 选项和多链接文件，避免项目外读写与任意脚本副作用。
-
 ## [0.7.0] - 2026-07-15
 
 ### Added
@@ -24,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **运行预算按真实 agent 执行回合计数**：`toolUse`、`length` 和正常 `stop` 结束的 active goal 回合均计入 `budgetUsage.turns`，不再只统计 `stop`，默认隐式启动预算调整为基础 24 turns、60 分钟和 1 次终审修复，turn 宽限再给 24 turns。
+- **会话压缩后恢复 dgoal goal**：监听 `session_compact`，并为 `dgoal_plan` / `dgoal_check` / `dgoal_done` 增加持久化 goal 惰性恢复；重同步区分 stale session replacement 与真实读取错误，避免压缩或切 session 后误报没有目标。
+- **收紧隐式启动动作边界**：禁止隐式 shell/test 执行，统一校验本地路径型工具、Git 选项和多链接文件，避免项目外读写与任意脚本副作用。
+- **隐式轻量启动提示对齐**：冷启动会把全局授权的隐式入口告知模型，`dgoal_propose` 的 `implicit` 描述明确不要求显式 `/dgoal`，但仍限 `final_only + bounded` 且必须是用户明确提出的安全任务。
 - **审核共享预算耗尽后不再伪启动 1ms 候选**：首个审核候选耗尽 phase/goal 的共享总预算后，不再启动下一候选并把剩余时间压成 1ms；保留真实的总时长超时原因，避免误导为新的瞬时超时。审核超时文案也不再泄漏内部毫秒，统一显示为秒。
 
 ## [0.6.4] - 2026-07-14
