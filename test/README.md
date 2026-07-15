@@ -24,6 +24,7 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `plan-status-pure.test.ts` | v0.4.2 `/dgoal s` modal 的纯函数测试：`buildBodyLines*`、`buildHeadingLine`、`colorize`、`computeScrollOffset`。 |
 | `plan-status-dialog.test.ts` | v0.4.2 `/dgoal s` modal 的 `PlanStatusDialog` 组件测试：render、heading 钉顶、scroll、ESC 关闭、缓存与 Focusable/Component 契约。 |
 | `show-status.test.ts` | v0.4.2 `/dgoal s` 入口回归：`showStatus` 的空 dgoal modal、非 TUI 兜底、overlay 参数、同步 throw / async reject 错误边界，以及浮层缺失/首次 `setWidget` 异常后的幂等重绘。 |
+| `session-tree-resync.test.ts` | session 分支/压缩恢复：pending/active/rejected goal 重同步、stale session replacement 保护，以及 `dgoal_plan` / `dgoal_check` / `dgoal_done` 的惰性恢复。 |
 | `startup-gate.test.ts` | 启动闸门结构与语义边界：`validateProposalInput`、当前会话 LLM 语义预审的拒绝/改写/fail-closed、旧 proposal 清理、冻结 `acceptanceCriteria` / `userReviewItems`、`buildProposePrompt`、确认 UI 摘要/明细切换。预审流式 idle timeout（持续事件续命、无事件超时）、技术失败（`isError:true`）与语义打回（`isError:false`）分离、`onUpdate` 活性输出。 |
 | `startgoal-abort.test.ts` | 启动中断与语义预审中断：`ctx.abort`、启动闸门投递去重，以及预审中断后 goal 保持 pending、没有 active proposal。 |
 | `check-event-classify.test.ts` | 切片4/5：建检活性纯函数—— `classifyCheckEvent` 识别 thinking/toolcall/text/message 与 Pi `tool_execution_*`；模型 idle 180s、工具执行 idle 1800s；`isAuditorError` 三态判定、`runCheckWithRetry` 候选单次切换（approved/rejected 不切换、共享预算耗尽不启动下一候选、候选耗尽 `auditor_error`）、`formatCheckLivenessLine`/`formatAuditTotalTimeout`/`summarizeCheckProgress` 中英文 i18n。 |
@@ -36,12 +37,15 @@ npm test               # bun test（全量，跑所有 *.test.ts）
 | `e2e-integration.test.ts` | 端到端集成（不 spawn 子进程，绕过 AUDITOR）：完整生命周期 startGoal→propose→confirm→plan→phase completed→done，`finalizeGoal` UI 边界容错，phase 建检 approved/rejected 真实分支 UI 抛错仍先持久化状态/反馈/复核项，blockedBy DAG。 |
 | `soft-forgetting-e2e-smoke.test.ts` | ADR 0010 软遗忘端到端 smoke：走完整真实状态机路径（`proposalToPlan`→`applyPlanMutation`→`setPhaseCompleted`→`buildPlanContextBlock`），验证 phase done 后注入里只剩标题行、当前 phase 内 done task 仍注入。 |
 | `command-aliases.test.ts` | `/dgoal` 子命令解析：全拼 / 单字母 `s/p/r/c`，以及移除 `stop` 别名后的行为。 |
-| `context-input-cap.test.ts` | 启动背景固化与验收 prompt 逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、冻结验收契约注入与 XML escape、审核范围不扩容回归（phase/goal prompt + system prompt 禁止从 AGENTS/README/人工体验扩容完成门）、用户复核提取与 `buildContextSummarizerTask`。纯逻辑测试，不依赖 Pi。 |
+| `context-input-cap.test.ts` | 启动背景输入边界与验收 prompt 逻辑：`capPriorDiscussionText`、`buildContextBlock`、`buildContextPreview`、`buildStartPrompt`、冻结验收契约注入与 XML escape、审核范围不扩容回归（phase/goal prompt + system prompt 禁止从 AGENTS/README/人工体验扩容完成门）、用户复核提取。纯逻辑测试，不依赖 Pi。 |
 | `subprocess-supervision.test.ts` | 用真实 `child_process`（子进程）树复现“父进程退出但孙进程继承 pipe 导致 `close` 挂住”的场景，验证 dgoal 的 detached process group（独立进程组）终止逻辑能整体收尸。 |
 | `paused-state-diagnostics.test.ts` | paused/missing/active 状态下工具的可读与可写边界：paused 下 list/get 只读、create/update/check/done 返回结构化 paused 结果与 resume 指引，不误报 noGoal；pauseReason 区分 user_abort/model_error；pending goal 不可完成（启动闸门保护）。 |
 | `no-progress-stall.test.ts` | 无进展续跑熔断纯函数 `decideNoProgressPause`：有工具调用清零、无工具累计、达 3 轮暂停、`MAX_NO_PROGRESS_TURNS=3`。 |
 | `no-progress-agent-end.test.ts` | 无进展续跑真实事件链集成：mock Pi 捕获 dgoal() 注册的 before_agent_start → tool_execution_start → agent_end 回调，验证连续 3 轮无工具调用暂停（pauseReason=no_progress）、工具调用重置计数、user_abort/model_error 语义不回归。 |
 | `agent-pause-tool.test.ts` | `dgoal_pause` 主动暂停出口：active/rejected 状态立即进入 `paused(agent_blocked)`，reason 非空/有界，paused 结果可读，resume 清理 detail，UI 抛错仍先持久化，工具真实注册可见。 |
+| `budget-policy-stall.test.ts` | v0.7.0 预算策略：bounded/unbounded、宽限判定与状态栏宽限标记。 |
+| `final-only-phase-progress.test.ts` / `final-only-proposal-path.test.ts` | v0.7.0 `final_only`：阶段进度划线、拒绝 `dgoal_check`、真实 proposal 预审路径。 |
+| `implicit-start-authorization.test.ts` | v0.7.0 隐式轻量启动：全局授权、项目越权拒绝、策略/预算边界、proposal 文本与运行时动作护栏。 |
 | `phase-id-diagnostics.test.ts` | 新 plan phase ID 连续（proposalToPlan 预分配 1..N）、旧 plan（非连续 #1/#4/#8）兼容加载、phase 找不到时返回完整阶段列表（序号+真实 ID+标题，当前高亮）。 |
 | `auditor-quota-fallback.test.ts` | 审核器配额文本错误（usage limit/quota exceeded/rate limit）触发候选回退（fallback），业务 REJECTED 不回退；未知非配额错误也只尝试当前候选一次后切换；`hasQuotaErrorHint` 排除 context length exceeded / billing address / credit card 等误报。 |
 | `test-extension-rpc.py` | 用隔离配置目录 + `pi -e` 临时加载本包，通过 RPC 验证扩展真实加载、`/dgoal` 命令注册。覆盖命令注册断言。 |

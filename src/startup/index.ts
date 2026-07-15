@@ -28,6 +28,8 @@ import {
   persistGoal,
   sendContinuation,
   decideNoProgressPause,
+  decideBudgetPause,
+  validateImplicitToolAction,
   buildNoProgressDetail,
   setupI18n,
   setApi,
@@ -68,6 +70,11 @@ export function registerDgoal(pi: ExtensionAPI) {
     resyncGoalFromSession(ctx);
   });
 
+  // 会话压缩完成后主会话上下文可能重建，但 dgoal 状态仍在 custom entry；复用统一恢复路径。
+  pi.on("session_compact", (_event, ctx) => {
+    resyncGoalFromSession(ctx);
+  });
+
   pi.on("session_shutdown", (_event, ctx) => {
     if (goalRuntimeState.currentGoal) persistGoal(goalRuntimeState.currentGoal);
     clearContinuation();
@@ -96,6 +103,25 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("tool_execution_start", (event, ctx) => {
     trackFileToolExecutionStart(event.toolCallId, event.toolName, event.args, ctx.cwd);
+    // 隐式轻量启动拥有的是运行时动作许可，不只是 proposal 文本许可；越界工具一旦开始即安全暂停，且不再自动续跑。
+    const goal = goalRuntimeState.currentGoal;
+    if (goal?.implicitStart && isGoalRunning(goal.status)) {
+      const violation = validateImplicitToolAction(event.toolName, event.args, ctx.cwd);
+      if (violation) {
+        // 事件到达时 Pi 可能刚开始执行工具；立即中断当前 turn，并把暂停状态先落盘。
+        ctx.abort?.();
+        goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), {
+          pauseReason: "agent_blocked",
+          pauseReasonDetail: violation,
+        });
+        persistGoal(goalRuntimeState.currentGoal);
+        clearContinuation();
+        safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+        safeUpdatePlanOverlay();
+        safeNotify(ctx, `Implicit dgoal paused: ${violation}. Use explicit /dgoal to authorize this action.`, "warning");
+        return;
+      }
+    }
     // 本轮有工具调用，说明有实际推进，不计入空转。
     goalRuntimeState.turnHadToolExecution = true;
   });
@@ -107,6 +133,44 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (event.toolName !== DGOAL_PLAN_TOOL_NAME && event.toolName !== DGOAL_CHECK_TOOL_NAME) return;
     safeUpdatePlanOverlay();
   });
+
+  function consumeRuntimeBudget(ctx: DgoalContext): boolean {
+    const goal = goalRuntimeState.currentGoal;
+    if (!goal) return false;
+    const turnUsage = (goal.budgetUsage?.turns ?? 0) + 1;
+    goalRuntimeState.currentGoal = {
+      ...goal,
+      budgetUsage: { turns: turnUsage, repairAttempts: goal.budgetUsage?.repairAttempts ?? 0 },
+    };
+    const turnBase = goal.budgetPolicy === "bounded" ? goal.runtimeBudget?.maxTurns : undefined;
+    if (!goalRuntimeState.currentGoal.budgetInGrace && turnBase !== undefined && turnUsage >= turnBase) {
+      goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, budgetInGrace: true, budgetGraceUsed: true };
+      persistGoal(goalRuntimeState.currentGoal);
+      safeNotify(ctx, "Bounded turn budget reached; entering one preauthorized grace window.", "warning");
+    }
+    const wallLimit = goalRuntimeState.currentGoal.budgetPolicy === "bounded" ? goalRuntimeState.currentGoal.runtimeBudget?.maxWallClockMinutes : undefined;
+    const activeElapsedMs = Math.max(0, Date.now() - (goalRuntimeState.currentGoal.startedAt || Date.now()) - (goalRuntimeState.currentGoal.pausedTotalMs ?? 0));
+    const wallBaseReached = wallLimit !== undefined && activeElapsedMs >= wallLimit * 60_000;
+    if (!goalRuntimeState.currentGoal.budgetInGrace && wallBaseReached) {
+      goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, budgetInGrace: true, budgetGraceUsed: true };
+      persistGoal(goalRuntimeState.currentGoal);
+      safeNotify(ctx, "Bounded wall-clock budget reached; entering one preauthorized grace window.", "warning");
+    }
+    const wallGraceMinutes = goalRuntimeState.currentGoal.runtimeBudget?.grace?.maxWallClockMinutes ?? wallLimit;
+    const wallGraceExceeded = goalRuntimeState.currentGoal.budgetInGrace && wallLimit !== undefined
+      && wallGraceMinutes !== undefined && activeElapsedMs >= (wallLimit + wallGraceMinutes) * 60_000;
+    const overTurns = decideBudgetPause(goalRuntimeState.currentGoal, "turns");
+    if (overTurns.pause || wallGraceExceeded) {
+      goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "budget_exhausted" });
+      persistGoal(goalRuntimeState.currentGoal);
+      clearContinuation();
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      safeUpdatePlanOverlay();
+      safeNotify(ctx, "Bounded budget exhausted after grace; paused.", "warning");
+      return true;
+    }
+    return false;
+  }
 
   async function handleAgentEnd(event: { messages: unknown[] }, ctx: DgoalContext) {
     // 切片4：启动闸门阶段（goal pending）——主代理应调 dgoal_propose 提交计划。
@@ -166,8 +230,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // 只有 stop 才是“正常结束”；length/toolUse/缺失原因不计入正常空转。
-    // 保留原有续跑行为，但清零 no-progress 序列，避免误触发 no_progress。
+    // length/toolUse/缺失原因保留原有续跑行为：不计入正常轮次预算，也不触发预算暂停。
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;
@@ -177,6 +240,9 @@ export function registerDgoal(pi: ExtensionAPI) {
       await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
       return;
     }
+
+    // 只有明确 stop 的正常轮次才计入运行预算。
+    if (consumeRuntimeBudget(ctx)) return;
 
     // 正常完成一轮：先判是否真正有推进。
     goalRuntimeState.consecutiveErrors = 0;

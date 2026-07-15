@@ -265,7 +265,10 @@ describe("端到端集成 · Goal 状态机完整生命周期（不 spawn）", (
     const criteria = [{ criterion: "测试通过", evidence: "bun test test/e2e-integration.test.ts" }];
     __setProposalSemanticReviewForTest(() => ({ decision: "approve", acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] }));
     await __executeDgoalProposeForTest({ objective: pendingGoal.objective, verification: criteria[0].evidence, acceptanceCriteria: criteria, phases: [{ subject: "阶段", acceptanceCriteria: criteria }] }, { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } });
-    const ctx = { ui: { select: async () => "拒绝，放弃目标", notify: () => { throw new Error("UI notify failed"); }, setStatus: () => {} }, cwd: process.cwd() } as never;
+    const ctx = { ui: { select: async () => "拒绝，放弃目标", notify: () => {
+      expect(writes.at(-1)?.data.goal).toBeNull();
+      throw new Error("UI notify failed");
+    }, setStatus: () => {} }, cwd: process.cwd() } as never;
     await expect(__handleStartupGateForTest({ sendUserMessage: async () => {} } as never, ctx, pendingGoal)).resolves.toBeUndefined();
     expect(__getGoalForTest()).toBeUndefined();
     expect(writes.at(-1)?.data.goal).toBeNull();

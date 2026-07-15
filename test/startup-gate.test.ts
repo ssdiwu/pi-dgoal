@@ -748,6 +748,28 @@ describe("切片4 · handleProposalConfirmation", () => {
     expect(optionsSeen[2][3]).toBe("展开 task");
   });
 
+  test("从 unbounded 切到 bounded 时自动补齐结构化 runtimeBudget", async () => {
+    const proposal: PlanProposal = {
+      objective: "修好 auth 测试",
+      verification: "npm test auth 全过",
+      budgetPolicyRecommendation: "unbounded",
+      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
+    };
+    const choices = ["切换预算策略", "确认，开始执行"];
+    const result = await __handleProposalConfirmationForTest({
+      cwd: process.cwd(),
+      ui: {
+        notify: () => {},
+        setStatus: () => {},
+        select: async () => choices.shift(),
+        editor: async () => undefined,
+      },
+    } as never, goal(), proposal);
+    expect(result).toBe("confirmed");
+    expect(proposal.budgetPolicyRecommendation).toBe("bounded");
+    expect(proposal.runtimeBudget).toEqual({ maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 });
+  });
+
   test("选择反馈意见时调用 editor 并返回去首尾空白后的反馈", async () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",

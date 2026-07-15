@@ -52,11 +52,17 @@ import {
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
 const DGOAL_CONFIG_FILE_NAME = "pi-dgoal.json";
 const MAX_AUDITOR_MODEL_CANDIDATES = 3;
+export const DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET: Required<Pick<RuntimeBudget, "maxTurns" | "maxWallClockMinutes" | "maxRepairAttempts">> = {
+  maxTurns: 8,
+  maxWallClockMinutes: 30,
+  maxRepairAttempts: 1,
+};
 const DGOAL_CONFIG_TEMPLATE = `${JSON.stringify({
-  $comment: "Set each list in fallback order to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model.",
+  $comment: "Set each list in fallback order to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model. implicitFinalOnlyStart is global-only.",
   phaseAuditorModels: null,
   goalAuditorModels: null,
-  contextSummarizerModels: null,
+  implicitFinalOnlyStart: false,
+  implicitFinalOnlyBudget: { maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 },
 }, null, 2)}\n`;
 const notifiedDgoalConfigKeys = new Set<string>();
 
@@ -65,10 +71,27 @@ type GoalStatus = "pending" | "active" | "rejected" | "paused" | "done";
 // 0.2.0 Task Plan 三层内容的状态机（见 doc/10-架构与运行/11-状态机.md）。
 // Phase/Task 共用四态：pending → in_progress → done | blocked。
 // 兼容旧持久化里的 completed；新写入统一用 done。
-// - phase 状态由其下 task 聚合（agent 不能直接标 phase done，唯一入口是 dgoal_check）。
+// - phased phase 状态由其下 task 聚合，独立完成入口是 dgoal_check；final_only 另以 progressCompleted 记录阶段进度。
 // - task：done 不回退（错了新建接续 task），blocked 可回退 in_progress。
 // goal 暂停原因，resume 时按此决定是否清零 rejectedCount（见 ADR 0004）。
-type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress" | "agent_blocked";
+type PauseReason = "user_abort" | "model_error" | "audit_error" | "audit_failed_3x" | "no_progress" | "agent_blocked" | "budget_exhausted";
+
+export type VerificationPolicy = "phased" | "final_only";
+export type BudgetPolicy = "bounded" | "unbounded";
+export interface RuntimeBudget {
+  maxTurns?: number;
+  maxWallClockMinutes?: number;
+  maxRepairAttempts?: number;
+  /** Optional one-time grace dimensions. Omitted dimensions repeat the base bound. */
+  grace?: { maxTurns?: number; maxWallClockMinutes?: number; maxRepairAttempts?: number };
+}
+export interface VerificationBundle {
+  changes: string;
+  acceptanceEvidence: string;
+  selfTest: string;
+  risks: string;
+}
+export type FinalAuditMode = "diagnostic" | "narrow_confirmation";
 
 export { detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
 export { computeScrollOffset } from "../tui/helpers.ts";
@@ -84,10 +107,12 @@ export interface DgoalConfig {
   // Ordered scoped candidates. null explicitly inherits the current session model and blocks lower-priority sources.
   phaseAuditorModels?: string[] | null;
   goalAuditorModels?: string[] | null;
-  // Ordered context summarizer candidates; null explicitly inherits the current session model.
-  contextSummarizerModels?: string[] | null;
   // Semantic preflight idle timeout in seconds (no event → timeout). Invalid values fall back to 60s with a warning.
   proposalSemanticReviewIdleTimeoutSeconds?: number;
+  /** Only honored from ~/.pi/agent/pi-dgoal.json, never project config. */
+  implicitFinalOnlyStart?: boolean;
+  /** Global-only override for the tightly scoped implicit-start default budget. */
+  implicitFinalOnlyBudget?: RuntimeBudget;
 }
 
 type AuditorScope = "phase" | "goal";
@@ -126,6 +151,14 @@ interface GoalState {
   nonGoals?: string[];
   guardrails?: string[];
   budget?: string;
+  // 新 goal 在启动闸门冻结；旧 goal 缺失时按 phased + 无运行预算兼容。
+  verificationPolicy?: VerificationPolicy;
+  budgetPolicy?: BudgetPolicy;
+  runtimeBudget?: RuntimeBudget;
+  budgetGraceUsed?: boolean;
+  budgetInGrace?: boolean;
+  budgetUsage?: { turns: number; repairAttempts: number };
+  implicitStart?: boolean;
   // 暂停原因，resume 时按此决定是否清零 rejectedCount（audit_failed_3x 清零，其他不清）。
   pauseReason?: PauseReason;
   // pauseReason 的人类可读补充：agent_blocked 时存 agent 声明的死锁原因，供通知/状态展示。
@@ -157,6 +190,8 @@ interface GoalState {
   };
   // 单 phase 合并建检完成后留下的统一 goal 审核凭据，供 dgoal_done 跳过第二次审核。
   singlePhaseAudit?: { modelId?: string; createdAt: number };
+  // 隐式轻量启动时写入的受限动作许可，用于在运行时拦截越界工具调用。
+  allowedToolScope?: "local_repo_and_readonly_external";
 }
 
 // v0.5.2 建检反馈（ADR 0011）。检查 agent 给出的原始失败报告，agent-facing 修复输入。
@@ -181,6 +216,9 @@ interface FinalAuditHistoryEntry {
   verification: string;
   whatChanged?: string[];
   userReview?: string;
+  auditMode?: FinalAuditMode;
+  verificationBundle?: VerificationBundle;
+  workspaceFingerprint?: string;
   createdAt: number;
 }
 
@@ -283,7 +321,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.paused": "🔁 暂停",
       "status.starting": "🔁 启动",
       "status.rejected": "🔁 未过 ×{count}",
-      "status.goalRepair": "终审修复 · 第 {count}/3 次",
+      "status.goalRepair": "终审修复 · 第 {count} 次",
       "status.goalRepairPaused": "终审修复已暂停",
       "status.active": "🔁 进行 #{iteration}",
       "proposal.objective": "目标：{objective}",
@@ -339,8 +377,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogCloseHint": "ESC/Ctrl+C 关闭",
       "status.dialogTitle": "Dgoal 详细查询 Modal",
       "status.dialogHint": "dgoal · 详细查询 Modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
-      "notify.auditPaused": "终审连续 {count} 次未通过，已暂停（audit_failed_3x）。/dgoal resume 清零重试，或放弃。",
-      "notify.auditRejected": "终审未通过（第 {count}/3 次），进 rejected，请修正后重新 dgoal_done。",
+      "notify.auditPaused": "终审修复预算耗尽，已暂停（{reason}）。/dgoal resume 继续，或放弃。",
+      "notify.auditRejected": "终审未通过（第 {count} 次），进 rejected，请修正后重新 dgoal_done。",
       "notify.auditPhaseReopened": "终审归因 phase(#{phaseId})：已重开该 phase，请修正后重新 dgoal_check。",
       "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
@@ -398,8 +436,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.pause.done": "目标已暂停（agent_blocked）：{detail}。等待用户处理后 /dgoal resume 继续。",
       "tool.done.gateJumping": "越终审推进：phase #{phaseId}（{phaseSubject}）尚未通过建检。必须先把所有 phase 通过 dgoal_check，才能调用 dgoal_done 进入终审。",
       "tool.done.runFailed": "审核运行失败，目标已暂停。运行 /dgoal resume 继续并重试完成。\n错误：{error}",
-      "tool.done.auditPaused": "终审连续 {count} 次未通过，目标已暂停。\n\n审核报告：\n{report}",
-      "tool.done.auditRejected": "终审未通过，目标进 rejected（第 {count}/3 次）。请修正以下问题后重新调用 dgoal_done。\n\n审核报告：\n{report}",
+      "tool.done.auditPaused": "终审修复预算耗尽，目标已暂停（{reason}）。\n\n审核报告：\n{report}",
+      "tool.done.auditRejected": "终审未通过，目标进 rejected（第 {count} 次）。请修正以下问题后重新调用 dgoal_done。\n\n审核报告：\n{report}",
       "tool.done.auditPhaseReopened": "终审归因 phase(#{phaseId})：问题可隔离到该已完成 phase，已重开。请修正后重新调用 dgoal_check 建检该 phase，不要直接 dgoal_done。\n\n审核报告：\n{report}",
       "tool.plan.noGoal": "当前没有进行中的 /dgoal 目标，无法操作 plan。",
       "tool.plan.created": "已在 phase #{phaseId} 创建 task #{taskId}",
@@ -466,6 +504,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "plan.error.illegalTransition": "非法 task 状态流转 {from} → {to}（done 不回退）",
       "plan.error.cannotBlockSelf": "task #{taskId} 不能依赖自己",
       "plan.error.addBlockedByTaskNotFound": "addBlockedBy：task #{taskId} 不存在",
+      "plan.error.blockedByUnresolved": "task #{taskId} 的依赖尚未完成",
       "command.objectiveTooLong": "目标太长（{length}/{max} 字符）。请放到文件中，并在 /dgoal 中引用路径。",
     },
   },
@@ -483,7 +522,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.paused": "🔁 paused",
       "status.starting": "🔁 starting…",
       "status.rejected": "🔁 rejected ×{count}",
-      "status.goalRepair": "Goal Repair · attempt {count}/3",
+      "status.goalRepair": "Goal Repair · attempt {count}",
       "status.goalRepairPaused": "Goal Repair paused",
       "status.active": "🔁 active #{iteration}",
       "proposal.objective": "Goal: {objective}",
@@ -539,8 +578,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogCloseHint": "ESC/Ctrl+C close",
       "status.dialogTitle": "Dgoal Detailed Query Modal",
       "status.dialogHint": "dgoal · detailed query modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
-      "notify.auditPaused": "Final audit failed {count} times; paused (audit_failed_3x). Run /dgoal resume to reset and retry, or abandon it.",
-      "notify.auditRejected": "Final audit failed ({count}/3); moved to rejected. Fix the issues, then call dgoal_done again.",
+      "notify.auditPaused": "Final-audit repair budget exhausted; paused ({reason}). Run /dgoal resume to continue, or abandon it.",
+      "notify.auditRejected": "Final audit failed (attempt {count}); moved to rejected. Fix the issues, then call dgoal_done again.",
       "notify.auditPhaseReopened": "Final audit attributed to phase #{phaseId}: reopened. Fix and re-run dgoal_check on that phase.",
       "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
@@ -597,8 +636,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.pause.done": "The goal is paused (agent_blocked): {detail}. Waiting for the user to /dgoal resume after resolving it.",
       "tool.done.gateJumping": "Gate-jumping finalization: phase #{phaseId} ({phaseSubject}) has not passed its check yet. You must pass dgoal_check for all phases before calling dgoal_done.",
       "tool.done.runFailed": "Audit execution failed; the goal is paused. Run /dgoal resume to continue and retry completion.\nError: {error}",
-      "tool.done.auditPaused": "Final audit failed {count} times; the goal is now paused.\n\nAudit report:\n{report}",
-      "tool.done.auditRejected": "Final audit failed; the goal moved to rejected ({count}/3). Fix the issues below, then call dgoal_done again.\n\nAudit report:\n{report}",
+      "tool.done.auditPaused": "Final-audit repair budget exhausted; the goal is now paused ({reason}).\n\nAudit report:\n{report}",
+      "tool.done.auditRejected": "Final audit failed; the goal moved to rejected (attempt {count}). Fix the issues below, then call dgoal_done again.\n\nAudit report:\n{report}",
       "tool.done.auditPhaseReopened": "Final audit attributed to phase #{phaseId}: the issue is isolated to this completed phase, now reopened. Fix and re-run dgoal_check on that phase; do not call dgoal_done directly.\n\nAudit report:\n{report}",
       "tool.plan.noGoal": "There is no active /dgoal goal; cannot operate on the plan.",
       "tool.plan.created": "Created task #{taskId} in phase #{phaseId}",
@@ -666,6 +705,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "plan.error.illegalTransition": "illegal task transition {from} → {to} (done cannot roll back)",
       "plan.error.cannotBlockSelf": "task #{taskId} cannot depend on itself",
       "plan.error.addBlockedByTaskNotFound": "addBlockedBy: task #{taskId} does not exist",
+      "plan.error.blockedByUnresolved": "task #{taskId} has unresolved dependencies",
       "command.objectiveTooLong": "Goal too long ({length}/{max} chars). Put it in a file and reference the path in /dgoal.",
     },
   },
@@ -855,9 +895,15 @@ export const dgoalDoneTool = defineTool({
     verification: Type.String({ description: "Evidence that proves the goal is complete (commands/tests/file evidence)." }),
     whatChanged: Type.Optional(Type.Array(Type.String(), { description: "主要改动点（文件/模块 + 关键变化），可选但建议提供，方便用户核对" })),
     userReview: Type.Optional(Type.String({ description: "仍需用户亲自核对的点——agent 无法自验、需要人确认理解的部分（可选）" })),
+    verificationBundle: Type.Optional(Type.Object({
+      changes: Type.String({ minLength: 1, description: "本轮实际改动" }),
+      acceptanceEvidence: Type.String({ minLength: 1, description: "冻结条件到命令/工件的映射" }),
+      selfTest: Type.String({ minLength: 1, description: "最后改动后的自测" }),
+      risks: Type.String({ minLength: 1, description: "已知风险和未覆盖边界" }),
+    }, { description: "final_only 终审必填的定位验证包；不是独立审核证据。" })),
   }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
-    const completedGoal = goalRuntimeState.currentGoal;
+    const completedGoal = restoreGoalIfMissing(ctx);
     const emitCheckUpdate = (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => {
       const snapshot = snapshotFromUpdateDetails(update.details);
       if (snapshot) {
@@ -892,14 +938,20 @@ export const dgoalDoneTool = defineTool({
     const whatChanged = normalizeStringList((params as Record<string, unknown>).whatChanged);
     const userReview = trimOptionalText((params as Record<string, unknown>).userReview);
     const declaredUserReview = formatUserReviewText(completedGoal, userReview);
+    const verificationBundle = normalizeVerificationBundle((params as Record<string, unknown>).verificationBundle);
+    if (completedGoal.verificationPolicy === "final_only" && !verificationBundle) {
+      return { content: [{ type: "text", text: "final_only dgoal_done requires verificationBundle: changes, acceptanceEvidence, selfTest, and risks." }], details: { error: "missing verification bundle" }, isError: true };
+    }
 
-    // v0.5.2 切片6：越闸门推进拦截。终审要求所有前序 phase 都已 done；
+    // phased 要求独立 phase 建检；final_only 要求每个 phase 的独立进度完成事实。
     // 还有 phase 未通过建检就调 dgoal_done = 越终审推进，硬拒。
     if (completedGoal.plan) {
       const pending = currentUncheckedPhase(completedGoal);
       if (pending) {
         return {
-          content: [{ type: "text", text: t("tool.done.gateJumping", { phaseId: pending.id, phaseSubject: pending.subject }) }],
+          content: [{ type: "text", text: completedGoal.verificationPolicy === "final_only"
+          ? `Cannot finalize final_only goal: phase #${pending.id} (${pending.subject}) is not marked progress complete.`
+          : t("tool.done.gateJumping", { phaseId: pending.id, phaseSubject: pending.subject }) }],
           details: { error: "gate jumping progression", pendingPhaseId: pending.id },
           isError: true,
         };
@@ -937,6 +989,8 @@ export const dgoalDoneTool = defineTool({
         verification,
         whatChanged,
         userReview,
+        verificationBundle,
+        auditMode: completedGoal.verificationPolicy === "final_only" && completedGoal.finalFeedback ? "narrow_confirmation" : "diagnostic",
         onUpdate: emitCheckUpdate,
       });
     } catch (error) {
@@ -972,13 +1026,14 @@ export const dgoalDoneTool = defineTool({
 
     if (!audit.approved) {
       clearCurrentCheckSnapshot();
-      safeUpdatePlanOverlay();
       return handleFinalAuditRejected({
         completedGoal: auditedGoal,
         summary,
         verification,
         whatChanged,
         userReview,
+        verificationBundle,
+        auditMode: completedGoal.verificationPolicy === "final_only" && completedGoal.finalFeedback ? "narrow_confirmation" : "diagnostic",
         auditOutput: audit.output,
         auditorDetails: buildAuditorResultDetails(audit),
         ctx: ctx as unknown as DgoalContext,
@@ -1069,7 +1124,7 @@ export const dgoalPauseTool = defineTool({
 });
 
 // 切片 2：dgoal_plan 工具——task/phase CRUD（纯本地快操作，不 spawn 子进程）。
-// reducer 是 applyPlanMutation；phase completed 唯一入口是 dgoal_check（不在本工具）。
+// reducer 是 applyPlanMutation；phased 的 phase completed 不在本工具，final_only 仅允许本工具写入 progressCompleted。
 export const DGOAL_PLAN_TOOL_NAME = "dgoal_plan";
 
 // 把 reducer op 格式化成 LLM 可读文本（rpiv-todo formatContent 风格）。
@@ -1091,6 +1146,8 @@ export function formatPlanResult(op: PlanOp): string {
           return `[${t.status}] #${t.id} ${t.subject}${form}${blk}${dep}`;
         })
         .join("\n");
+    case "complete_progress":
+      return `Marked phase #${op.phaseId} progress complete (not independently audited).`;
     case "get": {
       const tsk = op.task;
       const lines = [`#${tsk.id} [${tsk.status}] ${tsk.subject}`];
@@ -1114,9 +1171,11 @@ function handleFinalAuditRejected(args: {
   userReview?: string;
   auditOutput: string;
   auditorDetails?: Record<string, unknown>;
+  auditMode?: FinalAuditMode;
+  verificationBundle?: VerificationBundle;
   ctx: DgoalContext;
 }) {
-  const { completedGoal, summary, verification, whatChanged, userReview, auditOutput, auditorDetails, ctx } = args;
+  const { completedGoal, summary, verification, whatChanged, userReview, auditOutput, auditorDetails, auditMode, verificationBundle, ctx } = args;
   const modelLabel = typeof auditorDetails?.auditorModel === "string" ? ` ${formatAuditorModelLabel(auditorDetails.auditorModel)}` : "";
   const attribution: FinalAuditAttribution = parseFinalAuditAttribution(auditOutput);
 
@@ -1170,7 +1229,7 @@ function handleFinalAuditRejected(args: {
   // goal 归因（默认）：进 rejected + rejectedCount++（ADR 0004）。
   // 切片6：终审不过 → 进 rejected + rejectedCount++（ADR 0004）。
   // 硬约束重回：goal 进 rejected，续跑 prompt 会钉着未过问题，agent 无法假装没看见。
-  // rejectedCount ×3 → 转 paused(audit_failed_3x)，停止续跑（不烧 token），resume 清零重试。
+  // v0.7.0：bounded+maxRepairAttempts 用预算暂停替代固定 3 次暂停；unbounded 保留安全暂停，不因预算暂停。
   const newCount = (completedGoal.rejectedCount ?? 0) + 1;
   const finalAuditHistory = appendFinalAuditHistory(completedGoal, {
     attempt: newCount,
@@ -1179,10 +1238,21 @@ function handleFinalAuditRejected(args: {
     verification,
     whatChanged,
     userReview,
+    auditMode,
+    verificationBundle,
   });
-  if (newCount >= 3) {
-    goalRuntimeState.currentGoal = markGoalPaused(completedGoal, Date.now(), {
-      pauseReason: "audit_failed_3x",
+  const repairUsage = (completedGoal.budgetUsage?.repairAttempts ?? 0) + 1;
+  const withRepairUsage: GoalState = {
+    ...completedGoal,
+    rejectedCount: newCount,
+    budgetUsage: { turns: completedGoal.budgetUsage?.turns ?? 0, repairAttempts: repairUsage },
+  };
+  const overRepair = decideBudgetPause(withRepairUsage, "repairAttempts");
+  const repairCapReached = overRepair.pause || (completedGoal.budgetPolicy !== "unbounded" && !completedGoal.runtimeBudget && newCount >= 3);
+  if (repairCapReached) {
+    const pauseReasonValue: PauseReason = overRepair.pause ? "budget_exhausted" : "audit_failed_3x";
+    goalRuntimeState.currentGoal = markGoalPaused(withRepairUsage, Date.now(), {
+      pauseReason: pauseReasonValue,
       rejectedCount: newCount,
       finalAuditHistory,
       // v0.5.2：3 次不过仍保留 finalFeedback；/dgoal resume 清零 rejectedCount 但不清除反馈（ADR 0011）
@@ -1193,15 +1263,28 @@ function handleFinalAuditRejected(args: {
     clearContinuation();
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
-    safeNotify(ctx, t("notify.auditPaused", { count: newCount }), "warning");
+    safeNotify(ctx, t("notify.auditPaused", { count: newCount, reason: pauseReasonValue }), "warning");
     return {
-      content: [{ type: "text", text: `${t("tool.done.auditPaused", { count: newCount, report: auditOutput })}${modelLabel}` }],
+      content: [{ type: "text", text: `${t("tool.done.auditPaused", { count: newCount, reason: pauseReasonValue, report: auditOutput })}${modelLabel}` }],
       details: { goal: completedGoal.objective, summary, verification, whatChanged, userReview, auditRejected: true, auditPaused: true, auditOutput, ...auditorDetails },
       terminate: true,
     };
   }
   // v0.5.2：终审未通过写 finalFeedback（原始报告，覆盖上一轮，ADR 0011）
-  goalRuntimeState.currentGoal = setFinalFeedback({ ...completedGoal, status: "rejected", rejectedCount: newCount, finalAuditHistory }, auditOutput, newCount);
+  // v0.7.0：接近 maxRepairAttempts 时进入一次预授权宽限，在拒绝提示与状态栏上可见。
+  const budgetField = withRepairUsage.runtimeBudget?.maxRepairAttempts;
+  const budgetEnterGrace = completedGoal.budgetPolicy === "bounded"
+    && !overRepair.pause
+    && budgetField !== undefined
+    && repairUsage >= budgetField;
+  goalRuntimeState.currentGoal = setFinalFeedback({
+    ...completedGoal,
+    status: "rejected",
+    rejectedCount: newCount,
+    finalAuditHistory,
+    budgetUsage: { turns: completedGoal.budgetUsage?.turns ?? 0, repairAttempts: repairUsage },
+    ...(budgetEnterGrace ? { budgetInGrace: true, budgetGraceUsed: true } : {}),
+  }, auditOutput, newCount);
   goalRuntimeState.currentGoal = mergeUserReviewItems(goalRuntimeState.currentGoal, extractUserReviewSuggestions(auditOutput));
   persistGoal(goalRuntimeState.currentGoal);
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
@@ -1219,7 +1302,7 @@ export const dgoalPlanTool = defineTool({
   name: DGOAL_PLAN_TOOL_NAME,
   label: "Dgoal Plan",
   description:
-    "管理当前 /dgoal 目标的 Task Plan（phase 内的 task）：create（建 task）、update（改状态/字段/依赖）、list（列 task）、get（取单 task）。task 四态 pending→in_progress→done|blocked；done 不回退，blocked 可回退 in_progress 且必带 blockedReason。用 blockedBy 表达依赖（涌现分解）。注意：标 phase done 必须用 dgoal_check，不能用本工具。",
+    "管理当前 /dgoal 目标的 Task Plan（phase 内的 task）：create（建 task）、update（改状态/字段/依赖）、list（列 task）、get（取单 task）、complete_progress（仅 final_only 标记阶段进度）。task 四态 pending→in_progress→done|blocked；done 不回退，blocked 可回退 in_progress 且必带 blockedReason。phased 的 phase done 必须用 dgoal_check；final_only 的 progressCompleted 不代表独立审核通过。",
   promptSnippet: "管理 /dgoal 目标的 task 计划推进",
   promptGuidelines: [
     "建 plan 后立即执行第一个 task 并标 in_progress；完成立即标 done（带可复验 evidence，如命令/测试结果），不要批量标完成。",
@@ -1227,12 +1310,12 @@ export const dgoalPlanTool = defineTool({
     "done 不回退：发现完成的 task 有错，新建接续 task（blockedBy 指向原 task），不要回退原 task。",
     "用 blockedBy 表达 task 依赖（A blockedBy B 表示 A 等 B）。create 传初始集，update 用 addBlockedBy/removeBlockedBy 增量合并，不要重发全数组。环依赖会被拒。",
     "evidence 必须是可被独立复验的形态（命令/文件/测试结果），不要写 agent 的文字自述。",
-    "标 phase done 用 dgoal_check，不要用本工具。",
+    "phased 标 phase done 用 dgoal_check；final_only 用 complete_progress 标记进度，不要把它当独立审核通过。",
   ],
   parameters: Type.Object({
     action: Type.Union(
-      [Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get")],
-      { description: "create / update / list / get" },
+      [Type.Literal("create"), Type.Literal("update"), Type.Literal("list"), Type.Literal("get"), Type.Literal("complete_progress")],
+      { description: "create / update / list / get / complete_progress" },
     ),
     phaseId: Type.Optional(Type.Number({ description: "create 时指定目标 phase；list 时过滤某 phase（与 phaseNumber 二选一）" })),
     phaseNumber: Type.Optional(Type.Number({ description: "create/list 时指定阶段序号（1-based，与 phaseId 二选一）" })),
@@ -1271,8 +1354,8 @@ export const dgoalPlanTool = defineTool({
     }
     return (changed ? out : args) as never;
   },
-  async execute(_toolCallId, params, _signal, _onUpdate, _ctx) {
-    const goal = goalRuntimeState.currentGoal;
+  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+    const goal = restoreGoalIfMissing(ctx);
     if (!goal) {
       return {
         content: [{ type: "text", text: t("tool.plan.noGoal") }],
@@ -1326,7 +1409,7 @@ export const dgoalPlanTool = defineTool({
       if (Number.isFinite(attemptedPhaseId)) return formatPhaseNotFoundResult(goal, attemptedPhaseId);
     }
     // 仅在非 error 且非纯读（list/get 不改状态）时 commit + persist
-    if (result.op.kind !== "error" && (result.op.kind === "create" || result.op.kind === "update")) {
+    if (result.op.kind !== "error" && (result.op.kind === "create" || result.op.kind === "update" || result.op.kind === "complete_progress")) {
       goalRuntimeState.currentGoal = result.goal;
       persistGoal(goalRuntimeState.currentGoal);
     }
@@ -1343,9 +1426,16 @@ export const dgoalPlanTool = defineTool({
 const DGOAL_PROPOSE_TOOL_NAME = "dgoal_propose";
 
 // 主代理提交的计划提案。phases 可带初始 tasks。
-interface PlanProposal {
+export interface PlanProposal {
   objective: string;
+  /** Optional durable background supplied by the proposing main agent; never blocks startup. */
+  contextSummary?: string;
   verification?: string;
+  verificationPolicyRecommendation?: VerificationPolicy;
+  verificationPolicyReason?: string;
+  budgetPolicyRecommendation?: BudgetPolicy;
+  budgetPolicyReason?: string;
+  runtimeBudget?: RuntimeBudget;
   // 新 proposal 的 goal 级独立验收条件；工具 schema 要求提供。
   acceptanceCriteria?: AcceptanceCriterion[];
   userReviewItems?: string[];
@@ -1374,6 +1464,16 @@ function trimOptionalText(value: unknown): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+function normalizeVerificationBundle(value: unknown): VerificationBundle | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const changes = trimOptionalText(raw.changes);
+  const acceptanceEvidence = trimOptionalText(raw.acceptanceEvidence);
+  const selfTest = trimOptionalText(raw.selfTest);
+  const risks = trimOptionalText(raw.risks);
+  return changes && acceptanceEvidence && selfTest && risks ? { changes, acceptanceEvidence, selfTest, risks } : undefined;
+}
+
 function normalizeStringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   const normalized = value
@@ -1396,6 +1496,25 @@ function normalizeSemanticMigrations(value: unknown): ProposalSemanticMigration[
     normalized.push({ sourceCriterion, userReviewItem });
   }
   return normalized;
+}
+
+function normalizeRuntimeBudget(value: unknown): RuntimeBudget | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const positive = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 && Number.isInteger(v);
+  const copy = (source: Record<string, unknown>) => ({
+    ...(positive(source.maxTurns) ? { maxTurns: source.maxTurns as number } : {}),
+    ...(positive(source.maxWallClockMinutes) ? { maxWallClockMinutes: source.maxWallClockMinutes as number } : {}),
+    ...(positive(source.maxRepairAttempts) ? { maxRepairAttempts: source.maxRepairAttempts as number } : {}),
+  });
+  const base = copy(raw);
+  const grace = raw.grace && typeof raw.grace === "object" && !Array.isArray(raw.grace) ? copy(raw.grace as Record<string, unknown>) : undefined;
+  if (!Object.keys(base).length || (raw.grace !== undefined && !Object.keys(grace ?? {}).length)) return undefined;
+  return { ...base, ...(grace && Object.keys(grace).length ? { grace } : {}) };
+}
+
+export function isValidRuntimeBudget(value: RuntimeBudget | undefined): value is RuntimeBudget {
+  return Boolean(normalizeRuntimeBudget(value));
 }
 
 function normalizeAcceptanceCriteria(value: unknown): AcceptanceCriterion[] | undefined {
@@ -1435,6 +1554,7 @@ export function assessProposalReadiness(input: {
   acceptanceCriteria?: AcceptanceCriterion[];
   phaseCount?: number;
   phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
+  verificationPolicy?: VerificationPolicy;
   nonGoals?: string[];
   guardrails?: string[];
   budget?: string;
@@ -1444,7 +1564,9 @@ export function assessProposalReadiness(input: {
   const hasVerification = !!input.verification?.trim();
   const hasAcceptanceCriteria = Boolean(input.acceptanceCriteria?.length);
   const hasPhases = (input.phaseCount ?? 0) > 0;
-  const hasPhaseAcceptanceCriteria = hasPhases && (input.phaseAcceptanceCriteria ?? []).length === input.phaseCount && (input.phaseAcceptanceCriteria ?? []).every((criteria) => Boolean(criteria?.length));
+  const hasPhaseAcceptanceCriteria = input.verificationPolicy === "final_only"
+    ? true
+    : hasPhases && (input.phaseAcceptanceCriteria ?? []).length === input.phaseCount && (input.phaseAcceptanceCriteria ?? []).every((criteria) => Boolean(criteria?.length));
   const hasNonGoals = !!input.nonGoals?.length;
   const hasGuardrails = !!input.guardrails?.length;
   const hasBudget = !!input.budget?.trim();
@@ -1519,6 +1641,9 @@ export function validateProposalInput(input: {
   acceptanceCriteria?: AcceptanceCriterion[];
   phaseCount: number;
   phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
+  verificationPolicy?: VerificationPolicy;
+  budgetPolicy?: BudgetPolicy;
+  runtimeBudget?: RuntimeBudget;
 }): { error: string; message: string } | null {
   if (!input.objective.trim()) {
     return { error: "no objective", message: t("proposal.validate.noObjective") };
@@ -1537,8 +1662,21 @@ export function validateProposalInput(input: {
   const hasGoalCriteria = hasValidCriteria(input.acceptanceCriteria);
   const hasPhaseCriteria = input.phaseAcceptanceCriteria?.length === input.phaseCount
     && input.phaseAcceptanceCriteria.every((criteria) => hasValidCriteria(criteria));
-  if (!hasGoalCriteria || !hasPhaseCriteria) {
+  // final_only deliberately has no phase-level independent acceptance gate.
+  if (!hasGoalCriteria || (input.verificationPolicy !== "final_only" && !hasPhaseCriteria)) {
     return { error: "no acceptance criteria", message: t("proposal.validate.noAcceptanceCriteria") };
+  }
+  if (input.verificationPolicy && input.verificationPolicy !== "phased" && input.verificationPolicy !== "final_only") {
+    return { error: "invalid verification policy", message: "verificationPolicyRecommendation must be final_only or phased." };
+  }
+  if (input.budgetPolicy && input.budgetPolicy !== "bounded" && input.budgetPolicy !== "unbounded") {
+    return { error: "invalid budget policy", message: "budgetPolicyRecommendation must be bounded or unbounded." };
+  }
+  if (input.budgetPolicy === "bounded" && !isValidRuntimeBudget(input.runtimeBudget)) {
+    return { error: "invalid runtime budget", message: "bounded budgetPolicyRecommendation requires a positive structured runtimeBudget." };
+  }
+  if (input.budgetPolicy === "unbounded" && input.runtimeBudget) {
+    return { error: "unbounded runtime budget", message: "unbounded budgetPolicyRecommendation cannot include runtimeBudget limits." };
   }
   const allCriteria = [...(input.acceptanceCriteria ?? []), ...(input.phaseAcceptanceCriteria ?? []).flat()];
   if (allCriteria.some((item) => item && !hasIndependentlyVerifiableEvidenceShape(item.evidence))) {
@@ -1642,10 +1780,15 @@ function parseSemanticReviewResponse(text: string): ProposalSemanticReview | und
 
 function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: PlanProposal): string | undefined {
   if (review.decision === "reject") return review.reason || "semantic reviewer rejected the proposal";
-  if (!review.acceptanceCriteria?.length || review.phaseAcceptanceCriteria?.length !== proposal.phases.length) {
+  const finalOnly = proposal.verificationPolicyRecommendation === "final_only";
+  if (!review.acceptanceCriteria?.length) {
     return `semantic reviewer returned incomplete ${review.decision} acceptance criteria`;
   }
-  if (review.phaseAcceptanceCriteria.some((criteria) => !criteria.length)) {
+  // final_only 下 phase 仅组织进度，phase 级验收条件可选；不要求长度一致或非空。
+  if (!finalOnly && review.phaseAcceptanceCriteria?.length !== proposal.phases.length) {
+    return `semantic reviewer returned incomplete ${review.decision} acceptance criteria`;
+  }
+  if (!finalOnly && review.phaseAcceptanceCriteria?.some((criteria) => !criteria.length)) {
     return "semantic reviewer returned an empty phase acceptance criteria list";
   }
   if (review.decision === "rewrite") {
@@ -1654,12 +1797,13 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
       proposal.acceptanceCriteria ?? [],
       ...originalPhases,
     ];
+    const reviewedPhases = review.phaseAcceptanceCriteria ?? originalPhases;
     const rewrittenLayers = [
       review.acceptanceCriteria,
-      ...review.phaseAcceptanceCriteria,
+      ...reviewedPhases,
     ];
     const criteriaUnchanged = JSON.stringify(review.acceptanceCriteria) === JSON.stringify(proposal.acceptanceCriteria)
-      && JSON.stringify(review.phaseAcceptanceCriteria) === JSON.stringify(originalPhases);
+      && JSON.stringify(reviewedPhases) === JSON.stringify(originalPhases);
     if (criteriaUnchanged) {
       return "semantic reviewer rewrite did not change acceptance criteria; use approve only for an unchanged contract";
     }
@@ -1668,7 +1812,11 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
     const originalAllTexts = new Set(originalLayers.flat().map((item) => item.criterion));
     const rewrittenAllTexts = new Set(rewrittenLayers.flat().map((item) => item.criterion));
     const migrations = [...(review.migratedUserReviewItems ?? [])];
-    const reviewItems = new Set(review.userReviewItems ?? []);
+    // migration 自带的 userReviewItem 也是迁移结果；允许审核器省略重复的 userReviewItems 字段。
+    const reviewItems = new Set([
+      ...(review.userReviewItems ?? []),
+      ...migrations.map((migration) => migration.userReviewItem),
+    ]);
     const usedMigrations = new Set<number>();
     const unmatchedOriginals: string[] = [];
     let exactMatchCount = 0;
@@ -1723,14 +1871,15 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
       return "semantic reviewer returned a migration without a matching removed or changed criterion";
     }
   }
-  const allCriteria = [...review.acceptanceCriteria, ...review.phaseAcceptanceCriteria.flat()];
+  const phaseCriteria = review.phaseAcceptanceCriteria ?? [];
+  const allCriteria = [...review.acceptanceCriteria, ...phaseCriteria.flat()];
   if (allCriteria.some((item) => !hasIndependentlyVerifiableEvidenceShape(item.evidence))) {
     return "semantic reviewer returned evidence without an independently verifiable shape";
   }
   if (review.decision === "approve") {
     const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
     if (JSON.stringify(review.acceptanceCriteria) !== JSON.stringify(proposal.acceptanceCriteria)
-      || JSON.stringify(review.phaseAcceptanceCriteria) !== JSON.stringify(originalPhases)) {
+      || JSON.stringify(review.phaseAcceptanceCriteria ?? originalPhases) !== JSON.stringify(originalPhases)) {
       return "semantic reviewer approve response changed criteria without using rewrite";
     }
   }
@@ -2004,10 +2153,13 @@ function applyProposalSemanticReview(proposal: PlanProposal, review: ProposalSem
     proposal: {
       ...proposal,
       acceptanceCriteria: review.acceptanceCriteria!,
-      userReviewItems: mergeProposalReviewItems(proposal.userReviewItems, review.userReviewItems),
+      userReviewItems: mergeProposalReviewItems(proposal.userReviewItems, [
+        ...(review.userReviewItems ?? []),
+        ...(review.migratedUserReviewItems ?? []).map((migration) => migration.userReviewItem),
+      ]),
       phases: proposal.phases.map((phase, index) => ({
         ...phase,
-        acceptanceCriteria: review.phaseAcceptanceCriteria![index],
+        acceptanceCriteria: review.phaseAcceptanceCriteria?.[index] ?? proposal.phases[index].acceptanceCriteria,
       })),
     },
   };
@@ -2023,12 +2175,29 @@ export const dgoalProposeTool = defineTool({
     "/dgoal 启动后，先读相关代码，整理出 goal 该怎么做的计划，用本工具提交。",
     "phases 是阶段性目标（用户在确认 UI 看到），每个 phase 可带初始 tasks（细粒度执行单元）。",
     "计划要具体可执行：phase subject 是阶段性目标，不要写空泛的「调研」「实现」。",
-    "每个 goal 和 phase 都必须提供 LLM 可独立核验的 acceptanceCriteria（criterion + evidence）；人工体验/视觉事项放入 userReviewItems，不得作为完成门。",
+    "每个 goal 都必须提供 LLM 可独立核验的 acceptanceCriteria（criterion + evidence）；phased 的每个 phase 也必须提供，final_only 的 phase 条件可省略；人工体验/视觉事项放入 userReviewItems，不得作为完成门。",
     "若前文已明确这个 goal 不做什么、高风险边界或成本预期，请分别写入 nonGoals / guardrails / budget；若缺失，也应让缺口在计划里显式暴露。",
     "提交后等用户确认；若用户反馈意见，按反馈调整后重新提交。",
   ],
   parameters: Type.Object({
     objective: Type.String({ description: "goal 的简述（一句话，用户确认的方向）" }),
+    contextSummary: Type.Optional(Type.String({ description: "可选的持久背景：范围、约束、风险和验收线索；没有额外背景时省略，不阻塞启动。" })),
+    verificationPolicyRecommendation: Type.Optional(Type.Union([Type.Literal("final_only"), Type.Literal("phased")], { description: "推荐验收策略：final_only 仅 goal 终审；phased 逐 phase 建检。" })),
+    verificationPolicyReason: Type.Optional(Type.String({ description: "简短说明为什么推荐此验收策略" })),
+    budgetPolicyRecommendation: Type.Optional(Type.Union([Type.Literal("bounded"), Type.Literal("unbounded")], { description: "推荐预算策略。" })),
+    budgetPolicyReason: Type.Optional(Type.String({ description: "简短说明为什么推荐此预算策略" })),
+    runtimeBudget: Type.Optional(Type.Object({
+      maxTurns: Type.Optional(Type.Number({ minimum: 1 })),
+      maxWallClockMinutes: Type.Optional(Type.Number({ minimum: 1 })),
+      maxRepairAttempts: Type.Optional(Type.Number({ minimum: 1 })),
+      grace: Type.Optional(Type.Object({
+        maxTurns: Type.Optional(Type.Number({ minimum: 1 })),
+        maxWallClockMinutes: Type.Optional(Type.Number({ minimum: 1 })),
+        maxRepairAttempts: Type.Optional(Type.Number({ minimum: 1 })),
+      })),
+    }, { description: "bounded 策略的结构化上限；缺失维度不限制。" })),
+    /** Global-only authorized autonomous path; cannot request phased/unbounded. */
+    implicit: Type.Optional(Type.Boolean({ description: "仅当全局 implicitFinalOnlyStart=true 时允许的轻量自动启动。" })),
     verification: Type.String({ description: "goal 级验收说明（跨 phase 全局，必填）：交付什么、满足什么标准。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考 contextSummary 的“验收标准”，但必须显式写出，不要留空或写“完成并验证”这类空话。" }),
     acceptanceCriteria: Type.Array(
       Type.Object({
@@ -2045,13 +2214,13 @@ export const dgoalProposeTool = defineTool({
       Type.Object({
         subject: Type.String({ description: "阶段性目标" }),
         description: Type.Optional(Type.String({ description: "阶段说明" })),
-        acceptanceCriteria: Type.Array(
+        acceptanceCriteria: Type.Optional(Type.Array(
           Type.Object({
             criterion: Type.String({ description: "LLM 可独立判定的 phase 完成条件" }),
             evidence: Type.String({ description: "可由受限工具/命令/工件独立复验的证据" }),
           }),
-          { description: "phase 级冻结验收条件；人工体验项不要放这里" },
-        ),
+          { description: "phased 时必填；final_only 可省略（phase 仅组织进度）。" },
+        )),
         tasks: Type.Optional(
           Type.Array(
             Type.Object({
@@ -2092,7 +2261,41 @@ export const dgoalProposeTool = defineTool({
     return changed ? ({ ...a, phases: newPhases } as never) : (args as never);
   },
   async execute(_toolCallId, params, signal, onUpdate, ctx) {
-    const goal = goalRuntimeState.currentGoal;
+    let goal = goalRuntimeState.currentGoal;
+    const requestedImplicit = (params as Record<string, unknown>).implicit === true;
+    const configAgentDir = typeof (ctx as DgoalContext & { agentDir?: unknown }).agentDir === "string"
+      ? (ctx as DgoalContext & { agentDir: string }).agentDir
+      : undefined;
+    if (requestedImplicit) {
+      const raw = params as Record<string, unknown>;
+      if (raw.verificationPolicyRecommendation !== "final_only" || raw.budgetPolicyRecommendation !== "bounded") {
+        return { content: [{ type: "text", text: "Implicit start only permits final_only with a bounded budget." }], details: { error: "implicit policy violation" }, isError: true };
+      }
+      // 动作范围硬校验：隐式启动禁止外部写/部署/推送/权限/付费/删除等高风险动作。
+      // 扫描 proposal 全体文本（phase/task description、验收条件和 guardrails 也不能藏入越界动作）。
+      const proposalText = JSON.stringify(raw);
+      const forbidden = [
+        /\b(git\s+push|git\s+remote\s+add|deploy(?:ment)?|publish|release|sudo|chmod|chown|delete\s+remote|drop\s+table|send\s+message|post\s+to|put\s+to|(?:curl\s+[^\n]*-X\s*)?(?:POST|PUT|PATCH|DELETE)\s+|upload(?:ing)?|docker\s+push|npm\s+publish|gh\s+(?:pr|issue)\s+create|purchase|pay|checkout|charge|invoice|provision|terraform\s+apply|kubectl\s+(?:apply|delete)|ssh\s+|scp\s+)\b/i,
+        /\bcurl\b[^\n]*\s-d(?:ata)?(?:=|\s)/i,
+        /\b(?:aws|gcloud|az|firebase|vercel|netlify|fly|heroku)\b[^\n]*\b(?:create|update|delete|set|deploy|push|publish|add|grant|put)\b/i,
+        /\b(?:grant|revoke|authorize|permission|role|invite|access\s+token)\b/i,
+        /\b(?:write|upload|put|post|patch|delete|modify)\b[^\n]*\b(?:external|remote|cloud|production|server|bucket|database|api)\b/i,
+      ];
+      if (forbidden.some((pattern) => pattern.test(proposalText))) {
+        return { content: [{ type: "text", text: "Implicit start forbids external writes, deploys, pushes, account/permission changes, or paid actions; use an explicit /dgoal." }], details: { error: "implicit action out of scope" }, isError: true };
+      }
+      if (goal && goal.status !== "done") {
+        return { content: [{ type: "text", text: "Implicit dgoal start requires a cold session." }], details: { error: "implicit start requires cold session" }, isError: true };
+      }
+      const loaded = ctx.cwd ? await loadDgoalConfig(ctx, configAgentDir ? { agentDir: configAgentDir } : {}).catch(() => null) : null;
+      if (!loaded?.globalConfig.implicitFinalOnlyStart) {
+        return { content: [{ type: "text", text: "Implicit final_only start is not globally authorized." }], details: { error: "implicit start not authorized" }, isError: true };
+      }
+      // Project config is deliberately ignored for this permission.
+      goal = { ...createGoal(String((params as Record<string, unknown>).objective ?? "").trim()), implicitStart: true };
+      goalRuntimeState.currentGoal = goal;
+      persistGoal(goal);
+    }
     if (!goal || goal.status !== "pending") {
       return {
         content: [{ type: "text", text: t("tool.propose.noPendingGoal") }],
@@ -2108,17 +2311,35 @@ export const dgoalProposeTool = defineTool({
     const nonGoals = normalizeStringList((params as Record<string, unknown>).nonGoals);
     const guardrails = normalizeStringList((params as Record<string, unknown>).guardrails);
     const budget = trimOptionalText((params as Record<string, unknown>).budget);
+    const contextSummary = trimOptionalText((params as Record<string, unknown>).contextSummary);
+    const verificationPolicyRecommendation = (params as Record<string, unknown>).verificationPolicyRecommendation as VerificationPolicy | undefined ?? "phased";
+    const budgetPolicyRecommendation = (params as Record<string, unknown>).budgetPolicyRecommendation as BudgetPolicy | undefined ?? "unbounded";
+    const rawRuntimeBudget = (params as Record<string, unknown>).runtimeBudget;
+    if (budgetPolicyRecommendation === "unbounded" && rawRuntimeBudget !== undefined && rawRuntimeBudget !== null) {
+      return { content: [{ type: "text", text: "unbounded budgetPolicyRecommendation cannot include runtimeBudget limits." }], details: { error: "unbounded runtime budget" }, isError: true };
+    }
+    const runtimeBudget = budgetPolicyRecommendation === "bounded"
+      ? requestedImplicit
+        ? await resolveImplicitFinalOnlyBudget(ctx, configAgentDir ? { agentDir: configAgentDir } : {}).catch(() => ({ ...DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET }))
+        : normalizeRuntimeBudget(rawRuntimeBudget)
+      : undefined;
     const phases = (params.phases as PlanProposal["phases"]) ?? [];
-    const normalizedPhases = phases.map((phase) => ({
-      ...phase,
-      acceptanceCriteria: normalizeAcceptanceCriteria(phase.acceptanceCriteria) ?? [],
-    }));
+    const normalizedPhases = phases.map((phase) => {
+      const phaseCriteria = normalizeAcceptanceCriteria(phase.acceptanceCriteria);
+      return {
+        ...phase,
+        ...(phaseCriteria ? { acceptanceCriteria: phaseCriteria } : verificationPolicyRecommendation === "phased" ? { acceptanceCriteria: [] } : {}),
+      };
+    });
     const invalid = validateProposalInput({
       objective,
       verification,
       acceptanceCriteria,
       phaseCount: normalizedPhases.length,
       phaseAcceptanceCriteria: normalizedPhases.map((phase) => phase.acceptanceCriteria),
+      verificationPolicy: verificationPolicyRecommendation,
+      budgetPolicy: budgetPolicyRecommendation,
+      runtimeBudget,
     });
     if (invalid) {
       return {
@@ -2129,6 +2350,12 @@ export const dgoalProposeTool = defineTool({
     const proposal: PlanProposal = {
       objective,
       verification,
+      verificationPolicyRecommendation,
+      budgetPolicyRecommendation,
+      ...(trimOptionalText((params as Record<string, unknown>).verificationPolicyReason) ? { verificationPolicyReason: trimOptionalText((params as Record<string, unknown>).verificationPolicyReason) } : {}),
+      ...(trimOptionalText((params as Record<string, unknown>).budgetPolicyReason) ? { budgetPolicyReason: trimOptionalText((params as Record<string, unknown>).budgetPolicyReason) } : {}),
+      ...(runtimeBudget ? { runtimeBudget } : {}),
+      ...(contextSummary ? { contextSummary } : {}),
       acceptanceCriteria: acceptanceCriteria!,
       ...(userReviewItems ? { userReviewItems } : {}),
       ...(nonGoals ? { nonGoals } : {}),
@@ -2137,7 +2364,7 @@ export const dgoalProposeTool = defineTool({
       phases: normalizedPhases,
     };
     // 配置是可选增强：ctx.cwd 缺失（测试 ctx）或配置不可读时回退默认 60s，不阻断预审。
-    const loadedConfig = ctx.cwd ? await loadDgoalConfig(ctx).catch(() => null) : null;
+    const loadedConfig = ctx.cwd ? await loadDgoalConfig(ctx, configAgentDir ? { agentDir: configAgentDir } : {}).catch(() => null) : null;
     const idleTimeoutSeconds = loadedConfig ? resolveProposalSemanticReviewIdleTimeoutSeconds(loadedConfig) : PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS;
     if (loadedConfig) notifyDgoalConfigOnce(ctx, loadedConfig.issues.map((issue) => ({ ...issue, level: "warning" as const })));
     const outcome = await runProposalSemanticReview({ ...ctx, signal }, proposal, { idleTimeoutMs: idleTimeoutSeconds * 1000, onUpdate });
@@ -2160,7 +2387,7 @@ export const dgoalProposeTool = defineTool({
       };
     }
     const finalProposal = reviewed.proposal;
-    goalRuntimeState.pendingProposal = { goalId: goal.id, proposal: finalProposal };
+    goalRuntimeState.pendingProposal = { goalId: goal.id, proposal: finalProposal, ...(requestedImplicit ? { implicitStart: true } : {}) };
     return {
       content: [{ type: "text", text: t("tool.propose.submitted", { count: finalProposal.phases.length }) }],
       details: { phaseCount: finalProposal.phases.length, semanticReview: semanticReview.decision },
@@ -2189,7 +2416,7 @@ export const dgoalCheckTool = defineTool({
     phaseNumber: Type.Optional(Type.Number({ description: "要建检的阶段序号（1-based，phaseId 的友好写法；与 phaseId 二选一）" })),
   }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
-    const goal = goalRuntimeState.currentGoal;
+    const goal = restoreGoalIfMissing(ctx);
     const emitCheckUpdate = (update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => {
       const snapshot = snapshotFromUpdateDetails(update.details);
       if (snapshot) {
@@ -2212,6 +2439,9 @@ export const dgoalCheckTool = defineTool({
         content: [{ type: "text", text: t("tool.check.noGoal") }],
         details: { error: "no active goal/plan" },
       };
+    }
+    if (goal.verificationPolicy === "final_only") {
+      return { content: [{ type: "text", text: "dgoal_check is unavailable for final_only; mark phase progress with dgoal_plan complete_progress, then use dgoal_done once." }], details: { error: "final_only forbids phase check" }, isError: true };
     }
     if (params.phaseId !== undefined && params.phaseId !== null && params.phaseNumber !== undefined && params.phaseNumber !== null) {
       return { content: [{ type: "text", text: t("tool.check.ambiguousPhaseIdentifier") }], details: { error: "ambiguous phase identifier" } };
@@ -2256,9 +2486,11 @@ export const dgoalCheckTool = defineTool({
           }))
         : await runPhaseCheck({ ctx: ctx as ExtensionContext, goal, phase, onUpdate: emitCheckUpdate });
     } catch (error) {
+      const reason = formatError(error);
+      pauseOnAuditFailure(ctx as unknown as DgoalContext, reason, isSinglePhaseCheck ? "goal" : "phase");
       clearCurrentCheckSnapshot();
       safeUpdatePlanOverlay();
-      return { content: [{ type: "text", text: t("tool.check.subprocessError", { error: formatError(error) }) }], details: { error: formatError(error), liveness: "auditor_error" as const }, isError: true };
+      return { content: [{ type: "text", text: t("tool.check.subprocessError", { error: reason }) }], details: { error: reason, liveness: "auditor_error" as const }, isError: true, terminate: true };
     }
     // 审核候选状态在 runAuditorWithCandidates 内先落盘；后续状态推进必须基于最新 goal，不能用审核前快照覆盖候选健康状态。
     const auditedGoal = goalRuntimeState.currentGoal ?? goal;
@@ -2267,11 +2499,11 @@ export const dgoalCheckTool = defineTool({
       const reason = result.error ?? "aborted";
       const report = result.output ? t("tool.check.reportSectionPartial", { report: result.output }) : "";
       // v0.5.2：真实审核器候选链耗尽 → paused(audit_error)，不烧 token 空转
-      clearCurrentCheckSnapshot();
-      safeUpdatePlanOverlay();
       // 单 phase 走 runCompletionAuditor（goal scope），因此 pause scope 要与实际使用的审核范围对齐，
       // resume 才能正确清除对应范围的故障候选。
       pauseOnAuditFailure(ctx as unknown as DgoalContext, reason, isSinglePhaseCheck ? "goal" : "phase");
+      clearCurrentCheckSnapshot();
+      safeUpdatePlanOverlay();
       return {
         content: [{ type: "text", text: t("tool.check.auditorErrorPaused", { reason, report }) }],
         details: { error: reason, output: result.output, aborted: result.aborted, liveness: "auditor_error" as const, ...buildAuditorResultDetails(result) },
@@ -2318,7 +2550,7 @@ export { registerDgoal } from "../startup/index.ts";
 export async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: DgoalContext) {
   const command = parseCommand(args);
   if (typeof command === "string") {
-    ctx.ui.notify(command, "warning");
+    safeNotify(ctx, command, "warning");
     return;
   }
 
@@ -2382,7 +2614,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   }
 
   if (goalRuntimeState.currentGoal && goalRuntimeState.currentGoal.status !== "done") {
-    // pending：上一个 dgoal 还在 summarizeContext 启动中，不应重叠启动新 dgoal。
+    // pending：上一个 dgoal 仍在 proposal 启动闸门中，不应重叠启动新 dgoal。
     if (goalRuntimeState.currentGoal.status === "pending") {
       safeNotify(ctx, t("notify.pendingGoal"), "warning");
       return;
@@ -2410,8 +2642,8 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   goalRuntimeState.startGoalInProgress = true;
   try {
     if (shouldAbortCurrentTurnOnClear(ctx)) ctx.abort?.();
-    // 先以 pending 创建：summarizeContext 是慢子进程，期间 goal 不能是 active，
-    // 否则 before_agent_start / agent_end 会提前把它当活跃 dgoal 推进，甚至打出孤儿 START prompt。
+    // 先以 pending 创建；proposal 是唯一的结构化入口。启动不再运行独立 context summarizer：
+    // 主 agent 可在 dgoal_propose 按需提供 contextSummary，缺失背景不阻塞启动。
     // 新 goal 启动时清除上一个 goal 遗留的 auditor workspace tracker，避免旧 worktree 路径泄漏到新 goal。
     resetAuditorWorkspaceTracker();
     const pendingGoal = createGoal(objective.trim());
@@ -2419,46 +2651,6 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
     persistGoal(goalRuntimeState.currentGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
 
-    // 启动前固化前文背景：防止 dgoal 跑多轮后 context 压缩丢失讨论中的隐含约束 / 验收标准。
-    // 候选链全失败时 fail-closed：清理 pending goal 并中止启动，不降级为无背景启动（ADR 0027）。
-    const priorDiscussion = extractPriorDiscussion(ctx);
-    if (priorDiscussion) {
-      safeNotify(ctx, t("notify.summarizingContext"), "info");
-      const result = await summarizeContext({
-        ctx: ctx as ExtensionContext,
-        objective: pendingGoal.objective,
-        priorDiscussion,
-      });
-      // 摘要期间 goal 可能被用户 /dgoal clear 或替换；校验仍是同一个 pending goal。
-      if (!goalRuntimeState.currentGoal || goalRuntimeState.currentGoal.id !== pendingGoal.id) {
-        safeNotify(ctx, t("notify.startInterrupted"), "warning");
-        return;
-      }
-      if (result.aborted) {
-        safeNotify(ctx, t("notify.contextAborted"), "warning");
-        goalRuntimeState.currentGoal = undefined;
-        persistGoal(null);
-        safeSetDgoalStatus(ctx, undefined);
-        return;
-      }
-      if (result.summary && result.summary.trim() && result.summary.trim() !== "无额外背景") {
-        goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, contextSummary: result.summary.trim(), updatedAt: Date.now() };
-        persistGoal(goalRuntimeState.currentGoal);
-      } else if (result.error) {
-        // 背景总结候选全部失败时 fail-closed（ADR 0027）：清理 pending goal 并中止启动，不降级为无背景启动。
-        safeNotify(ctx, t("notify.contextFailed", { error: result.error }), "error");
-        goalRuntimeState.currentGoal = undefined;
-        persistGoal(null);
-        safeSetDgoalStatus(ctx, undefined);
-        return;
-      }
-    }
-
-    // 再次校验：摘要期间 goal 仍可能在、且仍是本次 pending goal。
-    if (!goalRuntimeState.currentGoal || goalRuntimeState.currentGoal.id !== pendingGoal.id) {
-      safeNotify(ctx, t("notify.startInterrupted"), "warning");
-      return;
-    }
     // 切片4：启动闸门——保持 pending，发“请用 dgoal_propose 提交计划”指令让主代理整理 plan。
     // 不直接转 active：要等主代理调 dgoal_propose + 用户确认后才激活 dgoal。
     // goalRuntimeState.proposalRetryCount 由 agent_end 消费做兜底（拷问25：重试2次失败中止）。
@@ -2545,7 +2737,7 @@ function clearGoal(ctx: DgoalContext) {
   const hadGoal = Boolean(goalRuntimeState.currentGoal);
   if (hadGoal && shouldAbortCurrentTurnOnClear(ctx)) ctx.abort?.();
   clearActiveGoal(ctx);
-  if (hadGoal) ctx.ui.notify(t("notify.cleared"), "info");
+  if (hadGoal) safeNotify(ctx, t("notify.cleared"), "info");
 }
 
 type CustomStatusUI = DgoalContext["ui"] & {
@@ -2635,16 +2827,16 @@ function showStatus(ctx: DgoalContext) {
   };
 
   if (!goalRuntimeState.currentGoal) {
-    ctx.ui.setStatus(STATUS_KEY, undefined);
-    openStatusDialog(undefined, () => ctx.ui.notify(t("status.noDgoal"), "info"));
+    safeSetDgoalStatus(ctx, undefined);
+    openStatusDialog(undefined, () => safeNotify(ctx, t("status.noDgoal"), "info"));
     return;
   }
 
   const goal = goalRuntimeState.currentGoal;
   // `/dgoal s` 是持续浮层丢失后的显式恢复入口；只重绑 UI 并重绘，不重同步 session 或修改运行态。
   ensurePlanOverlay(ctx);
-  ctx.ui.setStatus(STATUS_KEY, formatStatus(goal));
-  openStatusDialog(goal, () => ctx.ui.notify(buildStatusNotifyMessage(goal), "info"));
+  safeSetDgoalStatus(ctx, formatStatus(goal));
+  openStatusDialog(goal, () => safeNotify(ctx, buildStatusNotifyMessage(goal), "info"));
 }
 
 function createGoal(objective: string): GoalState {
@@ -2652,7 +2844,7 @@ function createGoal(objective: string): GoalState {
   return {
     id: randomUUID(),
     objective,
-    // pending：启动中、START prompt 尚未发出。避免 summarizeContext 慢子进程期间被 agent_end 当活跃 dgoal 推进。
+    // pending：启动中、START prompt 尚未发出；避免 agent_end 把启动闸门误当成活跃执行推进。
     status: "pending",
     // 计时从用户确认计划、goal 进入 active 时开始；pending 期间只是启动闸门，不算正式执行。
     startedAt: now,
@@ -2712,9 +2904,101 @@ export function appendFinalAuditHistory(
   return [...(goal.finalAuditHistory ?? []), { ...entry, createdAt: Date.now() }];
 }
 
+/** v0.7.0 隐式轻量启动的运行时动作护栏；返回越界原因，undefined 表示允许。 */
+export function validateImplicitToolAction(toolName: string, args: unknown, cwd?: string): string | undefined {
+  const name = toolName.trim().toLowerCase();
+  const text = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  const command = typeof args === "object" && args !== null && "command" in args && typeof (args as { command?: unknown }).command === "string"
+    ? (args as { command: string }).command
+    : text;
+  const localTools = new Set([
+    "bash", "sh", "shell", "terminal", "exec", "run", "read", "grep", "rg", "find", "ls", "cat",
+    "edit", "write", "apply_patch", "dgoal_plan", "dgoal_done", "dgoal_pause", "dgoal_check",
+  ]);
+  const readonlyExternalTools = new Set(["tinyfish_search", "tinyfish_fetch", "web_search", "web_fetch"]);
+  if (!localTools.has(name) && !readonlyExternalTools.has(name)) {
+    return `tool ${toolName} is outside local/readonly implicit scope`;
+  }
+  const canonicalPath = (base: string, value: string): string | undefined => {
+    if (value.trim() === "") return undefined;
+    let candidate = path.resolve(base, value);
+    const suffix: string[] = [];
+    while (!fs.existsSync(candidate)) {
+      const parent = path.dirname(candidate);
+      if (parent === candidate) return undefined;
+      suffix.unshift(path.basename(candidate));
+      candidate = parent;
+    }
+    try {
+      const realBase = fs.realpathSync.native?.(candidate) ?? fs.realpathSync(candidate);
+      return path.resolve(realBase, ...suffix);
+    } catch {
+      return undefined;
+    }
+  };
+  const resolvedCwd = cwd ? canonicalPath(cwd, ".") : undefined;
+  const isWithinCwd = (value: string): boolean => {
+    if (!cwd || !resolvedCwd || value.trim() === "" || value.startsWith("~") || value.startsWith("$")) return false;
+    const resolved = canonicalPath(cwd, value);
+    return resolved !== undefined && (resolved === resolvedCwd || resolved.startsWith(`${resolvedCwd}${path.sep}`));
+  };
+  const pathTools = new Set(["read", "write", "edit", "apply_patch", "grep", "rg", "find", "ls", "cat"]);
+  if (pathTools.has(name)) {
+    if (!cwd) return `tool ${toolName} has no trusted project cwd`;
+    const raw = args && typeof args === "object" ? args as Record<string, unknown> : {};
+    const candidates = [raw.path, raw.filePath, raw.filename, ...(Array.isArray(raw.paths) ? raw.paths : [])]
+      .filter((value) => value !== undefined && value !== null);
+    if (candidates.length === 0 || candidates.some((value) => typeof value !== "string" || !isWithinCwd(value))) {
+      return `tool ${toolName} targets a path outside the trusted project cwd`;
+    }
+    if (["write", "edit", "apply_patch"].includes(name)) {
+      const manifestPath = candidates.some((value) => typeof value === "string" && /(?:^|[\\/])(?:package\.json|package-lock\.json|bun\.lockb?|yarn\.lock|pnpm-lock\.yaml)$/.test(value));
+      if (manifestPath) return `tool ${toolName} cannot modify package lifecycle manifests during implicit start`;
+      const linkedPath = candidates.some((value) => {
+        try { return fs.lstatSync(path.resolve(cwd!, value as string)).nlink > 1; } catch { return false; }
+      });
+      if (linkedPath) return `tool ${toolName} targets a multiply-linked file during implicit start`;
+    }
+  }
+  if (/^(?:bash|sh|shell|terminal|exec|run)$/.test(name)) {
+    // Shell 的解释器能力无法静态证明“只写本地/只读外部”；隐式路径只放行可枚举的本地检查命令。
+    const safeShell = /^(?:git)\s+(?:status|diff|log|show|grep)\b|^(?:pwd|ls|grep|cat|head|tail|wc|stat|file)\b/i;
+    const forbidden = /\b(?:python\w*|node\w*|deno|ruby|perl|php|curl|wget|ssh|scp|sftp|nc|netcat|telnet|socat|openssl)\b|\b(?:git\s+[^\n]*\bpush\b|npm\s+(?:publish|install|add)|docker\s+push|terraform\s+apply|kubectl\s+(?:apply|delete))\b|https?:|\/dev\/(?:tcp|udp)\b|\$|~|`|[;|&<>\r\n]/i;
+    if (!safeShell.test(command) || forbidden.test(command)) return `command for tool ${toolName} is outside local/readonly implicit scope`;
+    if (!cwd) return `tool ${toolName} has no trusted project cwd`;
+    const shellTokens = command.match(/(?:"[^"]*"|'[^']*'|[^\s]+)/g)?.map((token) => token.replace(/^['"]|['"]$/g, "")) ?? [];
+    const gitCommand = /^git\s+(?:status|diff|log|show|grep)\b/i.test(command);
+    for (const token of shellTokens.slice(1)) {
+      if (gitCommand && token.startsWith("-")) return `command for tool ${toolName} uses a disallowed git option`;
+      if (token.startsWith("-") || token === "status" || token === "diff" || token === "log" || token === "show" || token === "grep") continue;
+      const looksLikePath = path.isAbsolute(token) || token.includes("/") || token.includes("\\") || token.startsWith(".") || fs.existsSync(path.resolve(cwd, token));
+      if (looksLikePath && !isWithinCwd(token)) return `command for tool ${toolName} targets a path outside the trusted project cwd`;
+    }
+  }
+  if (readonlyExternalTools.has(name) && /\b(?:POST|PUT|PATCH|DELETE|upload|write|publish|deploy)\b/i.test(text)) {
+    return `request for tool ${toolName} is outside local/readonly implicit scope`;
+  }
+  return undefined;
+}
+
+/** v0.7.0 运行预算纯判定（ADR 0032）。unbounded 永远不因预算暂停；bounded 的缺省维度不限制。 */
+export function decideBudgetPause(goal: GoalState, dimension: "turns" | "repairAttempts"): { pause: false } | { pause: true; reason: "budget_exhausted"; usage: { turns: number; repairAttempts: number } } {
+  if (goal.budgetPolicy !== "bounded" || !goal.runtimeBudget) return { pause: false };
+  const usage = { turns: goal.budgetUsage?.turns ?? 0, repairAttempts: goal.budgetUsage?.repairAttempts ?? 0 };
+  const base = dimension === "turns" ? goal.runtimeBudget.maxTurns : goal.runtimeBudget.maxRepairAttempts;
+  if (!base) return { pause: false };
+  if (usage[dimension] < base) return { pause: false };
+  const inGrace = goal.budgetInGrace === true;
+  if (!inGrace) return { pause: false };
+  const graceBound = dimension === "turns" ? goal.runtimeBudget.grace?.maxTurns : goal.runtimeBudget.grace?.maxRepairAttempts;
+  const graceTotal = graceBound ?? base;
+  if (usage[dimension] < base + graceTotal) return { pause: false };
+  return { pause: true, reason: "budget_exhausted", usage };
+}
+
 // 定位当前未 done 的 phase（注入时只取当前 phase 的阶段反馈）。
 export function currentUncheckedPhase(goal: GoalState): Phase | undefined {
-  return goal.plan?.phases.find((ph) => !isDonePlanStatus(ph.status));
+  return goal.plan?.phases.find((ph) => goal.verificationPolicy === "final_only" ? !ph.progressCompleted : !isDonePlanStatus(ph.status));
 }
 
 // 阶段序号（1-based）到真实 phaseId 的映射。旧 plan 可能非连续；新 plan 中序号 == phaseId。
@@ -2843,9 +3127,13 @@ export function buildSystemPrompt(goal: GoalState) {
   const acceptanceContractBlock = buildAcceptanceContractBlock(goal);
   const feedbackBlock = buildCheckFeedbackBlock(goal);
   const rejectedBlock = goal.status === "rejected" && goal.rejectedCount
-    ? `\n\n⚠️ 上次终审未通过（第 ${goal.rejectedCount}/3 次），必须先修正终审指出的与冻结 acceptanceCriteria 直接相关的问题再重新 dgoal_done。反馈中的人工体验要求移入 userReviewItems，不作为完成门。连续 3 次不过将暂停。`
+    ? `\n\n⚠️ 上次终审未通过（第 ${goal.rejectedCount} 次），必须先修正终审指出的与冻结 acceptanceCriteria 直接相关的问题再重新 dgoal_done。反馈中的人工体验要求移入 userReviewItems，不作为完成门。${goal.budgetPolicy === "unbounded" ? "当前为 unbounded，不因拒绝次数触发预算暂停。" : "有界预算会在修复宽限耗尽后暂停。"}`
     : "";
-  return `当前 /dgoal 目标：\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>${acceptanceContractBlock}${boundaryBlock}${buildContextBlock(goal)}${planBlock}${feedbackBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验冻结的独立验收条件与已验证证据；用户复核项不构成完成门。\n- 仅在目标全部完成且冻结验收条件验证通过后才调用 dgoal_done。\n- 遇到必须由用户决策才能继续的死锁（如冻结验收条件与目标冲突、缺只有用户掌握的信息或授权、外部不可控阻塞）时，调用 dgoal_pause 并写清死锁原因与需要的决策，立即暂停等待用户介入；不要消极地连续不调工具空转。一时困难不算死锁——先尝试替代方案、调试或缩小范围。\n- 阶段顺序执行（强制）：必须按 phase 顺序推进——把当前 phase 的所有 task 做完后，必须调用 dgoal_check 建检，通过后才能开始下一个 phase 的 task。严禁跳过未完成的 phase 直接做后续 phase。`;
+  const policyRule = goal.verificationPolicy === "final_only"
+    ? "- 当前验收策略为 final_only：phase 只代表执行进度；所有 task 完成后用 dgoal_plan 的 complete_progress 逐个标记进度完成，不要调用 dgoal_check；最后调用 dgoal_done 进行一次独立 goal 终审。"
+    : "- 当前验收策略为 phased：当前 phase 的所有 task 完成后必须调用 dgoal_check 建检，通过后才能开始下一个 phase。";
+  return `当前 /dgoal 目标：\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>${acceptanceContractBlock}${boundaryBlock}${buildContextBlock(goal)}${planBlock}${feedbackBlock}${rejectedBlock}\n\n循环规则：\n- 持续工作直到 /dgoal 目标端到端完成。\n- 不要停在纸面计划上（建 plan 是允许的，停在 plan 不动是不允许的）。\n- 需要时使用可用工具来实现、检查、调试和验证。\n- 以当前文件、命令输出、测试和外部状态为准。\n- 工具失败时先尝试合理替代方案，再放弃。\n- 完成前逐条核验冻结的独立验收条件与已验证证据；用户复核项不构成完成门。\n- 仅在目标全部完成且冻结验收条件验证通过后才调用 dgoal_done。\n- 遇到必须由用户决策才能继续的死锁（如冻结验收条件与目标冲突、缺只有用户掌握的信息或授权、外部不可控阻塞）时，调用 dgoal_pause 并写清死锁原因与需要的决策，立即暂停等待用户介入；不要消极地连续不调工具空转。一时困难不算死锁——先尝试替代方案、调试或缩小范围。\n- 阶段顺序执行（强制）：必须按 phase 顺序推进，严禁跳过未完成的 phase 直接做后续 phase。
+${policyRule}`;
 }
 
 // 切片7：把当前 plan（三层，AI 全可见）格式化注入 system prompt。
@@ -2940,13 +3228,14 @@ export function buildProposePrompt(goal: GoalState) {
     ``,
     `要求：`,
     `1. 读相关代码/文档，理解目标涉及的范围。`,
-    `2. 拆成若干 phase（阶段性目标），每个 phase 可带初始 task。`,
-    `3. 明确 goal 级验收说明：这个目标的完成标准是什么（交付什么、满足什么标准）。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考上面 <dgoal_context> 里的“验收标准”，但要显式写成 verification，不要留空，也不要写“完成并验证”“确保没问题”这类空话。`,
-    `4. 为 goal 和每个 phase 分别列出 acceptanceCriteria，每项包含 criterion 与可由 LLM 独立复验的 evidence；TUI/视觉/体验事项放入 userReviewItems，不得放进完成条件。`,
-    `5. **二次复核**：提交前逐条检查每个 acceptanceCriteria 的 evidence——它是否可由 read/grep/find/ls/bash 独立复验？如果 evidence 是 agent 自述（如“开发者声明已完成”“完成说明”）、主观代理判断（如“模型认为体验优秀”）、或需要人工执行的动作（如“用户确认”“人工检查”“视觉体验”“甲方验收”“真人试用”），必须移到 userReviewItems，不得留在 acceptanceCriteria。`,
-    `5. 若前文已明确边界，请补充 nonGoals（这个 goal 不做什么）、guardrails（高风险边界 / 明确不碰什么）、budget（成本预估 / 轮次边界）；若不能完整提供，也应允许启动闸门显式暴露缺口。`,
-    ...(isBareStart ? [`6. 用 dgoal_propose 提交 {objective, phases, verification, acceptanceCriteria, userReviewItems?, nonGoals?, guardrails?, budget?}——objective 必须是你归纳出的明确目标，不要留空或保留占位。`] : [`6. 用 dgoal_propose 提交 {objective, phases, verification, acceptanceCriteria, userReviewItems?, nonGoals?, guardrails?, budget?}（verification 与 acceptanceCriteria 必填）。`]),
-    `7. 提交后用户会确认；不要直接开始执行，等确认。`,
+    `2. 评估并提交验收策略推荐：普通任务推荐 final_only（phase 仅组织进度），只有有真实中间验收门且能解锁后续工作的任务才推荐 phased；同时提交 budgetPolicyRecommendation 与结构化 runtimeBudget。`,
+    `3. 拆成若干 phase（阶段性目标），每个 phase 可带初始 task。final_only 下 phase acceptanceCriteria 可省略；phased 下每个 phase 必须提供。`,
+    `4. 明确 goal 级验收说明：这个目标的完成标准是什么（交付什么、满足什么标准）。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考上面 <dgoal_context> 里的“验收标准”，但要显式写成 verification，不要留空，也不要写“完成并验证”“确保没问题”这类空话。`,
+    `5. 为 goal 和 phased 下的每个 phase 分别列出 acceptanceCriteria，每项包含 criterion 与可由 LLM 独立复验的 evidence；TUI/视觉/体验事项放入 userReviewItems，不得放进完成条件。`,
+    `6. **二次复核**：提交前逐条检查每个 acceptanceCriteria 的 evidence——它是否可由 read/grep/find/ls/bash 独立复验？如果 evidence 是 agent 自述（如“开发者声明已完成”“完成说明”）、主观代理判断（如“模型认为体验优秀”）、或需要人工执行的动作（如“用户确认”“人工检查”“视觉体验”“甲方验收”“真人试用”），必须移到 userReviewItems，不得留在 acceptanceCriteria。`,
+    `7. 若前文已明确边界，请补充 nonGoals（这个 goal 不做什么）、guardrails（高风险边界 / 明确不碰什么）、budget（成本预估 / 轮次边界）；若不能完整提供，也应允许启动闸门显式暴露缺口。`,
+    ...(isBareStart ? [`8. 用 dgoal_propose 提交 {objective, phases, verification, acceptanceCriteria, verificationPolicyRecommendation, budgetPolicyRecommendation, runtimeBudget, contextSummary?, userReviewItems?, nonGoals?, guardrails?, budget?}——objective 必须是你归纳出的明确目标，不要留空或保留占位。`] : [`8. 用 dgoal_propose 提交 {objective, phases, verification, acceptanceCriteria, verificationPolicyRecommendation, budgetPolicyRecommendation, runtimeBudget, contextSummary?, userReviewItems?, nonGoals?, guardrails?, budget?}（verification 与 goal acceptanceCriteria 必填）。`]),
+    `9. 显式启动提交后等待用户确认；若当前全局已授权隐式轻量启动，只有 final_only + bounded 且动作范围安全时才可自动开始。`,
   ].join("\n");
 }
 
@@ -2962,6 +3251,7 @@ export function formatProposalForConfirm(goal: GoalState, proposal: PlanProposal
     acceptanceCriteria: proposal.acceptanceCriteria,
     phaseCount: proposal.phases.length,
     phaseAcceptanceCriteria: proposal.phases.map((phase) => phase.acceptanceCriteria),
+    verificationPolicy: proposal.verificationPolicyRecommendation,
     nonGoals: proposal.nonGoals,
     guardrails: proposal.guardrails,
     budget: proposal.budget,
@@ -2976,6 +3266,12 @@ export function formatProposalForConfirm(goal: GoalState, proposal: PlanProposal
   lines.push(t("proposal.readiness", { level: readiness.level, meaning: t(`proposal.readiness.meaning.${readiness.level}`) }));
   if (proposal.nonGoals?.length) lines.push(t("proposal.nonGoals", { items: proposal.nonGoals.join("；") }));
   if (proposal.guardrails?.length) lines.push(t("proposal.guardrails", { items: proposal.guardrails.join("；") }));
+  if (proposal.verificationPolicyRecommendation) {
+    lines.push(`验收策略：${proposal.verificationPolicyRecommendation}${proposal.verificationPolicyReason ? `（${proposal.verificationPolicyReason}）` : ""}`);
+  }
+  if (proposal.budgetPolicyRecommendation) {
+    lines.push(`预算策略：${proposal.budgetPolicyRecommendation}${proposal.budgetPolicyReason ? `（${proposal.budgetPolicyReason}）` : ""}`);
+  }
   if (proposal.budget?.trim()) lines.push(t("proposal.budget", { budget: proposal.budget.trim() }));
   if (readiness.gaps.length) {
     lines.push(t("proposal.gapsHeading"));
@@ -3007,13 +3303,21 @@ export function formatProposalConfirmTitle(goal: GoalState, proposal: PlanPropos
   return t("proposal.confirmTitleWithPlan", { plan: formatProposalForConfirm(goal, proposal, options) });
 }
 
-export function buildProposalConfirmationOptions(showTasks: boolean): string[] {
-  return [
+export function buildProposalConfirmationOptions(showTasks: boolean, proposal?: PlanProposal): string[] {
+  const options = [
     t("proposal.confirmStart"),
     t("proposal.reject"),
     t("proposal.feedback"),
     t(showTasks ? "proposal.backToSummary" : "proposal.viewTasks"),
   ];
+  if (proposal) {
+    // 没有 phase 条件时不能在确认框把 final_only 切回 phased，否则会绕过 phased 的结构校验。
+    const canChoosePhased = proposal.verificationPolicyRecommendation === "phased"
+      || proposal.phases.every((phase) => Boolean(phase.acceptanceCriteria?.length));
+    if (canChoosePhased) options.push("切换验收策略");
+    options.push("切换预算策略");
+  }
+  return options;
 }
 
 // 切片4：启动闸门确认流程。返回 "confirmed" | "rejected" | { feedback: string }。
@@ -3031,16 +3335,37 @@ async function handleProposalConfirmation(
     editor?: (t: string, prefill: string) => Promise<string | undefined>;
   };
   let showTasks = false;
+  const originalPhaseCriteria = proposal.phases.map((phase) => phase.acceptanceCriteria);
+  const originalRuntimeBudget = proposal.runtimeBudget;
 
   if (typeof ui.select === "function") {
     while (true) {
-      const options = buildProposalConfirmationOptions(showTasks);
-      const toggleOption = options[3];
+      const options = buildProposalConfirmationOptions(showTasks, proposal);
+      const toggleTasksOption = options[3];
+      const togglePolicyOption = options.find((option) => option === "切换验收策略");
+      const toggleBudgetOption = options.find((option) => option === "切换预算策略");
       const choice = await ui.select(formatProposalConfirmTitle(goal, proposal, { showTasks }), options);
       if (choice === confirmStart) return "confirmed";
       if (choice === reject) return "rejected";
-      if (choice === toggleOption) {
+      if (choice === toggleTasksOption) {
         showTasks = !showTasks;
+        continue;
+      }
+      if (choice === togglePolicyOption) {
+        proposal.verificationPolicyRecommendation = proposal.verificationPolicyRecommendation === "final_only" ? "phased" : "final_only";
+        proposal.phases = proposal.phases.map((phase, index) => ({
+          ...phase,
+          ...(proposal.verificationPolicyRecommendation === "phased" && originalPhaseCriteria[index]
+            ? { acceptanceCriteria: originalPhaseCriteria[index] }
+            : proposal.verificationPolicyRecommendation === "final_only" ? { acceptanceCriteria: undefined } : {}),
+        }));
+        continue;
+      }
+      if (choice === toggleBudgetOption) {
+        proposal.budgetPolicyRecommendation = proposal.budgetPolicyRecommendation === "unbounded" ? "bounded" : "unbounded";
+        proposal.runtimeBudget = proposal.budgetPolicyRecommendation === "bounded"
+          ? (originalRuntimeBudget ?? { ...DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET })
+          : undefined;
         continue;
       }
       // 输入反馈
@@ -3066,22 +3391,26 @@ async function handleProposalConfirmation(
 export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState) {
   // 收到 proposal？
   if (goalRuntimeState.pendingProposal && goalRuntimeState.pendingProposal.goalId === goal.id) {
-    const proposal = goalRuntimeState.pendingProposal.proposal;
+    const pendingProposal = goalRuntimeState.pendingProposal;
+    const proposal = pendingProposal.proposal;
+    const implicitProposal = pendingProposal.implicitStart === true;
     goalRuntimeState.pendingProposal = undefined;
     goalRuntimeState.proposalRetryCount = 0;
 
     let decision: "confirmed" | "rejected" | { feedback: string };
     try {
-      decision = await handleProposalConfirmation(ctx, goal, proposal);
+      // Global implicit authorization replaces only this blocking confirmation, never validation/preflight.
+      // 只有同一次 proposal 明确通过了 implicit gate 才能跳过确认；遗留 goal 标记不能授权后续重提。
+      decision = goal.implicitStart && implicitProposal ? "confirmed" : await handleProposalConfirmation(ctx, goal, proposal);
     } catch (error) {
       // 对话框异常时恢复 pending proposal，避免 UI 失败让计划静默丢失或半激活。
-      goalRuntimeState.pendingProposal = { goalId: goal.id, proposal };
+      goalRuntimeState.pendingProposal = { goalId: goal.id, proposal, ...(implicitProposal ? { implicitStart: true } : {}) };
       safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
       return;
     }
     if (decision === "rejected") {
-      safeNotify(ctx, t("notify.proposalRejected"), "info");
       clearActiveGoal(ctx);
+      safeNotify(ctx, t("notify.proposalRejected"), "info");
       return;
     }
     if (decision === "confirmed") {
@@ -3092,7 +3421,13 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
         ...goal,
         objective: proposal.objective,
         plan: proposalToPlan(proposal),
+        ...(proposal.contextSummary ? { contextSummary: proposal.contextSummary } : {}),
         ...(proposal.verification ? { verification: proposal.verification } : {}),
+        verificationPolicy: proposal.verificationPolicyRecommendation ?? "phased",
+        budgetPolicy: proposal.budgetPolicyRecommendation ?? "unbounded",
+        ...(proposal.runtimeBudget ? { runtimeBudget: proposal.runtimeBudget } : {}),
+        budgetUsage: { turns: 0, repairAttempts: 0 },
+        ...(implicitProposal ? { implicitStart: true, allowedToolScope: "local_repo_and_readonly_external" as const } : {}),
         ...(proposal.acceptanceCriteria?.length ? { acceptanceCriteria: proposal.acceptanceCriteria } : {}),
         ...(proposal.userReviewItems?.length ? { userReviewItems: proposal.userReviewItems } : {}),
         ...(proposal.nonGoals?.length ? { nonGoals: proposal.nonGoals } : {}),
@@ -3108,7 +3443,9 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
       // 业务状态与 START prompt 不依赖 TUI；UI 失败只影响展示。
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
-      safeNotify(ctx, t("notify.proposalConfirmed"), "info");
+      safeNotify(ctx, implicitProposal
+        ? "Started a bounded final_only dgoal automatically. Use /dgoal s, /dgoal pause, or /dgoal clear at any time."
+        : t("notify.proposalConfirmed"), "info");
       await sendPrompt(pi, ctx, buildStartPrompt(goalRuntimeState.currentGoal));
       return;
     }
@@ -3120,8 +3457,8 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
       return;
     }
     // 空反馈当拒绝处理
-    safeNotify(ctx, t("notify.emptyFeedback"), "info");
     clearActiveGoal(ctx);
+    safeNotify(ctx, t("notify.emptyFeedback"), "info");
     return;
   }
 
@@ -3132,10 +3469,10 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
     await sendPrompt(pi, ctx, buildProposePrompt(goal));
     return;
   }
-  // 重试耗尽：中止（不进 active，清 goal）
-  safeNotify(ctx, t("notify.proposalFailed", { max: MAX_PROPOSAL_RETRIES }), "warning");
+  // 重试耗尽：中止（不进 active，清 goal）；先持久化清理，再通知 UI。
   goalRuntimeState.proposalRetryCount = 0;
   clearActiveGoal(ctx);
+  safeNotify(ctx, t("notify.proposalFailed", { max: MAX_PROPOSAL_RETRIES }), "warning");
 }
 
 function buildHelpPrompt(goal: GoalState | undefined) {
@@ -3214,24 +3551,42 @@ export function loadGoal(ctx: DgoalContext) {
     .filter((item) => item.type === "custom" && item.customType === STATE_ENTRY_TYPE)
     .pop();
   const data = entry?.data as DgoalStateEntryData | undefined;
-  return isGoalState(data?.goal) && data.goal.status !== "done" && data.goal.status !== "pending"
+  return isGoalState(data?.goal) && data.goal.status !== "done"
     ? data.goal
     : undefined;
 }
 
-// session_start / session_tree 共用：从当前 session 重新加载 goal 并重同步 status/overlay。
-// 抽出来共用是为了保证两个事件路径不分叉（tree 不重同步是历史 bug 根因）。
-// UI 抛错不阻断状态重同步——goalRuntimeState.currentGoal 已在前面 load 完，UI 只是展示层。
+function isStaleSessionContextError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:stale[^\n]*(?:session|branch)|(?:session|branch)[^\n]*(?:stale|replacement|replaced|closed|changed))/i.test(message);
+}
+
+export function restoreGoalIfMissing(ctx: DgoalContext): GoalState | undefined {
+  if (goalRuntimeState.currentGoal) return goalRuntimeState.currentGoal;
+  const restored = loadGoal(ctx);
+  if (restored) goalRuntimeState.currentGoal = restored;
+  return restored;
+}
+
+// session_start / session_tree / session_compact 共用：从当前 session 重加载 goal 并重同步 status/overlay。
+// 读取必须先成功，避免 stale session context 或其它读取错误把尚存的 currentGoal 清掉。
 export function resyncGoalFromSession(ctx: DgoalContext) {
+  let nextGoal: GoalState | undefined;
+  try {
+    nextGoal = loadGoal(ctx);
+  } catch (error) {
+    if (isStaleSessionContextError(error)) return;
+    throw error;
+  }
   clearContinuation();
   clearCurrentCheckSnapshot();
   resetAuditorWorkspaceTracker();
   // 加载新 goal 前清空无进展计数，避免跨 goal/session 继承旧计数。
   goalRuntimeState.consecutiveNoProgressTurns = 0;
   goalRuntimeState.turnHadToolExecution = false;
-  goalRuntimeState.currentGoal = loadGoal(ctx);
+  goalRuntimeState.currentGoal = nextGoal;
   try {
-    ctx.ui.setStatus(STATUS_KEY, formatStatus(goalRuntimeState.currentGoal));
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     // 切片3：计划浮层——首次带 UI 时构造 overlay；session_tree 复用已有实例。
     if ((ctx as { hasUI?: boolean }).hasUI) {
       planOverlay ??= new PlanOverlay();
@@ -3465,7 +3820,7 @@ export function buildCompletionReplySignal(args: CompletionReplySignalArgs) {
   ].filter(Boolean).join("\n");
 }
 
-// 背景固化按配置候选链各尝试一次，耗尽后使用当前会话模型一次；全部失败时 fail-closed。
+// 兼容测试 helper：v0.7.0 生产启动不调用此旧背景摘要路径；背景由主 agent 在 proposal 中按需提供。
 async function summarizeContext(args: {
   ctx: ExtensionContext;
   objective: string;
@@ -3490,8 +3845,7 @@ async function summarizeContext(args: {
   };
 }
 
-// 起隔离子进程把前文讨论固化成结构化背景（目标范围 / 关键约束 / 验收标准）。
-// 与 auditor 同一套 spawn 模式，但纯生成、不给工具：子进程只看喂入的前文文本。
+// 旧版兼容 helper：起隔离子进程把前文讨论固化成结构化背景；生产启动已移除调用。
 async function runContextSummarizerOnce(args: {
   ctx: ExtensionContext;
   objective: string;
@@ -4131,7 +4485,7 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
     else issues.push({ key: "notify.auditorModelInvalid", params: { path: configPath, field } });
   }
 
-  const candidateFields: Array<"phaseAuditorModels" | "goalAuditorModels" | "contextSummarizerModels"> = ["phaseAuditorModels", "goalAuditorModels", "contextSummarizerModels"];
+  const candidateFields: Array<"phaseAuditorModels" | "goalAuditorModels"> = ["phaseAuditorModels", "goalAuditorModels"];
   for (const field of candidateFields) {
     if (!Object.prototype.hasOwnProperty.call(parsedConfig, field)) continue;
     const value = parsedConfig[field];
@@ -4164,6 +4518,17 @@ async function readDgoalConfigFile(configPath: string): Promise<{ config: DgoalC
       issues.push({ key: "notify.auditorModelCandidatesTruncated", params: { path: configPath, field, max: MAX_AUDITOR_MODEL_CANDIDATES } });
     }
     if (candidates.length > 0) config[field] = candidates;
+  }
+
+  // This capability is parsed for diagnostics in either file, but only the global value is used.
+  if (Object.prototype.hasOwnProperty.call(parsedConfig, "implicitFinalOnlyStart")) {
+    if (typeof parsedConfig.implicitFinalOnlyStart === "boolean") config.implicitFinalOnlyStart = parsedConfig.implicitFinalOnlyStart;
+    else issues.push({ key: "notify.dgoalConfigNotObject", params: { path: configPath } });
+  }
+  if (Object.prototype.hasOwnProperty.call(parsedConfig, "implicitFinalOnlyBudget")) {
+    const budget = normalizeRuntimeBudget(parsedConfig.implicitFinalOnlyBudget);
+    if (budget) config.implicitFinalOnlyBudget = budget;
+    else issues.push({ key: "notify.dgoalConfigNotObject", params: { path: configPath } });
   }
 
   // 语义预审 idle timeout（秒）：正整数才采用，其他值告警并回退默认。
@@ -4203,21 +4568,23 @@ export async function loadDgoalConfig(
   };
 }
 
+/** @deprecated Startup context summarization was removed in ADR 0033. */
 export async function resolveContextSummarizerModelCandidates(
-  ctx: Pick<ExtensionContext, "cwd" | "isProjectTrusted" | "model">,
-  options: { agentDir?: string } = {},
+  ctx: Pick<ExtensionContext, "model">,
 ): Promise<string[]> {
-  const loaded = await loadDgoalConfig(ctx, options);
-  const configured = [loaded.projectConfig, loaded.globalConfig]
-    .map((config) => config.contextSummarizerModels)
-    .find((value) => value !== undefined);
-  const current = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-  const candidates = configured === null || configured === undefined ? [] : [...configured];
-  if (current && !candidates.includes(current)) candidates.push(current);
-  return candidates;
+  return ctx.model ? [`${ctx.model.provider}/${ctx.model.id}`] : [];
 }
 
 // 解析语义预审 idle timeout（项目级优先于全局，合法正整数秒；缺失或非法回退默认 60s）。
+export async function resolveImplicitFinalOnlyBudget(
+  ctx: Pick<ExtensionContext, "cwd"> & { isProjectTrusted?: () => boolean },
+  options: { agentDir?: string } = {},
+): Promise<RuntimeBudget> {
+  const loaded = await loadDgoalConfig(ctx, options);
+  // Deliberately global-only: project config cannot expand autonomous authority.
+  return { ...DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET, ...(loaded.globalConfig.implicitFinalOnlyBudget ?? {}) };
+}
+
 export function resolveProposalSemanticReviewIdleTimeoutSeconds(loaded: LoadedDgoalConfig): number {
   const configured = [loaded.projectConfig, loaded.globalConfig]
     .map((config) => config.proposalSemanticReviewIdleTimeoutSeconds)
@@ -4881,6 +5248,8 @@ async function runCompletionAuditor(args: {
   verification: string;
   whatChanged?: string[];
   userReview?: string;
+  verificationBundle?: VerificationBundle;
+  auditMode?: FinalAuditMode;
   onUpdate?: CheckRuntimeOptions["onUpdate"];
 }): Promise<AuditorResult> {
   if (completionAuditorOverrideForTest) return completionAuditorOverrideForTest();
@@ -4888,7 +5257,7 @@ async function runCompletionAuditor(args: {
     ctx: args.ctx,
     scope: "goal",
     systemPrompt: AUDITOR_SYSTEM_PROMPT,
-    task: buildAuditorTask(args.goal, args.summary, args.verification, args.whatChanged, args.userReview),
+    task: buildAuditorTask(args.goal, args.summary, args.verification, args.whatChanged, args.userReview, args.verificationBundle, args.auditMode),
     idleTimeoutMs: CHECK_IDLE_TIMEOUT_MS,
     totalTimeoutMs: getAuditTotalTimeoutMs("goal"),
     progressUpdateThrottleMs: CHECK_PROGRESS_UPDATE_THROTTLE_MS,
@@ -5365,11 +5734,33 @@ export function formatUserReviewText(goal: GoalState, agentReview?: string, disc
   return parts.length ? parts.join("\n") : undefined;
 }
 
-export function buildAuditorTask(goal: GoalState, summary: string, verification: string, whatChanged?: string[], userReview?: string) {
+export function buildAuditorTask(goal: GoalState, summary: string, verification: string, whatChanged?: string[], userReview?: string, verificationBundle?: VerificationBundle, auditMode?: FinalAuditMode) {
   const previousFeedback = goal.finalFeedback;
+  const narrowMode = auditMode === "narrow_confirmation" || (goal.verificationPolicy === "final_only" && Boolean(previousFeedback));
+  const modeLines = narrowMode
+    ? ["", "本轮是窄确认审：只核验上一轮 blocker 是否修复、修复后新增 diff、受影响回归测试与少量全局保护测试；不得新增冻结完成门、偏好或无关 nits，但新 diff 确实造成的回归仍可拒绝。"]
+    : (goal.verificationPolicy === "final_only"
+      ? ["", "本轮是诊断审：针对冻结完成门一次集中找全 blocker、实际回归与高风险证据缺口，不报告无关优化、偏好或 nits。"]
+      : []);
+  const bundleLines = verificationBundle && verificationBundle.changes
+    ? [
+      "",
+      "<verification_bundle>",
+      "本轮改动：",
+      escapeXml(verificationBundle.changes),
+      "冻结条件与命令/工件映射：",
+      escapeXml(verificationBundle.acceptanceEvidence),
+      "最后一次改动后的自测：",
+      escapeXml(verificationBundle.selfTest),
+      "已知风险与未覆盖边界：",
+      escapeXml(verificationBundle.risks),
+      "</verification_bundle>",
+      "注意：验证包仅供定位，不是独立通过证据；仍需你用 read/grep/find/ls/bash 独立复验。",
+    ]
+    : [];
   const previousFeedbackLines = previousFeedback?.report?.trim() ? [
     "",
-    `上一轮终审未通过（第 ${previousFeedback.rejectedCount}/3 次），原始反馈如下（这是重审：先逐条核验下列问题是否真已修好，再全量查新问题）：`,
+    `上一轮终审未通过（第 ${previousFeedback.rejectedCount} 次），原始反馈如下（这是重审：先逐条核验下列问题是否真已修好，再全量查新问题）：`,
     "注意：上一轮反馈中可能包含越权的人工体验完成门（如 TUI/视觉/体验要求）——只按本次冻结的 acceptanceCriteria 重审，不把上轮的人工体验要求继续作为完成门。",
     "<previous_feedback>",
     escapeXml(previousFeedback.report),
@@ -5412,6 +5803,8 @@ export function buildAuditorTask(goal: GoalState, summary: string, verification:
     escapeXml(verification || "（未提供）"),
     ...whatChangedLines,
     ...userReviewLines,
+    ...bundleLines,
+    ...modeLines,
     ...planLines,
     ...previousFeedbackLines,
     "",
@@ -5770,6 +6163,8 @@ export function __handleFinalAuditRejectedForTest(args: {
   whatChanged?: string[];
   userReview?: string;
   auditOutput: string;
+  auditMode?: FinalAuditMode;
+  verificationBundle?: VerificationBundle;
   ctx: DgoalContext;
 }) {
   return handleFinalAuditRejected(args);
@@ -5815,7 +6210,7 @@ export async function __summarizeContextForTest(args: { ctx: ExtensionContext; o
 // ============================================================================
 
 // dgoal_plan 的 action 集合。
-type PlanAction = "create" | "update" | "list" | "get";
+type PlanAction = "create" | "update" | "list" | "get" | "complete_progress";
 
 // Reducer 结果的 closed union（rpiv-todo 风格）：加新分支要在 formatPlanContent 补 case（编译器不强制，但人工保持一致）。
 type PlanOp =
@@ -5823,6 +6218,7 @@ type PlanOp =
   | { kind: "update"; taskId: number; fromStatus: PlanStatus; toStatus: PlanStatus }
   | { kind: "list"; tasks: Task[] }
   | { kind: "get"; task: Task }
+  | { kind: "complete_progress"; phaseId: number }
   | { kind: "error"; message: string };
 
 interface PlanApplyResult {
@@ -5851,11 +6247,14 @@ function enforcePhaseOrder(goal: GoalState, action: PlanAction, params: Record<s
   if (!goal.plan || goal.plan.phases.length <= 1) return null;
   if (action === "list" || action === "get") return null;
 
-  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => !isDonePlanStatus(ph.status));
+  const firstIncompleteIdx = goal.plan.phases.findIndex((ph) => goal.verificationPolicy === "final_only" ? !ph.progressCompleted : !isDonePlanStatus(ph.status));
   if (firstIncompleteIdx < 0) return null;
 
   let targetPhaseIdx = -1;
-  if (action === "create") {
+  if (action === "complete_progress") {
+    const phaseId = Number(params.phaseId);
+    targetPhaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
+  } else if (action === "create") {
     const phaseId = Number(params.phaseId);
     targetPhaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
   } else if (action === "update") {
@@ -5867,7 +6266,8 @@ function enforcePhaseOrder(goal: GoalState, action: PlanAction, params: Record<s
       }
     }
   }
-  if (targetPhaseIdx < 0 || targetPhaseIdx === firstIncompleteIdx) return null;
+  // final_only may reopen an earlier progress-complete phase; that mutation invalidates progress.
+  if (targetPhaseIdx < 0 || targetPhaseIdx === firstIncompleteIdx || (goal.verificationPolicy === "final_only" && targetPhaseIdx < firstIncompleteIdx)) return null;
 
   const currentPh = goal.plan.phases[firstIncompleteIdx];
   const targetPh = goal.plan.phases[targetPhaseIdx];
@@ -5927,7 +6327,7 @@ export function applyPlanMutation(
       if (params.activeForm) newTask.activeForm = String(params.activeForm);
       if (initialBlockedBy.length) newTask.blockedBy = [...initialBlockedBy];
       const phases = goal.plan.phases.map((ph, i) =>
-        i === phaseIdx ? { ...ph, tasks: [...ph.tasks, newTask] } : ph,
+        i === phaseIdx ? { ...ph, tasks: [...ph.tasks, newTask], ...(goal.verificationPolicy === "final_only" ? { progressCompleted: false } : {}) } : ph,
       );
       return {
         goal: { ...goal, plan: { phases, nextId: goal.plan.nextId + 1 }, updatedAt: Date.now() },
@@ -5984,6 +6384,14 @@ export function applyPlanMutation(
           return planError(goal, t("plan.error.addBlockedByCycle"));
         }
       }
+      if ((newStatus === "in_progress" || isDonePlanStatus(newStatus)) && newBlockedBy.length) {
+        const allTasks = flattenTasks(goal.plan);
+        const unresolved = newBlockedBy.find((dep) => {
+          const dependency = allTasks.find((task) => task.id === dep);
+          return !dependency || !isDonePlanStatus(dependency.status);
+        });
+        if (unresolved !== undefined) return planError(goal, t("plan.error.blockedByUnresolved", { taskId: unresolved }));
+      }
 
       const updated: Task = { ...current, status: newStatus };
       if (params.subject !== undefined) updated.subject = String(params.subject);
@@ -5997,6 +6405,8 @@ export function applyPlanMutation(
       const tasks = [...phase.tasks];
       tasks[taskIdx] = updated;
       const newPhase: Phase = { ...phase, tasks };
+      // A task mutation in final_only invalidates its separate progress-complete fact.
+      if (goal.verificationPolicy === "final_only") newPhase.progressCompleted = false;
       newPhase.status = recomputePhaseStatus(newPhase);
       const phases = goal.plan.phases.map((ph, i) => (i === phaseIdx ? newPhase : ph));
 
@@ -6018,6 +6428,18 @@ export function applyPlanMutation(
       }
       return { goal, op: { kind: "list", tasks } };
     }
+    case "complete_progress": {
+      if (goal.verificationPolicy !== "final_only") return planError(goal, "complete_progress is available only for final_only goals.");
+      const phaseId = Number(params.phaseId);
+      const phaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
+      if (phaseIdx === -1) return planError(goal, t("plan.error.phaseNotFound", { phaseId }));
+      const phase = goal.plan.phases[phaseIdx];
+      if (phase.tasks.length === 0) return planError(goal, `phase #${phaseId} has no tasks; cannot mark progress complete.`);
+      const allDone = phase.tasks.every((task) => isDonePlanStatus(task.status));
+      if (!allDone) return planError(goal, `phase #${phaseId} tasks are not all done; cannot mark progress complete.`);
+      const phases = goal.plan.phases.map((ph, index) => index === phaseIdx ? { ...ph, progressCompleted: true } : ph);
+      return { goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() }, op: { kind: "complete_progress", phaseId } };
+    }
     case "get": {
       const id = Number(params.id);
       if (!Number.isFinite(id)) return planError(goal, t("plan.error.idRequiredForGet"));
@@ -6029,7 +6451,7 @@ export function applyPlanMutation(
 }
 
 // phase completed 的显式触发器（由 dgoal_check 终审通过后调用，切片 5）。
-// reducer 不主动标 phase completed（ADR 0006：phase completed 唯一入口是 dgoal_check）。
+// reducer 不主动标 phased phase completed（ADR 0006）；final_only 的进度划线由 complete_progress 单独写入。
 export function setPhaseCompleted(goal: GoalState, phaseId: number): PlanApplyResult {
   if (!goal.plan) return planError(goal, t("plan.error.noPlan"));
   const idx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
@@ -6084,8 +6506,8 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
   if (visiblePhases.length === 0) return [];
 
   const total = goal.plan.phases.length;
-  const doneCount = goal.plan.phases.filter((ph) => isDonePlanStatus(ph.status)).length;
-
+  const phaseDone = (ph: Phase) => isDonePlanStatus(ph.status) || (goal.verificationPolicy === "final_only" && ph.progressCompleted === true);
+  const doneCount = goal.plan.phases.filter(phaseDone).length;
   // active/rejected 实时走表；paused/done 冻结在 updatedAt，避免暂停后计时继续跳。
   const elapsed = formatElapsed(getGoalElapsedMs(goal));
   const repairLabel = formatGoalRepairLabel(goal);
@@ -6097,7 +6519,7 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
   for (const ph of visiblePhases) {
     const icon = PHASE_ICON[ph.status] ?? "○";
     const phSubject = truncateLine(ph.subject, 50);
-    const renderedPhSubject = isDonePlanStatus(ph.status) ? ansiStrikethrough(phSubject) : phSubject;
+    const renderedPhSubject = phaseDone(ph) ? ansiStrikethrough(phSubject) : phSubject;
     const blk = ph.status === "blocked" && ph.blockedReason ? ` [${truncateLine(ph.blockedReason, 30)}]` : "";
     bodyLines.push(`├─ ${icon} ${renderedPhSubject}${blk}`);
     if (opts.expandTasks && shouldExpandTasksInPersistentOverlay(ph.status)) {
@@ -6410,8 +6832,10 @@ export function formatStatus(goal: GoalState | undefined) {
   if (goal.status === "done") return t("status.done");
   if (goal.status === "paused") return formatGoalRepairLabel(goal) ?? t("status.paused");
   if (goal.status === "pending") return t("status.starting");
-  if (goal.status === "rejected") return formatGoalRepairLabel(goal);
-  return t("status.active", { iteration: goal.iteration });
+  const label = goal.status === "rejected"
+    ? formatGoalRepairLabel(goal)
+    : t("status.active", { iteration: goal.iteration });
+  return goal.budgetInGrace ? `${label ?? t("status.active", { iteration: goal.iteration })} · 宽限中` : label;
 }
 
 function escapeXml(value: string) {

@@ -167,15 +167,15 @@ describe("切片1 · 旧 entry 隔离", () => {
     expect(restored).toBeUndefined();
   });
 
-  test("complete/pending 状态的 goal 不被 loadGoal 恢复（沿用 0.1.x 行为）", () => {
-    const completed = makeGoalWithPlan({ status: "complete" });
+  test("done goal 不恢复，pending goal 保留以便重载后回到启动闸门", () => {
+    const completed = makeGoalWithPlan({ status: "done" });
     const pending = makeGoalWithPlan({ status: "pending", id: "p-1" });
     const ctx = makeCtx([
       { type: "custom", customType: "dgoal-goal-vnext", data: { goal: completed } },
       { type: "custom", customType: "dgoal-goal-vnext", data: { goal: pending } },
     ]);
-    // last-write-wins 取最后一条（pending），但 pending 被过滤 → undefined
-    expect(loadGoal(ctx as never)).toBeUndefined();
+    expect(loadGoal(ctx as never)?.id).toBe("p-1");
+    expect(loadGoal(ctx as never)?.status).toBe("pending");
   });
 
   test("非 dgoal-state customType 的 entry 被忽略", () => {

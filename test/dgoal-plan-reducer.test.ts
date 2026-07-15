@@ -138,6 +138,11 @@ describe("切片2 · 字符串化数组参数兼容（模型序列化降级）",
 });
 
 describe("切片2 · update task 状态机", () => {
+  test("pending → in_progress 被未完成依赖阻止", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a"), task(2, "b", "pending", { blockedBy: [1] })])]);
+    expect(run(goal, "update", { id: 2, status: "in_progress" }).op.kind).toBe("error");
+  });
+
   test("pending → in_progress 合法", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);
     const r = run(goal, "update", { id: 1, status: "in_progress", activeForm: "正在做 a" });

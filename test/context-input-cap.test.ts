@@ -399,7 +399,7 @@ describe("acceptance check alignment", () => {
 
     expect(task).toContain("<previous_feedback>");
     expect(task).toContain("终审失败：证据不足");
-    expect(task).toContain("第 1/3 次");
+    expect(task).toContain("第 1 次");
   });
 
   test("buildAuditorTask does not inject an empty previous_feedback block when there is no final feedback", () => {

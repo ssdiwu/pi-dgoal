@@ -4,10 +4,15 @@
 // （阶段明明完成了还显示未完成，计时器也冻住）。修复：session_start / session_tree 共用 resyncGoalFromSession。
 import { describe, expect, test } from "bun:test";
 
-import {
+import dgoal, {
+  __executeDgoalCheckForTest,
+  __executeDgoalDoneForTest,
+  __executeDgoalPlanForTest,
   __getGoalForTest,
   __resetGoalForTest,
+  __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
+  __setPhaseCheckOverrideForTest,
   resyncGoalFromSession,
   type GoalState,
   type Phase,
@@ -47,6 +52,19 @@ function dgoalEntry(goal: GoalState) {
   return { type: "custom", customType: "dgoal-goal-vnext", data: { goal } };
 }
 
+function captureHandlers() {
+  const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+  dgoal({
+    registerTool: () => {},
+    registerCommand: () => {},
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers[event] = handler; },
+    events: { emit: () => {} },
+    sendUserMessage: () => {},
+    appendEntry: () => {},
+  } as never);
+  return handlers;
+}
+
 describe("session_tree 重同步（resyncGoalFromSession）", () => {
   test("tree 到含更新 goal 状态的分支 → currentGoal 反映新分支状态", () => {
     __resetGoalForTest();
@@ -76,6 +94,61 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-goal-vnext entry
 
     expect(__getGoalForTest()).toBeUndefined();
+  });
+
+  test("pending goal 在 reload/tree 重同步后保留并回到启动闸门", () => {
+    __resetGoalForTest();
+    const pending = makeGoal({ id: "pending-after-reload", status: "pending" });
+    resyncGoalFromSession(makeCtx([dgoalEntry(pending)]) as never);
+    expect(__getGoalForTest()?.id).toBe("pending-after-reload");
+    expect(__getGoalForTest()?.status).toBe("pending");
+  });
+
+  test("session_compact 复用恢复入口加载持久化 goal", () => {
+    __resetGoalForTest();
+    const compactedGoal = makeGoal({ id: "compact-goal", status: "rejected" });
+    const handlers = captureHandlers();
+    __setGoalForTest(undefined);
+    handlers.session_compact({}, makeCtx([dgoalEntry(compactedGoal)]) as never);
+    expect(__getGoalForTest()?.id).toBe("compact-goal");
+    expect(__getGoalForTest()?.status).toBe("rejected");
+  });
+
+  test("内存 goal 为空时 dgoal_plan/check/done 从 session 惰性恢复", async () => {
+    __resetGoalForTest();
+    const active = makeGoal({ id: "lazy-active", plan: { phases: [phase(1, "p1", [task(1, "a", "pending")])], nextId: 2 } });
+    const ctx = makeCtx([dgoalEntry(active)]) as never;
+    const planResult = await __executeDgoalPlanForTest({ action: "list" }, ctx);
+    expect(planResult.details?.error).not.toBe("no active goal");
+    expect(__getGoalForTest()?.id).toBe("lazy-active");
+
+    __setGoalForTest(undefined);
+    const checkGoal = makeGoal({ id: "lazy-check", plan: { phases: [phase(1, "p1", [task(1, "a", "done")])], nextId: 2 } });
+    __setPhaseCheckOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
+    const checkResult = await __executeDgoalCheckForTest({ phaseId: 1 }, makeCtx([dgoalEntry(checkGoal)]) as never);
+    expect(checkResult.details?.error).not.toBe("no active goal/plan");
+    expect(__getGoalForTest()?.id).toBe("lazy-check");
+
+    __setGoalForTest(undefined);
+    const doneGoal = makeGoal({ id: "lazy-done", status: "rejected", verification: "通过测试", plan: { phases: [phase(1, "p1", [task(1, "a", "done")], "completed")], nextId: 2 } });
+    __setCompletionAuditorOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
+    const doneResult = await __executeDgoalDoneForTest({ summary: "完成", verification: "npm test" }, makeCtx([dgoalEntry(doneGoal)]) as never);
+    expect(doneResult.details?.error).not.toBe("no active goal");
+    __setPhaseCheckOverrideForTest(undefined);
+    __setCompletionAuditorOverrideForTest(undefined);
+  });
+
+  test("stale session context 不清空现有 goal，其他读取错误继续抛出", () => {
+    __resetGoalForTest();
+    const current = makeGoal({ id: "keep-on-stale" });
+    __setGoalForTest(current);
+    const staleCtx = { ...makeCtx([]), sessionManager: { getBranch: () => { throw new Error("stale after session replacement"); } } };
+    expect(() => resyncGoalFromSession(staleCtx as never)).not.toThrow();
+    expect(__getGoalForTest()?.id).toBe("keep-on-stale");
+
+    const brokenCtx = { ...makeCtx([]), sessionManager: { getBranch: () => { throw new Error("permission denied"); } } };
+    expect(() => resyncGoalFromSession(brokenCtx as never)).toThrow("permission denied");
+    expect(__getGoalForTest()?.id).toBe("keep-on-stale");
   });
 
   test("tree 到 done 状态 goal 的分支 → 不恢复（loadGoal 沿用既有行为）", () => {

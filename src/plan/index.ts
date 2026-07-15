@@ -27,6 +27,8 @@ export interface Phase {
   subject: string;
   description?: string;
   acceptanceCriteria?: AcceptanceCriterion[];
+  /** final_only 的进度事实；不同于 status=done（独立 phase 建检通过）。 */
+  progressCompleted?: boolean;
   status: PlanStatus;
   tasks: Task[];
   blockedReason?: string;

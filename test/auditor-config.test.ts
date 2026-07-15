@@ -41,17 +41,9 @@ afterEach(() => {
 });
 
 describe("dgoal auditor config", () => {
-  test("背景总结候选链按配置顺序追加当前会话模型兜底", async () => {
-    const { agentDir, cwd } = makeTempProject();
-    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({
-      contextSummarizerModels: ["openai/gpt-4o", "anthropic/claude-sonnet"],
-    }));
-    const candidates = await resolveContextSummarizerModelCandidates({
-      cwd,
-      isProjectTrusted: () => true,
-      model: { provider: "openai", id: "gpt-5" },
-    }, { agentDir });
-    expect(candidates).toEqual(["openai/gpt-4o", "anthropic/claude-sonnet", "openai/gpt-5"]);
+  test("背景摘要候选链已移除，只保留兼容的当前模型返回", async () => {
+    const candidates = await resolveContextSummarizerModelCandidates({ model: { provider: "openai", id: "gpt-5" } });
+    expect(candidates).toEqual(["openai/gpt-5"]);
   });
   test("matches candidates against structured Pi model entries, including custom IDs and thinking suffixes", () => {
     const result = preflightAuditorModelCandidates(

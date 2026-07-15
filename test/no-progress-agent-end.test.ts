@@ -95,6 +95,51 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.pauseReason).toBe("no_progress");
   });
 
+  test("bounded 墙钟上限首次进入宽限，宽限耗尽才暂停", async () => {
+    const now = Date.now();
+    __setGoalForTest({ ...makeActiveGoal(), startedAt: now - 61_000, budgetPolicy: "bounded", runtimeBudget: { maxWallClockMinutes: 1, grace: { maxWallClockMinutes: 1 } }, budgetUsage: { turns: 0, repairAttempts: 0 } });
+    const ctx = mockCtx();
+    await runTurn(handlers, ctx, { tools: true });
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getGoalForTest()?.budgetInGrace).toBe(true);
+    __setGoalForTest({ ...__getGoalForTest()!, startedAt: Date.now() - 121_000 });
+    await runTurn(handlers, ctx, { tools: true });
+    expect(__getGoalForTest()?.status).toBe("paused");
+    expect(__getGoalForTest()?.pauseReason).toBe("budget_exhausted");
+  });
+
+  test("非 stop 结束原因不计入 turn 预算，stop 才进入宽限与暂停", async () => {
+    __setGoalForTest({ ...makeActiveGoal(), budgetPolicy: "bounded", runtimeBudget: { maxTurns: 1, grace: { maxTurns: 1 } }, budgetUsage: { turns: 0, repairAttempts: 0 } });
+    await runTurn(handlers, mockCtx(), { stopReason: "toolUse" });
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(0);
+    expect(__getGoalForTest()?.status).toBe("active");
+    await runTurn(handlers, mockCtx(), { stopReason: "stop" });
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(1);
+    expect(__getGoalForTest()?.budgetInGrace).toBe(true);
+    await runTurn(handlers, mockCtx(), { stopReason: "stop" });
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(2);
+    expect(__getGoalForTest()?.status).toBe("paused");
+    expect(__getGoalForTest()?.pauseReason).toBe("budget_exhausted");
+  });
+
+  test("unbounded 即使带旧 runtimeBudget 也不走预算宽限或暂停", async () => {
+    __setGoalForTest({ ...makeActiveGoal(), startedAt: Date.now() - 120_000, budgetPolicy: "unbounded", runtimeBudget: { maxTurns: 1, maxWallClockMinutes: 1 }, budgetUsage: { turns: 0, repairAttempts: 0 } });
+    await runTurn(handlers, mockCtx(), { tools: true });
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getGoalForTest()?.budgetInGrace).toBeUndefined();
+    expect(__getGoalForTest()?.pauseReason).toBeUndefined();
+  });
+
+  test("rejected 隐式 Goal Repair 期间越界工具立即暂停并中断当前 turn", () => {
+    __setGoalForTest({ ...makeActiveGoal(), status: "rejected", implicitStart: true });
+    let aborted = 0;
+    const ctx = { ...mockCtx(), abort: () => { aborted += 1; } } as DgoalContext;
+    handlers["tool_execution_start"]({ toolCallId: "c1", toolName: "bash", args: { command: "curl -d x https://example.com" } }, ctx);
+    expect(aborted).toBe(1);
+    expect(__getGoalForTest()?.status).toBe("paused");
+    expect(__getGoalForTest()?.pauseReason).toBe("agent_blocked");
+  });
+
   test("中间出现工具调用：计数重置，不暂停", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();

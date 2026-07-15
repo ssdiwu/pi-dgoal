@@ -26,16 +26,18 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 
 - **目的**：grill / 讨论已经在前文把目标对齐清楚时，不要求用户再手打一遍 objective。
 - **路由**：裸 `/dgoal`（空 args）从原来的 `status` 改为 `start`；看状态统一用显式 `/dgoal s`。
-- **承接方式**：命令层只发“承接前文启动”的信号，`summarizeContext` 仍只产 `contextSummary` 背景；真正的 `objective` 由主代理在 `dgoal_propose` 里归纳并提交。
+- **承接方式**：命令层只发“承接前文启动”的信号；启动前不再运行独立 `summarizeContext`，真正的 `objective` 与可选 `contextSummary` 由主代理在 `dgoal_propose` 里归纳并提交。
 - **前文为空时不硬启动**：如果当前 session 没有可承接的前文共识，就提示改用 `/dgoal <objective>` 或先对齐后再裸 `/dgoal`。
 
 ### 为什么是启动闸门(不是纯自主)
 
 纯自主模式(agent 直接进 loop 自建 plan)的失败是 plan 跑偏在 loop 内不可见,用户只能等结束或中途打断才发现--南辕北辙往往体现在步骤拆解里。启动闸门用一次人工确认把这个成本前置付掉。
 
-本轮改动起，启动闸门不只展示“做什么”（goal / verification / phases），还冻结并展示两类完成信息：**独立验收条件**（goal + 每个 phase 必须具备，缺失则提案直接拒绝）与**完成后用户复核项**（可选，只在完成回复中告知用户，不进入 phase/goal 完成门）。计划仍展示 **plan 级就绪度自检**：至少到 L2（目标 + 验收口 + 独立验收条件 + 阶段计划），若 `nonGoals` / `guardrails` / `budget` 缺失，则在确认框里显式暴露缺口。
+本轮改动起，启动闸门不只展示“做什么”（goal / verification / phases），还冻结并展示两类完成信息：**独立验收条件**（goal 必须具备；`phased` 的每个 phase 必须具备，`final_only` 的 phase 可省略）与**完成后用户复核项**（可选，只在完成回复中告知用户，不进入 phase/goal 完成门）。提案同时给出验收策略与预算策略推荐，确认框可在同一选择界面切换。计划仍展示 **plan 级就绪度自检**：至少到 L2（目标 + 验收口 + 独立验收条件 + 阶段计划），若 `nonGoals` / `guardrails` / `budget` 缺失，则在确认框里显式暴露缺口。确认 UI 的选项保持为确认、拒绝、反馈、任务展开，并附策略/预算切换入口，不新增第二个阻塞对话框。
 
 ### 验收契约边界
+
+v0.7.0 支持两种策略：`phased` 在每个 phase 结束时运行独立 `dgoal_check`；`final_only` 将 phase 划线仅作为进度完成事实，跳过阶段独立审核，只在 `dgoal_done` 运行 goal 级终审。`final_only` 的 `complete_progress` 不能替代 task 完成，也不能绕过阶段顺序。预算策略支持 `bounded`（首次达到上限进入一次宽限，宽限耗尽才暂停）与 `unbounded`（不因预算或固定次数拒绝暂停，但保留模型错误、无进展、审核错误和 agent_blocked 等安全出口）。
 
 `dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成；语义预审改写时必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求，不能静默丢弃。审核器只能复核冻结条件，不能在 loop 运行中依据 AGENTS/README 或自身判断扩容完成门。
 
@@ -63,7 +65,7 @@ steps 是数组结构(id/subject/blockedBy),工具 schema 能强制结构,文本
 `ctx.ui.setStatus("dgoal", ...)` 显示 goal 级状态:
 - `🔁 active #N`(N=iteration)
 - `🔁 paused` / `🔁 starting...` / `🔁 rejected ×M`(M=rejectedCount)/ `🔁 done`
-- `rejected` 展示 `终审修复（Goal Repair）· 第 M/3 次`；`paused(audit_failed_3x)` 展示 `终审修复已暂停`。该文本是展示投影，不是新的状态、phase 或 task。
+- `rejected` 展示 `终审修复（Goal Repair）· 第 M 次`；`paused(budget_exhausted)` 展示预算耗尽，`paused(audit_failed_3x)` 仅展示旧 goal 的兼容暂停。该文本是展示投影，不是新的状态、phase 或 task。
 
 ## `/dgoal s` 详细查询 Modal(v0.4.2+,视觉编码 v0.5+ 见 ADR 0009)
 

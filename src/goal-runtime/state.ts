@@ -13,6 +13,8 @@ export interface ContinuationState {
 export interface PendingProposalState {
   goalId: string;
   proposal: PlanProposal;
+  /** Only true when this proposal passed the global-only implicit-start gate. */
+  implicitStart?: boolean;
 }
 
 export interface GoalRuntimeState {

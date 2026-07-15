@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildGoalBoundaryBlock,
   buildPlanContextBlock,
+  buildSystemPrompt,
   buildCheckFeedbackBlock,
   shouldAbortCurrentTurnOnClear,
   shouldDeliverContinuationNow,
@@ -41,6 +42,20 @@ describe("切片6 · 状态机类型完整性", () => {
     expect(g1.status).toBe("rejected");
     expect(g2.status).toBe("done");
     expect(g3.pauseReason).toBe("audit_failed_3x");
+  });
+});
+
+describe("v0.7.0 · verification policy prompt", () => {
+  test("final_only prompt 不要求 dgoal_check，改要求 complete_progress + dgoal_done", () => {
+    const text = buildSystemPrompt(goal({ verificationPolicy: "final_only" }));
+    expect(text).toContain("不要调用 dgoal_check");
+    expect(text).toContain("complete_progress");
+    expect(text).toContain("一次独立 goal 终审");
+  });
+
+  test("phased prompt 保留 dgoal_check 阶段门", () => {
+    const text = buildSystemPrompt(goal({ verificationPolicy: "phased" }));
+    expect(text).toContain("必须调用 dgoal_check 建检");
   });
 });
 

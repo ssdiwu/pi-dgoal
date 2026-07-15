@@ -53,6 +53,6 @@
 1. **建检循环是基本盘**：dgoal = 定义 goal + 完成后 check，不过继续干，过则结束。一切设计服从这个第一性原理。
 2. **心智模型不建模**：建检循环是心智模型，不是显式数据结构（ADR 0006）。
 3. **三层内容 + 双可见性**：goal/phase/task 三层，用户可见（task 默认隐藏；持续显示展开态只展开未完成 phase，详细查询 Modal 可看全量）/ AI 可见（全可见）双轴。
-4. **建检不可绕过**：phase completed 唯一入口是 dgoal_check（独立子进程），dgoal_plan 不能标 phase completed（ADR 0003/0006）。
+4. **建检不可绕过**：`phased` 的 phase completed 唯一入口是 `dgoal_check`（独立子进程），`dgoal_plan` 不能伪造阶段建检通过；`final_only` 只允许 `complete_progress` 写入阶段进度划线，不代表独立审核通过（ADR 0003/0006/0032）。
 5. **惰性创建**：目录和文件按需建立，不预建空结构。
 6. **外部参考只借轻动作**：借 UI/reducer/状态边界/理论依据，不照搬完整平台。

@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **会话压缩后恢复 dgoal goal**：监听 `session_compact`，并为 `dgoal_plan` / `dgoal_check` / `dgoal_done` 增加持久化 goal 惰性恢复；重同步区分 stale session replacement 与真实读取错误，避免压缩或切 session 后误报没有目标。
+- **收紧隐式启动动作边界**：禁止隐式 shell/test 执行，统一校验本地路径型工具、Git 选项和多链接文件，避免项目外读写与任意脚本副作用。
+
+## [0.7.0] - 2026-07-15
+
+### Added
+
+- **可选验收策略与运行预算**（ADR 0032）：同一 dgoal 在启动闸门由主 agent 推荐、用户选择 `final_only` / `phased` 与有界 / `unbounded` 预算。`final_only` 取消逐 phase 独立建检但保留 goal 终审，并采用“诊断审 + 窄确认审”；有界预算首次耗尽进入一次预授权宽限，宽限耗尽才暂停（`pauseReason: budget_exhausted`）；`unbounded` 不因预算或固定次数拒绝暂停，但仍保留模型错误、无进展、审核错误与 `agent_blocked` 安全出口。
+- **主模型主导背景固化**（ADR 0033）：移除启动前独立背景摘要子进程与其 fail-closed 语义；主 agent 可在 `dgoal_propose` 中按需提交 `contextSummary`，背景缺失不阻塞启动。
+- **配置授权隐式轻量启动**（ADR 0034）：默认仍须显式 `/dgoal`；用户在全局 `pi-dgoal.json` 开启 `implicitFinalOnlyStart` 后，LLM 可对范围具体、可独立验收的任务自动启动 `final_only + bounded` goal（默认 `8 turns / 30 分钟 / 1 次终审修复`，可由 `implicitFinalOnlyBudget` 覆盖），项目配置不能授予此权限。
+
+### Fixed
+
 - **审核共享预算耗尽后不再伪启动 1ms 候选**：首个审核候选耗尽 phase/goal 的共享总预算后，不再启动下一候选并把剩余时间压成 1ms；保留真实的总时长超时原因，避免误导为新的瞬时超时。审核超时文案也不再泄漏内部毫秒，统一显示为秒。
 
 ## [0.6.4] - 2026-07-14
