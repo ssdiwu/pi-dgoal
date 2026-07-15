@@ -187,6 +187,10 @@ export function registerDgoal(pi: ExtensionAPI) {
     const finalAssistant = findFinalAssistantMessage(event.messages);
     const errorDetail = finalAssistant?.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
 
+    // 每次 active goal 的主模型 agent_end 都计入执行预算；pending 启动闸门和用户主动中断不在此入口计数。
+    // toolUse/length/error 也会触发后续模型执行，不能只统计 stop，否则会低估真实调用次数。
+    if (finalAssistant?.stopReason !== "aborted" && consumeRuntimeBudget(ctx)) return;
+
     // 用户主动中断：不重试，直接暂停。
     if (finalAssistant?.stopReason === "aborted") {
       goalRuntimeState.consecutiveErrors = 0;
@@ -230,7 +234,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // length/toolUse/缺失原因保留原有续跑行为：不计入正常轮次预算，也不触发预算暂停。
+    // length/toolUse/缺失原因保留原有续跑行为：继续下一次模型执行，但本轮预算已在 agent_end 入口计入。
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;
@@ -240,9 +244,6 @@ export function registerDgoal(pi: ExtensionAPI) {
       await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
       return;
     }
-
-    // 只有明确 stop 的正常轮次才计入运行预算。
-    if (consumeRuntimeBudget(ctx)) return;
 
     // 正常完成一轮：先判是否真正有推进。
     goalRuntimeState.consecutiveErrors = 0;

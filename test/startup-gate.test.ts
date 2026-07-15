@@ -767,7 +767,7 @@ describe("切片4 · handleProposalConfirmation", () => {
     } as never, goal(), proposal);
     expect(result).toBe("confirmed");
     expect(proposal.budgetPolicyRecommendation).toBe("bounded");
-    expect(proposal.runtimeBudget).toEqual({ maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 });
+    expect(proposal.runtimeBudget).toEqual({ maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } });
   });
 
   test("选择反馈意见时调用 editor 并返回去首尾空白后的反馈", async () => {

@@ -18,7 +18,7 @@ describe("v0.7.0 · 隐式轻量启动权限", () => {
     await mkdir(path.join(projectDir, ".pi"), { recursive: true });
     await writeFile(path.join(agentDir, "pi-dgoal.json"), JSON.stringify({
       implicitFinalOnlyStart: true,
-      implicitFinalOnlyBudget: { maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 },
+      implicitFinalOnlyBudget: { maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } },
     }));
     await writeFile(path.join(projectDir, ".pi", "pi-dgoal.json"), JSON.stringify({ implicitFinalOnlyStart: false }));
     const r = await __executeDgoalProposeForTest({
@@ -29,7 +29,7 @@ describe("v0.7.0 · 隐式轻量启动权限", () => {
     }, { cwd: projectDir, agentDir, isProjectTrusted: () => true });
     expect(r.details?.error).toBeUndefined();
     expect(__getPendingProposalForTest()?.proposal.verificationPolicyRecommendation).toBe("final_only");
-    expect(__getPendingProposalForTest()?.proposal.runtimeBudget).toEqual({ maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 });
+    expect(__getPendingProposalForTest()?.proposal.runtimeBudget).toEqual({ maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } });
     __setProposalSemanticReviewForTest(undefined);
   });
 

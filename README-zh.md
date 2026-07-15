@@ -108,7 +108,7 @@ pending ──→ active ──→ done                # 正常路径
   "phaseAuditorModels": null,
   "goalAuditorModels": null,
   "implicitFinalOnlyStart": false,
-  "implicitFinalOnlyBudget": { "maxTurns": 8, "maxWallClockMinutes": 30, "maxRepairAttempts": 1 }
+  "implicitFinalOnlyBudget": { "maxTurns": 24, "maxWallClockMinutes": 60, "maxRepairAttempts": 1, "grace": { "maxTurns": 24, "maxWallClockMinutes": 0 } }
 }
 ```
 
@@ -128,7 +128,7 @@ pending ──→ active ──→ done                # 正常路径
 }
 ```
 
-旧单值 `phaseAuditorModel`、`goalAuditorModel` 与共享 `auditorModel` 字段继续兼容，dgoal 不会自动改写用户已有文件。`contextSummarizerModels` 已废弃：v0.7.0 起移除了启动前独立背景摘要子进程（ADR 0033），主代理可在 `dgoal_propose` 中按需持久化可选 `contextSummary`，背景缺失不再阻断启动。`implicitFinalOnlyStart`（仅全局，默认 `false`）授权 agent 无需显式 `/dgoal` 即可启动有界 `final_only` 目标；`implicitFinalOnlyBudget` 可覆盖安全默认预算（`8 turns / 30 min / 1 repair`）。
+旧单值 `phaseAuditorModel`、`goalAuditorModel` 与共享 `auditorModel` 字段继续兼容，dgoal 不会自动改写用户已有文件。`contextSummarizerModels` 已废弃：v0.7.0 起移除了启动前独立背景摘要子进程（ADR 0033），主代理可在 `dgoal_propose` 中按需持久化可选 `contextSummary`，背景缺失不再阻断启动。`implicitFinalOnlyStart`（仅全局，默认 `false`）授权 agent 无需显式 `/dgoal` 即可启动有界 `final_only` 目标；`implicitFinalOnlyBudget` 可覆盖安全默认预算（基础 `24 turns / 60 min / 1 repair`，turn 宽限再给 24）。
 
 解析优先级：
 

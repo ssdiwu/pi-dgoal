@@ -52,17 +52,18 @@ import {
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
 const DGOAL_CONFIG_FILE_NAME = "pi-dgoal.json";
 const MAX_AUDITOR_MODEL_CANDIDATES = 3;
-export const DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET: Required<Pick<RuntimeBudget, "maxTurns" | "maxWallClockMinutes" | "maxRepairAttempts">> = {
-  maxTurns: 8,
-  maxWallClockMinutes: 30,
+export const DEFAULT_IMPLICIT_FINAL_ONLY_BUDGET: RuntimeBudget = {
+  maxTurns: 24,
+  maxWallClockMinutes: 60,
   maxRepairAttempts: 1,
+  grace: { maxTurns: 24, maxWallClockMinutes: 0 },
 };
 const DGOAL_CONFIG_TEMPLATE = `${JSON.stringify({
   $comment: "Set each list in fallback order to provider/model[:thinking] (for example openai/gpt-5:high). Keep null to inherit the current session model. implicitFinalOnlyStart is global-only.",
   phaseAuditorModels: null,
   goalAuditorModels: null,
   implicitFinalOnlyStart: false,
-  implicitFinalOnlyBudget: { maxTurns: 8, maxWallClockMinutes: 30, maxRepairAttempts: 1 },
+  implicitFinalOnlyBudget: { maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } },
 }, null, 2)}\n`;
 const notifiedDgoalConfigKeys = new Set<string>();
 
@@ -1501,14 +1502,14 @@ function normalizeSemanticMigrations(value: unknown): ProposalSemanticMigration[
 function normalizeRuntimeBudget(value: unknown): RuntimeBudget | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const raw = value as Record<string, unknown>;
-  const positive = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v > 0 && Number.isInteger(v);
-  const copy = (source: Record<string, unknown>) => ({
-    ...(positive(source.maxTurns) ? { maxTurns: source.maxTurns as number } : {}),
-    ...(positive(source.maxWallClockMinutes) ? { maxWallClockMinutes: source.maxWallClockMinutes as number } : {}),
-    ...(positive(source.maxRepairAttempts) ? { maxRepairAttempts: source.maxRepairAttempts as number } : {}),
+  const valid = (v: unknown, allowZero = false) => typeof v === "number" && Number.isFinite(v) && (allowZero ? v >= 0 : v > 0) && Number.isInteger(v);
+  const copy = (source: Record<string, unknown>, allowZero = false) => ({
+    ...(valid(source.maxTurns, allowZero) ? { maxTurns: source.maxTurns as number } : {}),
+    ...(valid(source.maxWallClockMinutes, allowZero) ? { maxWallClockMinutes: source.maxWallClockMinutes as number } : {}),
+    ...(valid(source.maxRepairAttempts, allowZero) ? { maxRepairAttempts: source.maxRepairAttempts as number } : {}),
   });
   const base = copy(raw);
-  const grace = raw.grace && typeof raw.grace === "object" && !Array.isArray(raw.grace) ? copy(raw.grace as Record<string, unknown>) : undefined;
+  const grace = raw.grace && typeof raw.grace === "object" && !Array.isArray(raw.grace) ? copy(raw.grace as Record<string, unknown>, true) : undefined;
   if (!Object.keys(base).length || (raw.grace !== undefined && !Object.keys(grace ?? {}).length)) return undefined;
   return { ...base, ...(grace && Object.keys(grace).length ? { grace } : {}) };
 }

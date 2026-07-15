@@ -108,16 +108,16 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.pauseReason).toBe("budget_exhausted");
   });
 
-  test("非 stop 结束原因不计入 turn 预算，stop 才进入宽限与暂停", async () => {
-    __setGoalForTest({ ...makeActiveGoal(), budgetPolicy: "bounded", runtimeBudget: { maxTurns: 1, grace: { maxTurns: 1 } }, budgetUsage: { turns: 0, repairAttempts: 0 } });
+  test("每个 active agent_end 都计入 turn 预算，toolUse 也会触发宽限与暂停", async () => {
+    __setGoalForTest({ ...makeActiveGoal(), budgetPolicy: "bounded", runtimeBudget: { maxTurns: 2, grace: { maxTurns: 1 } }, budgetUsage: { turns: 0, repairAttempts: 0 } });
     await runTurn(handlers, mockCtx(), { stopReason: "toolUse" });
-    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(0);
-    expect(__getGoalForTest()?.status).toBe("active");
-    await runTurn(handlers, mockCtx(), { stopReason: "stop" });
     expect(__getGoalForTest()?.budgetUsage?.turns).toBe(1);
+    expect(__getGoalForTest()?.status).toBe("active");
+    await runTurn(handlers, mockCtx(), { stopReason: "length" });
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(2);
     expect(__getGoalForTest()?.budgetInGrace).toBe(true);
     await runTurn(handlers, mockCtx(), { stopReason: "stop" });
-    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(2);
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBe(3);
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("budget_exhausted");
   });
@@ -159,6 +159,7 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     const ctx = mockCtx();
 
     await runTurn(handlers, ctx, { stopReason: "aborted" });
+    expect(__getGoalForTest()?.budgetUsage?.turns).toBeUndefined();
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("user_abort");
   });

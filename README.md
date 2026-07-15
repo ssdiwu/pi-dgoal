@@ -112,7 +112,7 @@ On the first audit when neither the global nor trusted project `pi-dgoal.json` f
   "phaseAuditorModels": null,
   "goalAuditorModels": null,
   "implicitFinalOnlyStart": false,
-  "implicitFinalOnlyBudget": { "maxTurns": 8, "maxWallClockMinutes": 30, "maxRepairAttempts": 1 }
+  "implicitFinalOnlyBudget": { "maxTurns": 24, "maxWallClockMinutes": 60, "maxRepairAttempts": 1, "grace": { "maxTurns": 24, "maxWallClockMinutes": 0 } }
 }
 ```
 
@@ -132,7 +132,7 @@ Configure the phase and goal auditors independently with ordered lists of at mos
 }
 ```
 
-Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically. `contextSummarizerModels` is deprecated: as of v0.7.0 the startup background summarizer subprocess was removed (ADR 0033); the main agent may persist an optional `contextSummary` via `dgoal_propose`, and a missing summary no longer blocks startup. `implicitFinalOnlyStart` (global-only, default `false`) authorizes the agent to start bounded `final_only` goals without an explicit `/dgoal`; `implicitFinalOnlyBudget` overrides the safe default budget (`8 turns / 30 min / 1 repair`).
+Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and shared `auditorModel` keys remain supported and are never rewritten automatically. `contextSummarizerModels` is deprecated: as of v0.7.0 the startup background summarizer subprocess was removed (ADR 0033); the main agent may persist an optional `contextSummary` via `dgoal_propose`, and a missing summary no longer blocks startup. `implicitFinalOnlyStart` (global-only, default `false`) authorizes the agent to start bounded `final_only` goals without an explicit `/dgoal`; `implicitFinalOnlyBudget` overrides the safe default budget (base `24 turns / 60 min / 1 repair`, plus a 24-turn grace window).
 
 Resolution order:
 
