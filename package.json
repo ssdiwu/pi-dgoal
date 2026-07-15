@@ -1,6 +1,6 @@
 {
   "name": "pi-dgoal",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Pi extension for durable goal loops with explicit Task Plan + build-check loop (建检循环) + auditor verification.",
   "type": "module",
   "keywords": [

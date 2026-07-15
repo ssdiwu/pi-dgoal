@@ -4,7 +4,7 @@
 
 A Pi extension that keeps an agent working on a goal until completion is independently verified — through a Task Plan and a build-check loop.
 
-> **Unreleased**: an explicit natural-language request such as “use dgoal for this” can submit to the normal pending startup gate from a cold session; structure and semantic review succeed before state is committed, so the agent no longer asks for a redundant `/dgoal` or leaves a half-started goal. Proposal semantics now follow ADR 0037's “thin proposal, hard execution” split; implicit proposals may downgrade to the same explicit confirmation dialog. See ADR 0036/0037.
+> **v0.7.1**: an explicit natural-language request such as “use dgoal for this” can submit to the normal pending startup gate from a cold session; structure and semantic review succeed before state is committed, so the agent no longer asks for a redundant `/dgoal` or leaves a half-started goal. Proposal semantics now follow ADR 0037's “thin proposal, hard execution” split; implicit proposals may downgrade to the same explicit confirmation dialog. See ADR 0036/0037.
 >
 > Globally authorized implicit goals may run local tests, builds, scripts, project-file changes, and local Git mutations. A pre-execution `tool_call` policy gate blocks recognized destructive workspace / `.git` commands, Git remote writes, publishing, deployment, external writes, permission changes, and paid actions. This is best-effort policy enforcement, not an OS sandbox; allowed scripts may contain hidden side effects. See ADR 0035.
 >
