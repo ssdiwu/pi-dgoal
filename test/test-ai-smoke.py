@@ -223,10 +223,13 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any], result: SmokeR
         session.send({"type": "extension_ui_response", "id": request_id, "confirmed": True})
         return None
     if method == "select":
-        # 启动闸门确认 Plan：options[0] 恒为确认开始。
+        # 只允许 /dgoal 启动闸门；不能把任意扩展 select 误记为 goal 已激活。
         options = event.get("options") or []
-        if not options:
-            return f"select 请求无 options：{json.dumps(event, ensure_ascii=False)}"
+        title = str(event.get("title") or "")
+        first_option = str(options[0]) if options else ""
+        is_start_gate = "/dgoal" in title.lower() and ("开始" in first_option or "start" in first_option.lower())
+        if not options or not is_start_gate:
+            return f"非预期 select 请求，不能伪造启动成功：{json.dumps(event, ensure_ascii=False)}"
         session.send({"type": "extension_ui_response", "id": request_id, "value": options[0]})
         result.goal_activated = True
         return None

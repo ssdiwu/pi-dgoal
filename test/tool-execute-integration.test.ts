@@ -1,4 +1,5 @@
-// Plan reducer、proposal 转换、持久化与 i18n 组合路径测试。
+// Plan reducer、proposal 转换、持久化协议与 i18n 组合路径测试。
+// 公共工具 execute 的权威覆盖位于 three-plan-runtime.test.ts；本文件不伪装宿主工具调用。
 import { beforeEach, describe, expect, test } from "bun:test";
 
 process.env.PI_DGOAL_NO_AUDIT = "1";
@@ -26,8 +27,8 @@ describe("Plan reducer 与持久化组合路径", () => {
     __resetGoalForTest();
   });
 
-  test("plan_create / plan_read / plan_update create + update + list + get 真实序列（模拟工具 execute）", () => {
-    // 模拟 plan_create / plan_read / plan_update 工具 execute 的实际行为：reducer → commit → persist
+  test("reducer create + update + list + get 与手工持久化协议组合", () => {
+    // 只验证 reducer → commit → persist 协议；不声称执行了公共工具 execute。
     const { api, writes } = makeApi();
     __setApiForTest(api);
 
@@ -38,7 +39,7 @@ describe("Plan reducer 与持久化组合路径", () => {
     expect(r1.op.kind).toBe("create");
     if (r1.op.kind !== "create") return;
     goal = r1.goal;
-    api.appendEntry(STATE_ENTRY_TYPE, { goal }); // 工具 execute 会 persist
+    api.appendEntry(STATE_ENTRY_TYPE, { goal });
     expect(goal.plan!.phases[0].tasks).toHaveLength(1);
     expect(goal.plan!.phases[0].tasks[0].subject).toBe("t1");
 
@@ -70,19 +71,19 @@ describe("Plan reducer 与持久化组合路径", () => {
     expect(r5.op.task.subject).toBe("t1");
 
     // 验证 persist 序列：create + update×2 + list(不persist) + get(不persist) = 3 次
-    // 工具 execute 的逻辑：list/get 不 commit 不 persist（op kind !== create/update）
+    // 组合协议约定：list/get 不 commit、不 persist（op kind !== create/update）。
     expect(writes.length).toBe(3);
     expect(writes.every((w) => w.type === STATE_ENTRY_TYPE)).toBe(true);
   });
 
-  test("plan_create / plan_read / plan_update 错误分支：create 缺 subject 报 error（工具 execute 透传不 persist）", () => {
+  test("reducer create 缺 subject 时返回 error，组合层不 persist", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
     let goal: GoalState = makeActiveGoal();
 
     const r = applyPlanMutation(goal, "create", { phaseId: 1 }); // 缺 subject
     expect(r.op.kind).toBe("error");
-    // 工具 execute 在 error 时不 commit 不 persist
+    // 组合层在 error 时不 commit、不 persist。
     expect(writes.length).toBe(0);
     goal = r.goal; // error 时 goal 不变
     expect(goal.plan!.phases[0].tasks).toHaveLength(0);
@@ -111,8 +112,8 @@ describe("Plan reducer 与持久化组合路径", () => {
   });
 });
 
-describe("工具 execute 真实端到端 · proposalToPlan + plan 注入", () => {
-  test("真实场景：phase_plan / goal_plan 产出 3 phase 6 task plan，AI 可见注入正确", () => {
+describe("proposalToPlan 转换 + plan 注入", () => {
+  test("3 phase 6 task proposal 转换后结构正确", () => {
     const { api } = makeApi();
     __setApiForTest(api);
     // 模拟 phase_plan / goal_plan 内部: proposalToPlan
@@ -136,7 +137,7 @@ describe("工具 execute 真实端到端 · proposalToPlan + plan 注入", () =>
   });
 });
 
-describe("工具 execute 真实端到端 · 涌现分解：长链 blockedBy", () => {
+describe("reducer 涌现分解：长链 blockedBy", () => {
   test("真实场景：5 task 线性依赖，addBlockedBy 增量合并", () => {
     const { api } = makeApi();
     __setApiForTest(api);

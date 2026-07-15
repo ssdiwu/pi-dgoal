@@ -303,6 +303,27 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.goalCheck).toBeUndefined();
   });
 
+  test("audited Plan completion rejects missing, rejected, and stale goal_check records", async () => {
+    const base = {
+      id: "goal-guard", objective: "交付", planType: "phase", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+      verification: "tests", acceptanceCriteria: [{ criterion: "passes", evidence: "bun test" }],
+      plan: { revision: 4, nextId: 3, phases: [{
+        id: 1, subject: "实现", status: "done",
+        tasks: [{ id: 2, subject: "做完", status: "done", evidence: "bun test" }],
+      }] },
+    } as const;
+    for (const goalCheck of [
+      undefined,
+      { status: "rejected", report: "缺口", revision: 4 },
+      { status: "approved", report: "旧批准", revision: 3 },
+    ] as const) {
+      __setGoalForTest({ ...base, goalCheck } as never);
+      const result = await execute(planUpdateTool, { target: "goal", status: "done", summary: "完成", verification: "bun test" });
+      expect(result.details.error).toBe("goal check required");
+      expect(__getGoalForTest()?.status).toBe("active");
+    }
+  });
+
   test("Goal Plan separates phase_check, phase state update, goal_check and goal state update", async () => {
     __setGoalForTest({
       id: "g", objective: "交付", planType: "goal",

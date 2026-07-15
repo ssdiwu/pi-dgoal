@@ -775,7 +775,7 @@ const CHECK_IDLE_TIMEOUT_MS = CHECK_IDLE_TIMEOUT_SECONDS * 1000;
 // 因此不能沿用模型思考的 3 分钟窗口，否则长测试会被误杀。
 export const CHECK_TOOL_IDLE_TIMEOUT_SECONDS = 1_800;
 const CHECK_TOOL_IDLE_TIMEOUT_MS = CHECK_TOOL_IDLE_TIMEOUT_SECONDS * 1000;
-// 整轮预算跨候选共享：阶段检查收敛，终审允许一次完整项目验证但不能无限续跑。
+// 整轮技术超时跨候选共享：阶段检查收敛，终审允许一次完整项目验证但不能无限续跑。
 export const PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS = 900;
 export const GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS = 1_800;
 
@@ -2640,6 +2640,7 @@ function pauseGoal(ctx: DgoalContext) {
 
 async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   if (!goalRuntimeState.currentGoal || goalRuntimeState.currentGoal.status !== "paused") return;
+  const pausedGoal = goalRuntimeState.currentGoal;
   goalRuntimeState.consecutiveErrors = 0;
   goalRuntimeState.consecutiveNoProgressTurns = 0;
   goalRuntimeState.turnHadToolExecution = false;
@@ -2660,7 +2661,18 @@ async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   persistGoal(goalRuntimeState.currentGoal);
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
-  await sendPrompt(pi, ctx, buildResumePrompt(goalRuntimeState.currentGoal));
+  const resumedGoal = goalRuntimeState.currentGoal;
+  const sent = await sendPrompt(pi, ctx, buildResumePrompt(resumedGoal));
+  if (!sent && goalRuntimeState.currentGoal?.id === pausedGoal.id && goalRuntimeState.currentGoal.status === "active") {
+    goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), {
+      pauseReason: pausedGoal.pauseReason,
+      pauseReasonDetail: pausedGoal.pauseReasonDetail,
+      auditErrorScope: pausedGoal.auditErrorScope,
+    });
+    persistGoal(goalRuntimeState.currentGoal);
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    safeUpdatePlanOverlay();
+  }
 }
 
 export function shouldAbortCurrentTurnOnClear(ctx: Pick<DgoalContext, "isIdle">): boolean {

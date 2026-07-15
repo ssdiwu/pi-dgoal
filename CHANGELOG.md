@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **显式 dgoal 选择 Plan 类型**：`/dgoal` 与自然语言显式启动由 agent 推荐 Phase Plan 或 Goal Plan，确认 UI 只切换 Plan 类型，不再切换验收或预算策略。
 - **任务状态守卫收紧**：task 必须按 `pending → in_progress → done` 推进，done 必须带可复验 evidence；blocked 解除后清理旧原因，且禁止依赖后续 phase 的 task。
 
+### Fixed
+
+- **恢复投递失败不再假 active**：`/dgoal resume` 的恢复 prompt 发送失败时恢复原 paused 原因并持久化，避免没有执行 turn 的 active Plan 永久停滞。
+
 ## [0.7.2] - 2026-07-16
 
 ### Fixed

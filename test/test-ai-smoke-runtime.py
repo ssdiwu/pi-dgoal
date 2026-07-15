@@ -55,6 +55,38 @@ class ResolvePiExecutableTest(unittest.TestCase):
                 SMOKE.resolve_pi_executable(root=root, env={"PATH": str(local_bin)})
 
 
+class HandleUiRequestTest(unittest.TestCase):
+    class Session:
+        def __init__(self) -> None:
+            self.sent: list[dict[str, object]] = []
+
+        def send(self, payload: dict[str, object]) -> None:
+            self.sent.append(payload)
+
+    def test_marks_goal_active_only_for_dgoal_start_gate(self) -> None:
+        session = self.Session()
+        result = SMOKE.SmokeResult(tmp_dir="/tmp", work_dir="/tmp", duration=0.0)
+        error = SMOKE.handle_ui_request(session, {
+            "method": "select",
+            "id": "gate",
+            "title": "确认 /dgoal 计划？",
+            "options": ["确认，开始执行", "拒绝，放弃目标"],
+        }, result)
+        self.assertIsNone(error)
+        self.assertTrue(result.goal_activated)
+        self.assertEqual(session.sent[0]["value"], "确认，开始执行")
+
+    def test_rejects_unrelated_select_without_faking_activation(self) -> None:
+        session = self.Session()
+        result = SMOKE.SmokeResult(tmp_dir="/tmp", work_dir="/tmp", duration=0.0)
+        error = SMOKE.handle_ui_request(session, {
+            "method": "select", "id": "other", "title": "Choose model", "options": ["A", "B"],
+        }, result)
+        self.assertIn("非预期 select", error or "")
+        self.assertFalse(result.goal_activated)
+        self.assertEqual(session.sent, [])
+
+
 class SmokeResultPassedTest(unittest.TestCase):
     """负向回归：只有最终 plan_update 明确 completed 才算通过。"""
 

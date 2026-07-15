@@ -50,10 +50,12 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | 文件 | 验证内容 |
 |---|---|
 | `test-extension-rpc.py` | 隔离加载扩展、`/dgoal` 命令与八工具注册 |
-| `test-ai-smoke-runtime.py` | 跳过项目 local Pi、选择宿主 Pi、环境变量覆盖 |
-| `test-ai-smoke.py` | 真实模型 + RPC 确认 UI + 文件产物；迁移后应跟踪 `goal_plan → plan_update → phase_check → goal_check` |
+| `test-ai-smoke-runtime.py` | 跳过项目 local Pi、选择宿主 Pi、启动闸门 select 防伪与最终完成判定 |
+| `test-ai-smoke.py` | 单 phase Goal Plan 的真实模型/RPC/文件链：`goal_plan → plan_update(task) → phase_check → plan_update(phase) → goal_check → plan_update(goal)` |
 | `test-auditor-fallback-smoke.py` | 真实候选 401 → fallback → 审核结论 |
 | `test-auditor-fallback-cleanup.py` | SIGTERM 后临时认证、目录与子进程清理 |
+
+真实模型 smoke 刻意只跑一条最小 Goal Plan 链以控制 token；Task Plan、Phase Plan、`plan_create` / `plan_read`、revision 失效与旧键隔离由上面的确定性 Bun 测试覆盖。`test-extension-rpc.py` 只证明真实宿主加载与注册，不宣称覆盖 RPC 状态机执行。
 
 ## 人工复核边界
 

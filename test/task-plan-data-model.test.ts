@@ -156,14 +156,12 @@ describe("切片1 · persist/load 往返", () => {
 });
 
 describe("切片1 · 旧 entry 隔离", () => {
-  test("0.1.x dgoal-state entry 被新运行时忽略", () => {
+  test("dgoal-state 与 dgoal-goal-vnext 两代旧 entry 均被忽略", () => {
     const legacy = makeLegacyGoal();
-    const ctx = makeCtx([
-      { type: "custom", customType: "dgoal-state", data: { goal: legacy } },
-    ]);
-    const restored = loadGoal(ctx as never);
-
-    expect(restored).toBeUndefined();
+    for (const customType of ["dgoal-state", "dgoal-goal-vnext"]) {
+      const ctx = makeCtx([{ type: "custom", customType, data: { goal: legacy } }]);
+      expect(loadGoal(ctx as never)).toBeUndefined();
+    }
   });
 
   test("done goal 不恢复，pending goal 保留以便重载后回到启动闸门", () => {
@@ -177,7 +175,7 @@ describe("切片1 · 旧 entry 隔离", () => {
     expect(loadGoal(ctx as never)?.status).toBe("pending");
   });
 
-  test("非 dgoal-state customType 的 entry 被忽略", () => {
+  test("无关 customType 的 entry 被忽略", () => {
     const goal = makeGoalWithPlan();
     const ctx = makeCtx([
       { type: "custom", customType: "other-type", data: { goal } },

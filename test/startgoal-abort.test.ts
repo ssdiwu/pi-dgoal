@@ -121,6 +121,30 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     expect(sent[0]).toContain("恢复当前 goal Plan");
   });
 
+  test("resume prompt 发送失败时回到原 paused 状态，避免假 active", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({
+      id: "resume-send-failed",
+      objective: "恢复失败保护",
+      status: "paused",
+      pauseReason: "agent_blocked",
+      pauseReasonDetail: "等待用户决策",
+      startedAt: 1,
+      updatedAt: 2,
+      pauseStartedAt: 2,
+      iteration: 0,
+    });
+    const pi = { sendUserMessage: async () => { throw new Error("queue unavailable"); } } as never;
+    const ctx = { cwd: "/tmp", ui: { notify: () => {}, setStatus: () => {} } };
+    await __resumeGoalForTest(pi, ctx as never);
+    expect(__getGoalForTest()).toMatchObject({
+      status: "paused",
+      pauseReason: "agent_blocked",
+      pauseReasonDetail: "等待用户决策",
+    });
+    expect(typeof __getGoalForTest()?.pauseStartedAt).toBe("number");
+  });
+
   test("startGoal 投递 propose 恰好一次（不双发）", async () => {
     __resetGoalForTest();
     const sent: string[] = [];
