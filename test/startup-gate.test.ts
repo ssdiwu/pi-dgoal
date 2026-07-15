@@ -456,6 +456,62 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
+  test("语义预审 approve 可省略 criteria，并保留原冻结契约", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-minimal-approve", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticCompletionForTest(() => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ decision: "approve" }) }],
+    }));
+    const ctx = {
+      model: {},
+      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
+    };
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    expect(result.details?.semanticReview).toBe("approve");
+    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria).toEqual(criteria);
+    expect(__getPendingProposalForTest()?.proposal.phases[0].acceptanceCriteria).toEqual(criteria);
+    __resetGoalForTest();
+  });
+
+  test("语义预审 approve 显式携带非法 criteria 时 fail-closed", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-invalid-approve", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const ctx = {
+      model: {},
+      modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
+    };
+    for (const payload of [
+      { decision: "approve", acceptanceCriteria: "invalid" },
+      { decision: "approve", phaseAcceptanceCriteria: "invalid" },
+    ]) {
+      __setProposalSemanticCompletionForTest(() => ({
+        stopReason: "stop",
+        content: [{ type: "text", text: JSON.stringify(payload) }],
+      }));
+      const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+      expect(result.details?.error).toBe("semantic review technical error");
+      expect(String(result.details?.reason)).toContain("invalid JSON");
+      expect(__getPendingProposalForTest()).toBeUndefined();
+    }
+    __resetGoalForTest();
+  });
+
+  test("语义预审 approve 仍拒绝偷偷修改 criteria", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-changed-approve", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticReviewForTest(() => ({
+      decision: "approve",
+      acceptanceCriteria: [{ criterion: "被审核器改写的条件", evidence: "bun test" }],
+      phaseAcceptanceCriteria: [criteria],
+    }));
+    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(String(result.details?.reason)).toContain("changed criteria");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    __resetGoalForTest();
+  });
+
   test("语义预审接受 approve JSON 中空的迁移数组", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-empty-migrations", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
@@ -533,7 +589,7 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
-  test("模型 stopReason 为 error/aborted 时即使带 approve JSON 也 fail-closed", async () => {
+  test("模型 stopReason 为 error/aborted/length/toolUse 时即使带 approve JSON 也 fail-closed", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-stop", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     const ctx = {
@@ -550,12 +606,6 @@ describe("验收契约校验", () => {
       expect(result.isError).toBe(true);
       expect(__getPendingProposalForTest()).toBeUndefined();
     }
-    __setProposalSemanticCompletionForTest(() => ({ stopReason: "stop", content: [{ type: "text", text: '{"decision":"approve"}' }] }));
-    const malformed = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
-    // approve JSON 缺少 acceptanceCriteria → shape 校验失败 → 语义打回（不是技术错误）。
-    expect(malformed.details?.error).toBe("semantic review rejected");
-    expect(malformed.isError).toBe(false);
-    expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
   });
 

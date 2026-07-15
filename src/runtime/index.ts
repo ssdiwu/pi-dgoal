@@ -1726,9 +1726,11 @@ function buildProposalSemanticReviewPrompt(proposal: PlanProposal): string {
     "Do not accept a human approval, sign-off, visual inspection, real-person trial, subjective rating, or developer/model assertion as a completion condition, even when its evidence also contains a valid command, path, URL, or test output.",
     "If a criterion mixes a verifiable result with a human-only condition, rewrite it to the verifiable result and move the removed human-only requirement to userReviewItems.",
     "Do not add new completion requirements from project instructions or your own preferences. Review only the supplied proposal.",
-    "Return JSON only with this exact shape:",
-    '{"decision":"approve|rewrite|reject","acceptanceCriteria":[{"criterion":"...","evidence":"..."}],"phaseAcceptanceCriteria":[[{"criterion":"...","evidence":"..."}]],"userReviewItems":["..."],"migratedUserReviewItems":[{"sourceCriterion":"exact original criterion removed from the frozen contract","userReviewItem":"the corresponding non-blocking review item"}],"reason":"..."}',
-    "For approve, return the supplied acceptance criteria unchanged. For rewrite, return all goal and phase criteria after rewriting. Every original criterion that is removed or changed must have an exact sourceCriterion entry in migratedUserReviewItems, and its userReviewItem must also appear in userReviewItems. For reject, explain the blocking semantic issue.",
+    "Return JSON only. Use exactly one of these decision-specific shapes:",
+    '{"decision":"approve","reason":"optional short reason"}',
+    '{"decision":"reject","reason":"blocking semantic issue"}',
+    '{"decision":"rewrite","acceptanceCriteria":[{"criterion":"...","evidence":"..."}],"phaseAcceptanceCriteria":[[{"criterion":"...","evidence":"..."}]],"userReviewItems":["..."],"migratedUserReviewItems":[{"sourceCriterion":"exact original criterion removed from the frozen contract","userReviewItem":"the corresponding non-blocking review item"}],"reason":"optional short reason"}',
+    "For approve, do not echo or normalize any acceptance criteria; the runtime keeps the supplied contract unchanged. For rewrite, return all goal criteria and, for phased policy, all phase criteria after rewriting. Every original criterion that is removed or changed must have an exact sourceCriterion entry in migratedUserReviewItems, and its userReviewItem must also appear in userReviewItems. For reject, explain the blocking semantic issue.",
     "<dgoal_proposal>",
     escapeXml(JSON.stringify(proposal)),
     "</dgoal_proposal>",
@@ -1756,7 +1758,11 @@ function parseSemanticReviewResponse(text: string): ProposalSemanticReview | und
     const raw = JSON.parse(candidate.slice(start, end + 1)) as Record<string, unknown>;
     const decision = raw.decision;
     if (decision !== "approve" && decision !== "rewrite" && decision !== "reject") return undefined;
+    const hasAcceptanceCriteria = Object.prototype.hasOwnProperty.call(raw, "acceptanceCriteria");
     const acceptanceCriteria = normalizeAcceptanceCriteria(raw.acceptanceCriteria);
+    if (hasAcceptanceCriteria && !acceptanceCriteria) return undefined;
+    const hasPhaseAcceptanceCriteria = Object.prototype.hasOwnProperty.call(raw, "phaseAcceptanceCriteria");
+    if (hasPhaseAcceptanceCriteria && !Array.isArray(raw.phaseAcceptanceCriteria)) return undefined;
     const phaseAcceptanceCriteria = Array.isArray(raw.phaseAcceptanceCriteria)
       ? raw.phaseAcceptanceCriteria.map((criteria) => normalizeAcceptanceCriteria(criteria))
       : undefined;
@@ -1782,18 +1788,26 @@ function parseSemanticReviewResponse(text: string): ProposalSemanticReview | und
 function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: PlanProposal): string | undefined {
   if (review.decision === "reject") return review.reason || "semantic reviewer rejected the proposal";
   const finalOnly = proposal.verificationPolicyRecommendation === "final_only";
+  const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
+  if (review.decision === "approve") {
+    // Approve keeps the original frozen contract; criteria are optional in the response to avoid fragile JSON echoing.
+    if ((review.acceptanceCriteria && JSON.stringify(review.acceptanceCriteria) !== JSON.stringify(proposal.acceptanceCriteria))
+      || (review.phaseAcceptanceCriteria && JSON.stringify(review.phaseAcceptanceCriteria) !== JSON.stringify(originalPhases))) {
+      return "semantic reviewer approve response changed criteria without using rewrite";
+    }
+    return undefined;
+  }
   if (!review.acceptanceCriteria?.length) {
-    return `semantic reviewer returned incomplete ${review.decision} acceptance criteria`;
+    return "semantic reviewer returned incomplete rewrite acceptance criteria";
   }
   // final_only 下 phase 仅组织进度，phase 级验收条件可选；不要求长度一致或非空。
   if (!finalOnly && review.phaseAcceptanceCriteria?.length !== proposal.phases.length) {
-    return `semantic reviewer returned incomplete ${review.decision} acceptance criteria`;
+    return "semantic reviewer returned incomplete rewrite acceptance criteria";
   }
   if (!finalOnly && review.phaseAcceptanceCriteria?.some((criteria) => !criteria.length)) {
     return "semantic reviewer returned an empty phase acceptance criteria list";
   }
   if (review.decision === "rewrite") {
-    const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
     const originalLayers = [
       proposal.acceptanceCriteria ?? [],
       ...originalPhases,
@@ -1876,13 +1890,6 @@ function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: P
   const allCriteria = [...review.acceptanceCriteria, ...phaseCriteria.flat()];
   if (allCriteria.some((item) => !hasIndependentlyVerifiableEvidenceShape(item.evidence))) {
     return "semantic reviewer returned evidence without an independently verifiable shape";
-  }
-  if (review.decision === "approve") {
-    const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
-    if (JSON.stringify(review.acceptanceCriteria) !== JSON.stringify(proposal.acceptanceCriteria)
-      || JSON.stringify(review.phaseAcceptanceCriteria ?? originalPhases) !== JSON.stringify(originalPhases)) {
-      return "semantic reviewer approve response changed criteria without using rewrite";
-    }
   }
   return undefined;
 }

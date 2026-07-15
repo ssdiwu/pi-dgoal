@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **语义预审 approve 不再回显完整验收契约**：启动闸门审核器批准计划时只需返回最小 `{"decision":"approve"}` JSON，运行时继续使用原冻结 `acceptanceCriteria`；避免长命令与多层 criteria 回显导致无效 JSON 或无意义格式改写，同时仍拒绝 approve 响应偷偷修改完成门。
+
 ## [0.7.0] - 2026-07-15
 
 ### Added

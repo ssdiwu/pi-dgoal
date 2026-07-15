@@ -39,7 +39,7 @@ agent_end 检测:主代理本轮是否调了 dgoal_propose?
 
 v0.7.0 支持两种策略：`phased` 在每个 phase 结束时运行独立 `dgoal_check`；`final_only` 将 phase 划线仅作为进度完成事实，跳过阶段独立审核，只在 `dgoal_done` 运行 goal 级终审。`final_only` 的 `complete_progress` 不能替代 task 完成，也不能绕过阶段顺序。预算策略支持 `bounded`（首次达到上限进入一次宽限，宽限耗尽才暂停）与 `unbounded`（不因预算或固定次数拒绝暂停，但保留模型错误、无进展、审核错误和 agent_blocked 等安全出口）。
 
-`dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成；语义预审改写时必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求，不能静默丢弃。审核器只能复核冻结条件，不能在 loop 运行中依据 AGENTS/README 或自身判断扩容完成门。
+`dgoal_propose` 的 `acceptanceCriteria` 是 phase/goal 的冻结完成门：每项必须由 LLM 通过工具、命令、文件或可观察外部状态独立复验。TUI 视觉、实际使用和主观体验事项写入 `userReviewItems`，确认时可见，但不阻塞 dgoal 完成。语义预审 `approve` 只返回决策，运行时继续使用原冻结契约，不要求模型回显长命令与多层 criteria；若 approve 响应携带被修改的 criteria 仍 fail-closed。`rewrite` 必须用精确 `sourceCriterion` → `userReviewItem` 映射保留被移除的要求，不能静默丢弃。审核器只能复核冻结条件，不能在 loop 运行中依据 AGENTS/README 或自身判断扩容完成门。
 
 ### 为什么用工具回调(不用文本解析)
 

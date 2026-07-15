@@ -12,7 +12,7 @@ describe("v0.7.0 · final_only 真实预审路径", () => {
   test("final_only 省略 phase 验收条件：预审 approve 不崩溃并写入 pendingProposal", async () => {
     __resetGoalForTest();
     __setGoalForTest(pendingGoal());
-    __setProposalSemanticReviewForTest(() => ({ decision: "approve", acceptanceCriteria: [criterion] }));
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
     const r = await __executeDgoalProposeForTest({
       objective: "轻量任务", verification: "npm test 退出码 0",
       verificationPolicyRecommendation: "final_only", budgetPolicyRecommendation: "bounded",
