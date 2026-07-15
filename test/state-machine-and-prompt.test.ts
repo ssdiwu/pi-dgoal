@@ -1,4 +1,4 @@
-// 切片 6+7：状态机（done/rejected/pauseReason）+ buildPlanContextBlock 注入测试。
+// Goal 状态机、Three-Plan prompt 与 Plan context 注入测试。
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 6/7 验收。
 import { describe, expect, test } from "bun:test";
 
@@ -34,28 +34,28 @@ function goal(overrides: Partial<GoalState> = {}): GoalState {
   };
 }
 
-describe("切片6 · 状态机类型完整性", () => {
-  test("GoalStatus 含 rejected/done（编译期保证，此处只验证可构造）", () => {
-    const g1 = goal({ status: "rejected", rejectedCount: 1 });
-    const g2 = goal({ status: "done" });
-    const g3 = goal({ status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3 });
-    expect(g1.status).toBe("rejected");
-    expect(g2.status).toBe("done");
-    expect(g3.pauseReason).toBe("audit_failed_3x");
+describe("Goal 状态机类型完整性", () => {
+  test("GoalStatus 覆盖 pending / active / paused / done", () => {
+    expect(goal({ status: "pending" }).status).toBe("pending");
+    expect(goal({ status: "active" }).status).toBe("active");
+    expect(goal({ status: "paused", pauseReason: "audit_error" }).status).toBe("paused");
+    expect(goal({ status: "done" }).status).toBe("done");
   });
 });
 
-describe("v0.7.0 · verification policy prompt", () => {
-  test("final_only prompt 不要求 dgoal_check，改要求 complete_progress + dgoal_done", () => {
-    const text = buildSystemPrompt(goal({ verificationPolicy: "final_only" }));
-    expect(text).toContain("不要调用 dgoal_check");
-    expect(text).toContain("complete_progress");
-    expect(text).toContain("一次独立 goal 终审");
+describe("Three-Plan prompt", () => {
+  test("Phase Plan 只要求 goal_check", () => {
+    const text = buildSystemPrompt(goal({ planType: "phase" }));
+    expect(text).toContain("当前是 Phase Plan");
+    expect(text).toContain("goal_check");
+    expect(text).toContain("不要调用 phase_check");
   });
 
-  test("phased prompt 保留 dgoal_check 阶段门", () => {
-    const text = buildSystemPrompt(goal({ verificationPolicy: "phased" }));
-    expect(text).toContain("必须调用 dgoal_check 建检");
+  test("Goal Plan 要求 phase_check + goal_check", () => {
+    const text = buildSystemPrompt(goal({ planType: "goal" }));
+    expect(text).toContain("当前是 Goal Plan");
+    expect(text).toContain("phase_check");
+    expect(text).toContain("goal_check");
   });
 });
 
@@ -69,15 +69,15 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     expect(buildPlanContextBlock(g)).toBe("");
   });
 
-  // 软遗忘（ADR 0010）：completed phase（建检通过）只保留标题行，其下 task 的 subject
+  // 软遗忘（ADR 0010）：done phase（建检通过）只保留标题行，其下 task 的 subject
   // 与 evidence 全部软遗忘；in_progress phase 全量注入（含 done task）。
   test("混合 plan：done phase 只留标题行，in_progress phase 全量注入（含 done task）", () => {
     const g = goal({
       plan: {
         phases: [
-          p(1, "修复auth", [t(1, "登录", "completed", { evidence: "npm test ok" })], "completed"),
+          p(1, "修复auth", [t(1, "登录", "done", { evidence: "npm test ok" })], "done"),
           p(2, "加回归", [
-            t(2, "CI钩子", "completed", { evidence: "加了 .github/workflows" }),
+            t(2, "CI钩子", "done", { evidence: "加了 .github/workflows" }),
             t(3, "跑一次", "in_progress", { activeForm: "正在跑" }),
           ], "in_progress"),
         ],
@@ -85,17 +85,17 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
       } as TaskPlan,
     });
     const block = buildPlanContextBlock(g);
-    expect(block).toContain("<dgoal_plan>");
+    expect(block).toContain("<dgoal_plan type=\"goal\"");
     expect(block).toContain("</dgoal_plan>");
     // done phase：保留标题行
-    expect(block).toContain("[completed] phase #1: 修复auth");
+    expect(block).toContain("[done] phase #1: 修复auth");
     // done phase：软遗忘其下 task 的 subject 与 evidence
     expect(block).not.toContain("登录");
     expect(block).not.toContain("npm test ok");
     expect(block).not.toContain("task #1");
     // in_progress phase：全量注入，含已完成 task 的 subject 与 evidence（软遗忘时机是 phase 整体 done）
     expect(block).toContain("[in_progress] phase #2: 加回归");
-    expect(block).toContain("[completed] task #2: CI钩子 | ev: 加了 .github/workflows");
+    expect(block).toContain("[done] task #2: CI钩子 | ev: 加了 .github/workflows");
     expect(block).toContain("[in_progress] task #3: 跑一次");
   });
 
@@ -104,7 +104,7 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
       plan: {
         phases: [
           p(1, "阶段一", [
-            t(1, "任务甲", "completed", { evidence: "ev-甲" }),
+            t(1, "任务甲", "done", { evidence: "ev-甲" }),
             t(2, "任务乙", "done", { evidence: "ev-乙" }),
           ], "done"),
         ],
@@ -143,7 +143,7 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     const g = goal({
       plan: {
         phases: [
-          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "completed"),
+          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
           p(2, "当前阶段", [t(2, "新任务", "pending")], "in_progress"),
           p(3, "未来阶段", [t(3, "未启动", "pending")], "pending"),
         ],
@@ -152,7 +152,7 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     });
     const block = buildPlanContextBlock(g);
     // done phase 只留标题行
-    expect(block).toContain("[completed] phase #1: 已完成阶段");
+    expect(block).toContain("[done] phase #1: 已完成阶段");
     expect(block).not.toContain("旧任务");
     expect(block).not.toContain("旧证据");
     // in_progress / pending phase 展开 task
@@ -189,9 +189,8 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     expect(block).toContain("blocked: 缺 token");
   });
 
-  // Goal Repair（ADR 0011/0012）：resume 从 rejected/paused(audit_failed_3x) 恢复为 active 后，
-  // finalFeedback 仍在，已完成 phase 的 task 细节不能被软遗忘——修复需要回查实现证据。
-  test("Goal Repair：resume 后 active + finalFeedback 仍保留 done phase 全量 task 细节", () => {
+  // goal_check rejected 后 finalFeedback 仍在，已完成 phase 的 task 细节不能被软遗忘。
+  test("goal_check rejected 后保留 done phase 全量 task 细节", () => {
     const g = goal({
       status: "active",
       rejectedCount: 2,
@@ -205,7 +204,7 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
       } as TaskPlan,
     });
     const block = buildPlanContextBlock(g);
-    // done phase 的 task 细节在 Goal Repair 期间保留
+    // done phase 的 task 细节在 goal 修复期间保留
     expect(block).toContain("[done] phase #1: 已完成阶段");
     expect(block).toContain("旧任务");
     expect(block).toContain("旧证据");
@@ -235,11 +234,10 @@ describe("goal 边界注入", () => {
     expect(buildGoalBoundaryBlock(goal())).toBe("");
   });
 
-  test("nonGoals / guardrails / budget 会注入 dgoal_boundaries block", () => {
+  test("nonGoals / guardrails 会注入 dgoal_boundaries block", () => {
     const block = buildGoalBoundaryBlock(goal({
       nonGoals: ["不拆 PR", "不重构 i18n 框架"],
       guardrails: ["不改跨会话状态"],
-      budget: "预计 2 轮内完成",
     }));
     expect(block).toContain("<dgoal_boundaries>");
     expect(block).toContain("不做什么：");
@@ -247,7 +245,6 @@ describe("goal 边界注入", () => {
     expect(block).toContain("- 不重构 i18n 框架");
     expect(block).toContain("护栏：");
     expect(block).toContain("- 不改跨会话状态");
-    expect(block).toContain("预算：预计 2 轮内完成");
     expect(block).toContain("</dgoal_boundaries>");
   });
 });
@@ -276,28 +273,6 @@ describe("clear 行为", () => {
   });
 });
 
-describe("切片6 · rejected resume 清零逻辑（通过字段语义验证）", () => {
-  // resumeGoal 涉及 IO，这里验证 pauseReason 语义：audit_failed_3x 清零 vs 其他不清
-  test("audit_failed_3x 的 paused 应清零 rejectedCount（resume 语义）", () => {
-    const paused3x = goal({ status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3 });
-    const shouldClear = paused3x.pauseReason === "audit_failed_3x";
-    expect(shouldClear).toBe(true);
-  });
-
-  test("user_abort 的 paused 不应清零（瞬时故障）", () => {
-    const pausedAbort = goal({ status: "paused", pauseReason: "user_abort", rejectedCount: 0 });
-    const shouldClear = pausedAbort.pauseReason === "audit_failed_3x";
-    expect(shouldClear).toBe(false);
-  });
-
-  test("rejected 计数到 3 应触发 paused(audit_failed_3x)", () => {
-    // 模拟终审不过逻辑的计数判断
-    const count = 2;
-    const newCount = count + 1;
-    expect(newCount >= 3).toBe(true); // 触发 paused
-  });
-});
-
 describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）", () => {
   function t2(id: number, subject: string, status: Task["status"] = "pending"): Task { return { id, subject, status }; }
   function p2(id: number, subject: string, tasks: Task[], status: Phase["status"] = "in_progress"): Phase { return { id, subject, tasks, status }; }
@@ -323,9 +298,9 @@ describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）
     expect(buildCheckFeedbackBlock(g)).toBe("");
   });
 
-  test("rejected + 终审反馈：注入 final 反馈", () => {
+  test("active + goal_check 反馈：注入 final 反馈", () => {
     const g: GoalState = {
-      id: "g", objective: "o", status: "rejected", rejectedCount: 2, startedAt: 1, updatedAt: 1, iteration: 0,
+      id: "g", objective: "o", status: "active", rejectedCount: 2, startedAt: 1, updatedAt: 1, iteration: 0,
       finalFeedback: { report: "终审未通过报告", rejectedCount: 2, createdAt: 1 },
     } as GoalState;
     const block = buildCheckFeedbackBlock(g);
@@ -341,12 +316,12 @@ describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）
     expect(buildCheckFeedbackBlock(g)).toBe("");
   });
 
-  test("final 优先：resume 后 active 但 finalFeedback 仍在，注入 final 而非 phase", () => {
+  test("final 优先：active 且 finalFeedback 存在时注入 final 而非 phase", () => {
     const g: GoalState = {
       id: "g", objective: "o", status: "active", rejectedCount: 0, startedAt: 1, updatedAt: 1, iteration: 0,
       plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
       phaseFeedbackById: { "1": { phaseId: 1, report: "phase 报告", createdAt: 1 } },
-      finalFeedback: { report: "终审报告（resume 后继续修）", rejectedCount: 3, createdAt: 1 },
+      finalFeedback: { report: "goal_check 报告", rejectedCount: 3, createdAt: 1 },
     } as GoalState;
     const block = buildCheckFeedbackBlock(g);
     expect(block).toContain('type="final"');

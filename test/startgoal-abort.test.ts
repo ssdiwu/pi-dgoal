@@ -5,7 +5,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
-  __executeDgoalProposeForTest,
+  __executePlanProposalForTest,
   __getGoalForTest,
   __getPendingProposalForTest,
   __isStartGoalInProgressForTest,
@@ -40,7 +40,7 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     expect(aborted).toBe(1);
     // propose prompt 仍正常投递一次
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("dgoal_propose");
+    expect(sent[0]).toContain("phase_plan 或 goal_plan");
   });
 
   test("startGoal 的 status/notify 抛错时仍投递 propose prompt", async () => {
@@ -61,7 +61,7 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     await __startGoalForTest("启动 UI 容错", pi, ctx as never);
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("dgoal_propose");
+    expect(sent[0]).toContain("phase_plan 或 goal_plan");
   });
 
   test("agent idle 时 → 不调用 ctx.abort", async () => {
@@ -91,7 +91,7 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
   test("语义预审用户中断时 goal 仍为 pending 且没有 active proposal", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "semantic-abort", objective: "测试目标", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "测试目标",
       verification: "bun test",
       acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
@@ -118,7 +118,7 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     await __resumeGoalForTest(pi, ctx as never);
     expect(__getGoalForTest()?.status).toBe("active");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("恢复当前 /dgoal");
+    expect(sent[0]).toContain("恢复当前 goal Plan");
   });
 
   test("startGoal 投递 propose 恰好一次（不双发）", async () => {
@@ -130,7 +130,7 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     await __startGoalForTest("测试目标", pi, ctx as never);
 
     // 即使 abort 了，startGoal 自己只投递一次 propose；agent_end 的双发由 flag 抑制
-    const proposeCount = sent.filter((m) => m.includes("dgoal_propose")).length;
+    const proposeCount = sent.filter((m) => m.includes("phase_plan 或 goal_plan")).length;
     expect(proposeCount).toBe(1);
   });
 });

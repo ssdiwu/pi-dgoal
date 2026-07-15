@@ -46,20 +46,21 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
       p(2, "阶段B", [], "pending"),
     ]);
     const lines = renderPlanLines(g, noHide);
-    expect(lines[0]).toContain("🎯 修好测试 (0/2)"); // 无 completed phase
+    expect(lines[0]).toContain("🎯 修好测试 · 0/2 phases"); // 无 done phase
+    expect(lines[0]).toContain("1/1 tasks");
     expect(lines[0]).toContain("⏱");
     expect(lines[1]).toContain("◐ 阶段A"); // in_progress 符号
     expect(lines[1]).toContain("├─");
     expect(lines[2]).toContain("○ 阶段B"); // pending 符号
   });
 
-  test("completed phase 计入 heading 计数", () => {
+  test("done phase 计入 heading 计数", () => {
     const g = goal([
       p(1, "阶段A", [t(1, "a", "done")], "done"),
       p(2, "阶段B", [], "pending"),
     ]);
     const lines = renderPlanLines(g, noHide);
-    expect(lines[0]).toContain("🎯 修好测试 (1/2)");
+    expect(lines[0]).toContain("🎯 修好测试 · 1/2 phases");
   });
 
   test("paused 状态耗时冻结在 updatedAt", () => {
@@ -74,17 +75,19 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     }
   });
 
-  test("rejected / audit_failed_3x 显示 Goal Repair 投影", () => {
-    const rejected = goal([p(1, "阶段", [], "done")], { status: "rejected", rejectedCount: 2 });
-    expect(renderPlanLines(rejected, noHide)[0]).toContain("终审修复");
-
-    const paused = goal([p(1, "阶段", [], "done")], { status: "paused", pauseReason: "audit_failed_3x", rejectedCount: 3 });
-    expect(renderPlanLines(paused, noHide)[0]).toContain("终审修复已暂停");
+  test("goal_check rejected 不改变 active 状态投影", () => {
+    const active = goal([p(1, "阶段", [], "done")], {
+      status: "active",
+      goalCheck: { status: "rejected", report: "需修复", revision: 1, checkedAt: 1 },
+    });
+    const heading = renderPlanLines(active, noHide)[0];
+    expect(heading).toContain("修好测试");
+    expect(heading).not.toContain("终审修复");
   });
 });
 
 describe("切片3 · 状态符号", () => {
-  test("四态符号正确：○ pending / ◐ in_progress / ✓ completed / ⚠ blocked", () => {
+  test("四态符号正确：○ pending / ◐ in_progress / ✓ done / ⚠ blocked", () => {
     const g = goal([
       p(1, "p1", [], "pending"),
       p(2, "p2", [], "in_progress"),
@@ -117,8 +120,8 @@ describe("切片3 · 状态符号", () => {
   });
 });
 
-describe("切片3 · completed phase 持久显示", () => {
-  test("completed phase 不再被 hiddenPhaseIds 隐藏", () => {
+describe("切片3 · done phase 持久显示", () => {
+  test("done phase 不再被 hiddenPhaseIds 隐藏", () => {
     const g = goal([
       p(1, "已完成A", [], "done"),
       p(2, "进行中B", [], "in_progress"),
@@ -128,7 +131,7 @@ describe("切片3 · completed phase 持久显示", () => {
     expect(lines.some((l) => l.includes("进行中B"))).toBe(true);
   });
 
-  test("全 completed 也保持完整显示", () => {
+  test("全 done 也保持完整显示", () => {
     const g = goal([p(1, "A", [], "done"), p(2, "B", [], "done")]);
     const lines = renderPlanLines(g, { hiddenPhaseIds: new Set([1, 2]), expandTasks: false });
     // done 标题被删除线包裹，✓ 和 A/B 不再连续，分开断言
@@ -176,14 +179,14 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
     }) as typeof setTimeout;
 
     const overlay = new PlanOverlay();
-    const completed = goal([p(1, "完成", [], "done")], { status: "done" });
-    __setGoalForTest(completed);
+    const done = goal([p(1, "完成", [], "done")], { status: "done" });
+    __setGoalForTest(done);
     overlay.setUI({
       setWidget: () => { throw new Error("delayed hide UI boom"); },
       getToolsExpanded: () => false,
     });
     try {
-      expect(() => overlay.showDoneThenHide(completed)).not.toThrow();
+      expect(() => overlay.showDoneThenHide(done)).not.toThrow();
       expect(delayedHide).toBeDefined();
       expect(() => delayedHide!()).not.toThrow();
     } finally {

@@ -108,10 +108,20 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     expect(phaseLine?.text).toContain("⚠");
   });
 
-  test("completed/done phase 用 ✓", () => {
+  test("blocked task 在 Goal Plan 与 Task Plan Modal 都展示 blockedReason", () => {
+    const blockedTask = t(1, "taskA", "blocked", { blockedReason: "缺权限" });
+    const goalPlanLine = buildBodyLines(goal([p(1, "phaseA", [blockedTask], "blocked")]))
+      .find((line) => line.type === "task");
+    const taskPlanLine = buildBodyLines(goal([p(1, "hidden", [blockedTask], "blocked")], { planType: "task" }))
+      .find((line) => line.type === "task");
+    expect(goalPlanLine?.text).toContain("[缺权限]");
+    expect(taskPlanLine?.text).toContain("[缺权限]");
+  });
+
+  test("done phase 用 ✓", () => {
     const g = goal([p(1, "p", [], "done")]);
     expect(buildBodyLines(g)[2].text).toContain("✓");
-    const g2 = goal([p(1, "p", [], "completed")]);
+    const g2 = goal([p(1, "p", [], "done")]);
     expect(buildBodyLines(g2)[2].text).toContain("✓");
   });
 
@@ -167,8 +177,8 @@ describe("切片 1 · buildBodyLinesNoHeading 去掉 heading + spacer", () => {
 });
 
 describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
-  test("active goal 返回 🎯 + objective + (X/Y) + ⏱️ elapsed", () => {
-    const g = goal([p(1, "p1", [], "done")], {
+  test("active goal 返回 🎯 + phase/task 进度 + ⏱️ elapsed", () => {
+    const g = goal([p(1, "p1", [t(1, "t1", "done")], "done")], {
       status: "active",
       startedAt: 100_000,
       updatedAt: 100_000 + 7 * 60 * 1000 + 3 * 1000, // 7m 3s ago
@@ -176,7 +186,8 @@ describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
     const line = buildHeadingLine(g);
     expect(line).toContain("🎯");
     expect(line).toContain("实施 v0.4.2");
-    expect(line).toContain("(1/1)");
+    expect(line).toContain("1/1 phases");
+    expect(line).toContain("1/1 tasks");
     expect(line).toContain("⏱️");
   });
 
@@ -249,7 +260,7 @@ describe("切片 1 · colorize 按 line.type 分配层级基色", () => {
 
   test("phase → text（层级基色，与状态无关）", () => {
     // 四种 status 都应该走 text，不再走 success/warning/muted
-    for (const status of ["pending", "in_progress", "done", "completed", "blocked"] as const) {
+    for (const status of ["pending", "in_progress", "done", "blocked"] as const) {
       const out = colorize(lineOf("phase", status, "├─ p"), th);
       expect(out).toContain("<text>");
     }
@@ -261,7 +272,7 @@ describe("切片 1 · colorize 按 line.type 分配层级基色", () => {
   });
 
   test("task → dim（层级基色，与状态无关）", () => {
-    for (const status of ["pending", "in_progress", "done", "completed", "blocked"] as const) {
+    for (const status of ["pending", "in_progress", "done", "blocked"] as const) {
       const out = colorize(lineOf("task", status, "│ ○ p"), th);
       expect(out).toContain("<dim>");
     }

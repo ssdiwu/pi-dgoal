@@ -13,7 +13,6 @@ import {
   clearPhaseFeedback,
   setFinalFeedback,
   appendFinalAuditHistory,
-  setPhaseCompleted,
   currentUncheckedPhase,
   type AcceptanceCriterion,
   type GoalState,
@@ -118,12 +117,12 @@ describe("切片1 · persist/load 往返", () => {
     persistGoal(original);
 
     // persistGoal 写入 captured
-    expect(captured?.type).toBe("dgoal-goal-vnext");
+    expect(captured?.type).toBe("dgoal-plan-v1");
     expect(captured?.data.goal).not.toBeNull();
 
     // 用写入的 entry 构造 ctx，loadGoal 应恢复完整 plan
     const ctx = makeCtx([
-      { type: "custom", customType: "dgoal-goal-vnext", data: captured!.data },
+      { type: "custom", customType: "dgoal-plan-v1", data: captured!.data },
     ]);
     const restored = loadGoal(ctx as never);
 
@@ -151,7 +150,7 @@ describe("切片1 · persist/load 往返", () => {
     persistGoal(null);
     expect(captured!.goal).toBeNull();
 
-    const ctx = makeCtx([{ type: "custom", customType: "dgoal-goal-vnext", data: captured! }]);
+    const ctx = makeCtx([{ type: "custom", customType: "dgoal-plan-v1", data: captured! }]);
     expect(loadGoal(ctx as never)).toBeUndefined();
   });
 });
@@ -171,8 +170,8 @@ describe("切片1 · 旧 entry 隔离", () => {
     const completed = makeGoalWithPlan({ status: "done" });
     const pending = makeGoalWithPlan({ status: "pending", id: "p-1" });
     const ctx = makeCtx([
-      { type: "custom", customType: "dgoal-goal-vnext", data: { goal: completed } },
-      { type: "custom", customType: "dgoal-goal-vnext", data: { goal: pending } },
+      { type: "custom", customType: "dgoal-plan-v1", data: { goal: completed } },
+      { type: "custom", customType: "dgoal-plan-v1", data: { goal: pending } },
     ]);
     expect(loadGoal(ctx as never)?.id).toBe("p-1");
     expect(loadGoal(ctx as never)?.status).toBe("pending");
@@ -190,7 +189,7 @@ describe("切片1 · 旧 entry 隔离", () => {
 
 describe("切片1 · 三层内容数据结构", () => {
   test("Task 支持 blockedBy 依赖图（涌现分解）", () => {
-    const t1: Task = { id: 1, subject: "A", status: "completed" };
+    const t1: Task = { id: 1, subject: "A", status: "done" };
     const t2: Task = { id: 2, subject: "B", status: "in_progress", blockedBy: [1] };
     const t3: Task = {
       id: 3,
@@ -332,7 +331,7 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     const original = setFinalFeedback(setPhaseFeedback(makeGoalWithPlan(), 1, "phase 报告"), "final 报告", 1);
     persistGoal(original);
 
-    const ctx = makeCtx([{ type: "custom", customType: "dgoal-goal-vnext", data: captured!.data }]);
+    const ctx = makeCtx([{ type: "custom", customType: "dgoal-plan-v1", data: captured!.data }]);
     const restored = loadGoal(ctx as never);
 
     expect(restored).not.toBeUndefined();
@@ -345,26 +344,13 @@ describe("v0.5.2 · 建检反馈纯函数", () => {
     expect(restored!.finalFeedback!.rejectedCount).toBe(1);
   });
 
-  test("阶段建检序列：rejected 写 feedback，approved 清 feedback", () => {
-    // 模拟 dgoal_check 的 feedback 写入/清理序列（切片2 行为契约）
+  test("阶段建检序列：rejected 写 feedback，approved 只清 feedback", () => {
     let goal = makeGoalWithPlan();
-    // task 全终态以备 approved
-    const doneTask: Task = { id: 1, subject: "t", status: "done", evidence: "ok" };
-    goal = { ...goal, plan: { phases: [{ id: 1, subject: "p", status: "in_progress", tasks: [doneTask] }], nextId: 2 } };
-
-    // 1. 建检 rejected：写 phase feedback
     goal = setPhaseFeedback(goal, 1, "phase1 未通过报告");
     expect(goal.phaseFeedbackById!["1"].report).toBe("phase1 未通过报告");
 
-    // 2. 修复后重新建检 approved：setPhaseCompleted 后清 feedback
-    const r = setPhaseCompleted(goal, 1);
-    expect(r.op.kind).not.toBe("error");
-    goal = clearPhaseFeedback(r.goal, 1);
+    goal = clearPhaseFeedback(goal, 1);
     expect(goal.phaseFeedbackById!["1"]).toBeUndefined();
-
-    // 3. 异常/aborted 不写 feedback（契约：只有有结论的未通过才写）
-    // 这里用纯函数无法模拟异常路径，但行为上异常分支不调 setPhaseFeedback，
-    // 故 phaseFeedbackById 保持空
-    expect(goal.phaseFeedbackById!["1"]).toBeUndefined();
+    expect(goal.plan!.phases[0].status).toBe("in_progress");
   });
 });

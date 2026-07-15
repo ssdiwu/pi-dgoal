@@ -2,7 +2,7 @@
 // 当前 goal、pending proposal、续跑、计数器、终审反馈、修复账本等所有可变 session 状态
 // 集中在此模块的单例对象中。其他模块只通过此对象读写状态，不自行维护可变 session 状态。
 
-import type { GoalState, PlanProposal } from "../plan/index.ts";
+import type { GoalState, PlanProposal } from "../runtime/index.ts";
 
 export interface ContinuationState {
   goalId: string;
@@ -13,8 +13,6 @@ export interface ContinuationState {
 export interface PendingProposalState {
   goalId: string;
   proposal: PlanProposal;
-  /** Only true when this proposal passed the global-only implicit-start gate. */
-  implicitStart?: boolean;
 }
 
 export interface GoalRuntimeState {

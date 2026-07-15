@@ -279,20 +279,19 @@ describe("acceptance check alignment", () => {
     expect(task).toContain("不得从 subject、AGENTS、README 或个人判断新增 completion blocker");
     expect(task).toContain("额外人工体验要求只能列入“建议用户复核”，不能阻塞通过");
     expect(task).toContain("## 建议用户复核（不阻塞完成）");
-    // blocked task 不自动成为完成门
-    expect(task).toContain("只有直接影响冻结条件的 blocked task 才标 BLOCKER");
-    expect(task).not.toContain("blocked 的 task 要标成 BLOCKER 或 FAIL");
+    // phase_check 只接收 task 全 done；blocked 不能冒充完成
+    expect(task).toContain("task 全部 done");
+    expect(task).toContain("仍含 blocked task 或缺证据的 done task，必须判 FAIL");
   });
 
   test("phase check prompt 注入冻结的边界字段", () => {
     const task = buildPhaseCheckTask(
-      { objective: "o", nonGoals: ["不重构 i18n"], guardrails: ["不改跨会话状态"], budget: "2-3 轮" } as any,
+      { objective: "o", nonGoals: ["不重构 i18n"], guardrails: ["不改跨会话状态"] } as any,
       { id: 1, subject: "p", status: "in_progress", tasks: [] } as any,
     );
     expect(task).toContain("<dgoal_boundaries>");
     expect(task).toContain("不重构 i18n");
     expect(task).toContain("不改跨会话状态");
-    expect(task).toContain("2-3 轮");
   });
 
   test("goal auditor task asks for acceptance-style report", () => {
@@ -304,26 +303,25 @@ describe("acceptance check alignment", () => {
     expect(task).toContain("README");
   });
 
-  test("goal auditor prompt 明确 dgoal_done 审核因果时序并展示 final_only progress", () => {
+  test("goal auditor prompt 明确 goal_check 与 plan_update 的因果时序", () => {
     const task = buildAuditorTask({
-      objective: "完成真实 dgoal 终审",
-      status: "rejected",
-      verificationPolicy: "final_only",
+      objective: "完成真实 goal 终审",
+      status: "active",
+      planType: "phase",
       acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
-      finalFeedback: { report: "上轮错误要求当前 tool result 预先存在", rejectedCount: 1, createdAt: 1 },
+      finalFeedback: { report: "上轮错误要求 done 预先存在", rejectedCount: 1, createdAt: 1 },
       plan: {
-        phases: [{ id: 1, subject: "交付", status: "in_progress", progressCompleted: true, tasks: [{ id: 2, subject: "实现", status: "done", evidence: "bun test" }] }],
+        phases: [{ id: 1, subject: "交付", status: "done", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "bun test" }] }],
         nextId: 3,
       },
     } as any, "已完成", "bun test");
-    expect(task).toContain("当前 dgoal_done");
-    expect(task).toContain("成功 tool result");
+    expect(task).toContain("goal_check 只记录审核结论");
+    expect(task).toContain("plan_update");
     expect(task).toContain("status=done");
     expect(task).toContain("<APPROVED>");
-    expect(task).toContain("progressCompleted=true");
     expect(task).toContain("不得新增冻结完成门");
-    expect(AUDITOR_SYSTEM_PROMPT).toContain("当前 dgoal_done");
-    expect(AUDITOR_SYSTEM_PROMPT).toContain("APPROVED 后才由 runtime");
+    expect(AUDITOR_SYSTEM_PROMPT).toContain("goal_check 只记录结论");
+    expect(AUDITOR_SYSTEM_PROMPT).toContain("后续 plan_update");
   });
 
   test("goal auditor prompt 明确禁止将未冻结规范或人工体验升级为 FAIL", () => {
@@ -334,46 +332,32 @@ describe("acceptance check alignment", () => {
 
   test("goal auditor prompt 注入冻结的边界字段", () => {
     const task = buildAuditorTask(
-      { objective: "o", nonGoals: ["不重构 i18n"], guardrails: ["不改跨会话状态"], budget: "2-3 轮" } as any,
+      { objective: "o", nonGoals: ["不重构 i18n"], guardrails: ["不改跨会话状态"] } as any,
       "完成",
       "验证",
     );
     expect(task).toContain("<dgoal_boundaries>");
     expect(task).toContain("不重构 i18n");
     expect(task).toContain("不改跨会话状态");
-    expect(task).toContain("2-3 轮");
   });
 
   test("phase/goal 审核 system prompt 明确禁止运行时扩容完成门", () => {
     expect(PHASE_CHECK_SYSTEM_PROMPT).toContain("不直接影响冻结条件的 evidence 弱、文档不一致或代码问题只能 warning");
     expect(PHASE_CHECK_SYSTEM_PROMPT).toContain("人工条件兜底");
     expect(PHASE_CHECK_SYSTEM_PROMPT).toContain("不得把 AGENTS、README 或人工 TUI/视觉/体验要求临时加入完成门");
-    expect(PHASE_CHECK_SYSTEM_PROMPT).toContain("对旧 session 缺少结构化契约的情况，沿用任务中提供的 verification/task evidence 作为兼容验收依据");
     expect(AUDITOR_SYSTEM_PROMPT).toContain("不得把未冻结的项目规范或人工 TUI/视觉/体验要求升级为拒绝理由");
     expect(AUDITOR_SYSTEM_PROMPT).toContain("人工条件兜底");
-    expect(AUDITOR_SYSTEM_PROMPT).toContain("对旧 session 缺少结构化契约的情况，沿用本次 dgoal_done 的 verification 与 task evidence 作为兼容验收依据");
   });
 
-  test("旧 goal 缺少结构化契约时保留 verification 兼容完成门", () => {
-    const task = buildAuditorTask({ objective: "旧目标", verification: "npm test 全过" } as any, "已完成", "npm test");
-    expect(task).toContain("旧 session verification 兼容完成门");
-    expect(task).toContain("npm test 全过");
-  });
-
-  test("最旧 goal 缺少 verification 时仍使用本次 dgoal_done evidence 兼容验收", () => {
-    const task = buildAuditorTask({ objective: "最旧目标" } as any, "已完成", "npm test 全过");
-    expect(task).toContain("旧 session 兼容：本次 dgoal_done 提供的 verification 与 <dgoal_plan> 中的 task evidence");
-    expect(task).toContain("npm test 全过");
-  });
-
-  test("旧 goal 终审 prompt 注入 plan 的 phase 状态与 task evidence", () => {
+  test("goal check prompt 注入 Plan 的 phase 状态与 task evidence", () => {
     const task = buildAuditorTask(
       {
         objective: "旧目标",
+        planType: "phase",
         verification: "npm test 全过",
         plan: {
           phases: [
-            { id: 1, subject: "阶段一", status: "completed", tasks: [{ id: 2, subject: "跑测试", status: "done", evidence: "bun test 405 pass" }] },
+            { id: 1, subject: "阶段一", status: "done", tasks: [{ id: 2, subject: "跑测试", status: "done", evidence: "bun test 405 pass" }] },
             { id: 3, subject: "阶段二", status: "in_progress", tasks: [{ id: 4, subject: "补文档", status: "done", evidence: "git diff" }] },
           ],
           nextId: 5,
@@ -382,8 +366,8 @@ describe("acceptance check alignment", () => {
       "完成",
       "全量测试通过",
     );
-    expect(task).toContain("<dgoal_plan>");
-    expect(task).toContain("[completed] 阶段一");
+    expect(task).toContain('<dgoal_plan type="phase" revision="0">');
+    expect(task).toContain("[done] 阶段一");
     expect(task).toContain("[done] 跑测试 — 证据：bun test 405 pass");
     expect(task).toContain("[in_progress] 阶段二");
     expect(task).toContain("[done] 补文档 — 证据：git diff");
@@ -398,6 +382,7 @@ describe("acceptance check alignment", () => {
       { id: 1, subject: "修复 phase check", status: "in_progress", tasks: [{ id: 1, subject: "跑测试", status: "done", evidence: "npm test" }] } as any,
     );
 
+    expect(task).toContain('<dgoal_plan type="goal" revision="0">');
     expect(task).toContain("<previous_feedback>");
     expect(task).toContain("上次 FAIL：测试没跑");
     expect(task).toContain("这是重审");
@@ -466,7 +451,7 @@ describe("buildCompletionReplySignal", () => {
 
     expect(signal).toContain("Dgoal 完成信号");
     expect(signal).toContain("回复应帮助用户核对");
-    expect(signal).toContain("不要再次调用 dgoal_done");
+    expect(signal).toContain("不要再次调用 plan_update 收口");
     expect(signal).toContain("只保留 /dgoal");
     expect(signal).toContain("改了什么：");
     expect(signal).toContain("删除 /dgoal stop 别名");

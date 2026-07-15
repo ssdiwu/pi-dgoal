@@ -3,7 +3,7 @@
 
 临时复制认证配置，仅把审核主候选 zai-coding-cn 的 key 改为无效值：
 预检仍识别该模型，运行时 401 后必须切到 MiniMax 备用候选。
-dgoal_check / dgoal_done 的 details 必须含 fallback 尝试轨迹。
+phase_check / goal_check 的 details 必须含 fallback 尝试轨迹。
 
 用法：python3 test/test-auditor-fallback-smoke.py
 ⚠️ 消耗真实 token，需网络与已配置 provider；临时认证副本退出即删除。
@@ -38,12 +38,11 @@ UI_NO_REPLY_METHODS = {"notify", "setStatus", "setWidget", "setTitle", "set_edit
 EXPECTED_FILE = "hello.txt"
 EXPECTED_CONTENT = "Hello from fallback smoke"
 SMOKE_GOAL = (
-    f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}。"
-    "然后独立验证文件内容与上述要求完全一致。请按「实现」「验证」两个阶段组织 plan，"
-    "每个 task 做完用 dgoal_plan 推进状态，每阶段 task 全部终态后调用 dgoal_check 建检，"
-    "全部 phase 建检通过后调用 dgoal_done 结束。"
-    "只能通过 /dgoal 启动闸门推进；在 dgoal_propose 成功激活前不得创建文件或改走直接实现。"
-    "若任一 dgoal 工具报告启动/状态错误，立刻停止并报告错误，绝不以直接完成文件任务替代 dgoal 流程。"
+    f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}，并独立验证内容完全一致。"
+    "这是候选回退 smoke：请用 goal_plan 按「实现」「验证」两个有独立验收条件的 phase 组织。"
+    "每个 task 用 plan_update 推进，并带可复验证据标 done；每阶段 task 全部 done 后调用 phase_check，approved 后再 plan_update 标 phase done。"
+    "全部 phase done 后调用 goal_check，approved 后 plan_update(target=goal,status=done) 收口。"
+    "只能通过 /dgoal 启动闸门；goal_plan 确认前不得直接创建文件。"
 )
 TOTAL_TIMEOUT = 900
 READ_TIMEOUT = 6
@@ -123,6 +122,7 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
     deadline = time.time() + TOTAL_TIMEOUT
     last_agent_end_at: float | None = None
     done_ok = False
+    ui_state = type("UiState", (), {"goal_activated": False})()
 
     session.send({"id": "smoke-prompt", "type": "prompt", "message": f"/dgoal {SMOKE_GOAL}"})
 
@@ -143,7 +143,8 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
             if method not in UI_NO_REPLY_METHODS:
                 last_agent_end_at = None
             # 复用 test-ai-smoke.py 的 handle_ui_request（已验证的启动闸门回复逻辑）
-            err = handle_ui_request(session, event, None)  # type: ignore
+            err = handle_ui_request(session, event, ui_state)  # type: ignore[arg-type]
+            result["goal_activated"] = bool(ui_state.goal_activated)
             if err:
                 result["error"] = err
                 return
@@ -153,7 +154,7 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
             name = event.get("toolName") or ""
             partial_result = event.get("partialResult") or {}
             details = partial_result.get("details") if isinstance(partial_result, dict) else None
-            if name in ("dgoal_check", "dgoal_done") and isinstance(details, dict) and details.get("transition") == "candidate_fallback":
+            if name in ("phase_check", "goal_check") and isinstance(details, dict) and details.get("transition") == "candidate_fallback":
                 result.setdefault("candidate_fallback_updates", []).append({
                     "tool": name,
                     "auditorModel": details.get("auditorModel"),
@@ -165,7 +166,7 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
 
         if etype == "tool_execution_end":
             name = event.get("toolName") or ""
-            if name.startswith("dgoal_"):
+            if name in _mod.PUBLIC_TOOLS:
                 tc = result.setdefault("tool_calls", {}).setdefault(name, {"count": 0, "errors": 0})
                 tc["count"] += 1
                 is_err = bool(event.get("isError"))
@@ -174,11 +175,8 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
                 details = (event.get("result") or {}).get("details") or {}
                 print(f"[smoke] tool {name} #{tc['count']} isError={is_err}", file=sys.stderr, flush=True)
 
-                if name == "dgoal_plan" and not is_err:
-                    result["goal_activated"] = True
-
-                # 收集 dgoal_check / dgoal_done 的审核轨迹
-                if name in ("dgoal_check", "dgoal_done") and not is_err:
+                # 收集 phase_check / goal_check 的审核轨迹
+                if name in ("phase_check", "goal_check") and not is_err:
                     attempts = details.get("auditorAttempts")
                     auditor_model = details.get("auditorModel")
                     candidates_exhausted = details.get("auditorCandidatesExhausted")
@@ -190,13 +188,10 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
                             "candidatesExhausted": candidates_exhausted,
                         })
 
-                if name == "dgoal_done" and not is_err:
-                    if details.get("audited") is True:
-                        done_ok = True
-                        result["done_audited"] = True
-                        result["error"] = None
-                    elif not result.get("error"):
-                        result["error"] = f"dgoal_done 终审未通过（details={details}）"
+                if name == "plan_update" and not is_err and details.get("completed") is True and details.get("status") == "done":
+                    done_ok = True
+                    result["goal_completed"] = True
+                    result["error"] = None
             continue
 
         if etype == "agent_end":
@@ -277,11 +272,11 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
             and any(a.get("modelId") == BACKUP_MODEL and a.get("outcome") == "approved" for a in attempts)
         )
     result["phase_fallback_count"] = sum(
-        trace.get("tool") == "dgoal_check" and has_complete_fallback(trace)
+        trace.get("tool") == "phase_check" and has_complete_fallback(trace)
         for trace in traces
     )
     result["goal_fallback_seen"] = any(
-        trace.get("tool") == "dgoal_done" and has_complete_fallback(trace)
+        trace.get("tool") == "goal_check" and has_complete_fallback(trace)
         for trace in traces
     )
 
@@ -290,7 +285,7 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
 
     # 判定
     passed = (
-        result.get("done_audited") is True
+        result.get("goal_completed") is True
         and result.get("has_traces") is True
         and result.get("backup_model_used") is True
         and result.get("primary_fallback") is True
@@ -302,8 +297,8 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
     )
     if not passed:
         print("\n[smoke] 失败诊断：", file=sys.stderr)
-        if not result.get("done_audited"):
-            print("  - dgoal_done 终审未通过", file=sys.stderr)
+        if not result.get("goal_completed"):
+            print("  - plan_update 未完成 goal", file=sys.stderr)
         if not result.get("has_traces"):
             print("  - 无审核轨迹（auditorAttempts）", file=sys.stderr)
         if not result.get("backup_model_used"):

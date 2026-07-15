@@ -1,5 +1,7 @@
 # ADR 0004：状态机扩展——rejected + 两种 paused
 
+> Status：已被 ADR 0038 覆盖。业务拒绝现只写 `CheckRecord.status=rejected`，Goal 保持 active，不再有固定三次拒绝暂停。
+
 ## 背景
 
 终审不过时，原 `loop_complete` 的处理是隐式软重回：返回审报告 + 靠 prompt 引导 agent 继续修再重调。这没有状态机硬约束，agent 理论可绕（无视报告又调，或干脆不调）。

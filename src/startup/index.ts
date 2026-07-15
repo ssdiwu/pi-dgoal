@@ -1,10 +1,13 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  dgoalDoneTool,
-  dgoalPlanTool,
-  dgoalProposeTool,
-  dgoalCheckTool,
-  dgoalPauseTool,
+  taskPlanTool,
+  phasePlanTool,
+  goalPlanTool,
+  planCreateTool,
+  planReadTool,
+  planUpdateTool,
+  phaseCheckTool,
+  goalCheckTool,
   handleDgoalCommand,
   resyncGoalFromSession,
   clearAuditorModelRegistryCache,
@@ -17,7 +20,6 @@ import {
   safeNotify,
   isGoalRunning,
   buildSystemPrompt,
-  loadDgoalConfig,
   markContinuationDelivered,
   trackFileToolExecutionStart,
   trackFileToolExecutionEnd,
@@ -29,15 +31,18 @@ import {
   persistGoal,
   sendContinuation,
   decideNoProgressPause,
-  decideBudgetPause,
-  validateImplicitToolAction,
   buildNoProgressDetail,
   setupI18n,
   setApi,
   disposePlanOverlay,
   t,
-  DGOAL_PLAN_TOOL_NAME,
-  DGOAL_CHECK_TOOL_NAME,
+  TASK_PLAN_TOOL_NAME,
+  PHASE_PLAN_TOOL_NAME,
+  GOAL_PLAN_TOOL_NAME,
+  PLAN_CREATE_TOOL_NAME,
+  PLAN_UPDATE_TOOL_NAME,
+  PHASE_CHECK_TOOL_NAME,
+  GOAL_CHECK_TOOL_NAME,
   MAX_ERROR_RETRIES,
   MAX_NO_PROGRESS_TURNS,
   type DgoalContext,
@@ -77,7 +82,7 @@ function naturalStartClauseIsDirective(clause: string, question: boolean): boole
 
 export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
   const unquoted = stripQuotedNaturalStartExamples(text);
-  const sentences = unquoted.match(/[^。！？!?；;\r\n]+[。！？!?；;]?/g) ?? [];
+  const sentences: string[] = unquoted.match(/[^。！？!?；;\r\n]+[。！？!?；;]?/g) ?? [];
   return sentences.some((rawSentence) => {
     const question = /[？?]\s*$/.test(rawSentence) || /(?:吗|么|呢)\s*[？?]?\s*$/.test(rawSentence);
     const sentence = rawSentence.replace(/[。！？!?；;]+\s*$/, "").trim();
@@ -87,21 +92,24 @@ export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
 }
 
 export function buildNaturalLanguageStartGuidance(): string {
-  return "<dgoal_natural_language_start>\n用户在本轮自然语言中明确要求使用或启动 dgoal。冷会话下可直接调用 dgoal_propose，不设置 implicit；运行时只在结构与语义成功后创建 pending 显式目标，并保留用户确认 UI。该路径可提交 phased / unbounded 或包含外部动作的计划，不要求用户补输 /dgoal。若任务同时满足全局隐式轻量边界，仍可选择 implicit=true；语义预审可在只差确认授权时自动降级为普通显式确认。\n</dgoal_natural_language_start>";
+  return "<dgoal_natural_language_start>\n用户在本轮明确要求使用或启动 /dgoal。请分析后推荐 Phase Plan（只做 goal_check）或 Goal Plan（phase_check + goal_check），并调用对应的 phase_plan / goal_plan 提交显式提案；两者都保留语义预审与用户确认，不要求用户重复输入 /dgoal。\n</dgoal_natural_language_start>";
 }
 
-export function buildImplicitStartGuidance(): string {
-  return "<dgoal_implicit_start>\n全局已授权受限的隐式 dgoal 启动。只有用户明确要求启动 dgoal 时，才可直接调用 dgoal_propose 并设置 implicit=true；任务还必须具体、可独立验收，且不涉及破坏整个工作仓库或 .git、外部写入、发布、推送、权限或付费动作。隐式目标可运行本地测试、构建、脚本、项目文件修改与本地 Git 变更。必须使用 final_only + bounded，并提供可由命令/测试独立复验的 acceptanceCriteria。若用户已自然语言明确要求 dgoal、但任务不满足隐式边界，可直接调用 dgoal_propose 且不设置 implicit，或让 implicit 语义预审在只差确认授权时自动降级到显式 pending 确认；不要再要求用户补输 /dgoal。没有明确用户目标时不要自行启动。\n</dgoal_implicit_start>";
+export function buildTaskPlanDefaultGuidance(): string {
+  return "<task_plan_default>\n普通、明确且需要跟踪的多步执行任务应主动调用 task_plan 建立最轻量计划并持续推进，不要要求用户先输入 /dgoal。纯讨论、解释、能力问答不建计划；单步回答也不建计划。只有任务确实需要冻结验收契约、goal 独立终审或 phase 独立建检时，才说明结构性理由并推荐用户使用 /dgoal；未经用户显式授权不得调用 phase_plan 或 goal_plan。\n</task_plan_default>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {
   setApi(pi);
   setupI18n(pi);
-  pi.registerTool(dgoalDoneTool);
-  pi.registerTool(dgoalPlanTool);
-  pi.registerTool(dgoalProposeTool);
-  pi.registerTool(dgoalCheckTool);
-  pi.registerTool(dgoalPauseTool);
+  pi.registerTool(taskPlanTool);
+  pi.registerTool(phasePlanTool);
+  pi.registerTool(goalPlanTool);
+  pi.registerTool(planCreateTool);
+  pi.registerTool(planReadTool);
+  pi.registerTool(planUpdateTool);
+  pi.registerTool(phaseCheckTool);
+  pi.registerTool(goalCheckTool);
 
   pi.registerCommand("dgoal", {
     description: t("command.description"),
@@ -173,37 +181,18 @@ export function registerDgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // 冷启动时分别注入本轮自然语言显式授权与全局隐式授权；二者都仍经过 dgoal_propose 的结构/语义校验。
-    const guidance: string[] = [];
+    // Cold sessions always expose the unprivileged Task Plan default. Explicit /dgoal authorization
+    // additionally enables the audited Phase/Goal Plan entry tools for this turn.
+    const guidance = [buildTaskPlanDefaultGuidance()];
     if (goalRuntimeState.naturalLanguageStartAuthorized) guidance.push(buildNaturalLanguageStartGuidance());
-    const loaded = await loadDgoalConfig(ctx).catch(() => undefined);
-    if (loaded?.globalConfig.implicitFinalOnlyStart) guidance.push(buildImplicitStartGuidance());
-    if (!guidance.length) return;
     return {
       systemPrompt: `${event.systemPrompt}\n\n${guidance.join("\n\n")}`,
     };
   });
 
-  pi.on("agent_settled", () => {
+  const onAgentSettled = pi.on as unknown as (event: "agent_settled", handler: () => void) => void;
+  onAgentSettled("agent_settled", () => {
     if (!goalRuntimeState.currentGoal) clearNaturalLanguageStartAuthorization();
-  });
-
-  pi.on("tool_call", (event, ctx) => {
-    // tool_call 是 Pi 保证的执行前 preflight；必须在这里 block，不能等 tool_execution_start 后再 abort。
-    const goal = goalRuntimeState.currentGoal;
-    if (!goal?.implicitStart || !isGoalRunning(goal.status)) return;
-    const violation = validateImplicitToolAction(event.toolName, event.input, ctx.cwd);
-    if (!violation) return;
-    goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), {
-      pauseReason: "agent_blocked",
-      pauseReasonDetail: violation,
-    });
-    persistGoal(goalRuntimeState.currentGoal);
-    clearContinuation();
-    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-    safeUpdatePlanOverlay();
-    safeNotify(ctx, `Implicit dgoal paused: ${violation}. Use explicit /dgoal to authorize this action.`, "warning");
-    return { block: true, reason: `Implicit dgoal blocked before execution: ${violation}` };
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -212,54 +201,24 @@ export function registerDgoal(pi: ExtensionAPI) {
     goalRuntimeState.turnHadToolExecution = true;
   });
 
-  // 切片3：plan 相关工具执行后刷新浮层（tool_execution_end 只读 goalRuntimeState.currentGoal，不 replay）
+  // Plan/check tools refresh the persistent projection after successful state changes.
   pi.on("tool_execution_end", (event) => {
     trackFileToolExecutionEnd(event.toolCallId, event.isError);
     if (event.isError) return;
-    if (event.toolName !== DGOAL_PLAN_TOOL_NAME && event.toolName !== DGOAL_CHECK_TOOL_NAME) return;
-    safeUpdatePlanOverlay();
+    const refreshTools = new Set([
+      TASK_PLAN_TOOL_NAME,
+      PHASE_PLAN_TOOL_NAME,
+      GOAL_PLAN_TOOL_NAME,
+      PLAN_CREATE_TOOL_NAME,
+      PLAN_UPDATE_TOOL_NAME,
+      PHASE_CHECK_TOOL_NAME,
+      GOAL_CHECK_TOOL_NAME,
+    ]);
+    if (refreshTools.has(event.toolName)) safeUpdatePlanOverlay();
   });
 
-  function consumeRuntimeBudget(ctx: DgoalContext): boolean {
-    const goal = goalRuntimeState.currentGoal;
-    if (!goal) return false;
-    const turnUsage = (goal.budgetUsage?.turns ?? 0) + 1;
-    goalRuntimeState.currentGoal = {
-      ...goal,
-      budgetUsage: { turns: turnUsage, repairAttempts: goal.budgetUsage?.repairAttempts ?? 0 },
-    };
-    const turnBase = goal.budgetPolicy === "bounded" ? goal.runtimeBudget?.maxTurns : undefined;
-    if (!goalRuntimeState.currentGoal.budgetInGrace && turnBase !== undefined && turnUsage >= turnBase) {
-      goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, budgetInGrace: true, budgetGraceUsed: true };
-      persistGoal(goalRuntimeState.currentGoal);
-      safeNotify(ctx, "Bounded turn budget reached; entering one preauthorized grace window.", "warning");
-    }
-    const wallLimit = goalRuntimeState.currentGoal.budgetPolicy === "bounded" ? goalRuntimeState.currentGoal.runtimeBudget?.maxWallClockMinutes : undefined;
-    const activeElapsedMs = Math.max(0, Date.now() - (goalRuntimeState.currentGoal.startedAt || Date.now()) - (goalRuntimeState.currentGoal.pausedTotalMs ?? 0));
-    const wallBaseReached = wallLimit !== undefined && activeElapsedMs >= wallLimit * 60_000;
-    if (!goalRuntimeState.currentGoal.budgetInGrace && wallBaseReached) {
-      goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, budgetInGrace: true, budgetGraceUsed: true };
-      persistGoal(goalRuntimeState.currentGoal);
-      safeNotify(ctx, "Bounded wall-clock budget reached; entering one preauthorized grace window.", "warning");
-    }
-    const wallGraceMinutes = goalRuntimeState.currentGoal.runtimeBudget?.grace?.maxWallClockMinutes ?? wallLimit;
-    const wallGraceExceeded = goalRuntimeState.currentGoal.budgetInGrace && wallLimit !== undefined
-      && wallGraceMinutes !== undefined && activeElapsedMs >= (wallLimit + wallGraceMinutes) * 60_000;
-    const overTurns = decideBudgetPause(goalRuntimeState.currentGoal, "turns");
-    if (overTurns.pause || wallGraceExceeded) {
-      goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "budget_exhausted" });
-      persistGoal(goalRuntimeState.currentGoal);
-      clearContinuation();
-      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-      safeUpdatePlanOverlay();
-      safeNotify(ctx, "Bounded budget exhausted after grace; paused.", "warning");
-      return true;
-    }
-    return false;
-  }
-
   async function handleAgentEnd(event: { messages: unknown[] }, ctx: DgoalContext) {
-    // 切片4：启动闸门阶段（goal pending）——主代理应调 dgoal_propose 提交计划。
+    // 启动闸门阶段（goal pending）——主代理应调 phase_plan 或 goal_plan 提交计划。
     // startGoal 初始化期间（创建 pending → 投递 propose）跳过：被中断 turn 的 agent_end
     // 会看到 pending goal，不跳过会与 startGoal 自己的 propose 投递撞车（双发）。
     if (goalRuntimeState.currentGoal && goalRuntimeState.currentGoal.status === "pending") {
@@ -272,10 +231,6 @@ export function registerDgoal(pi: ExtensionAPI) {
 
     const finalAssistant = findFinalAssistantMessage(event.messages);
     const errorDetail = finalAssistant?.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
-
-    // 每次 active goal 的主模型 agent_end 都计入执行预算；pending 启动闸门和用户主动中断不在此入口计数。
-    // toolUse/length/error 也会触发后续模型执行，不能只统计 stop，否则会低估真实调用次数。
-    if (finalAssistant?.stopReason !== "aborted" && consumeRuntimeBudget(ctx)) return;
 
     // 用户主动中断：不重试，直接暂停。
     if (finalAssistant?.stopReason === "aborted") {
@@ -320,7 +275,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       return;
     }
 
-    // length/toolUse/缺失原因保留原有续跑行为：继续下一次模型执行，但本轮预算已在 agent_end 入口计入。
+    // length/toolUse/缺失原因保留原有续跑行为，继续下一次模型执行。
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;

@@ -36,7 +36,7 @@ describe("v0.5.2 切片8 · 裸 /dgoal 承接前文启动", () => {
     const prompt = buildProposePrompt(goal);
     expect(prompt).toContain("承接前文");
     expect(prompt).toContain("归纳");
-    expect(prompt).toContain("objective 必须是你归纳出的明确目标");
+    expect(prompt).toContain("objective 必须由你从前文归纳");
     expect(prompt).toContain("前文讨论了对齐的方案");
   });
 

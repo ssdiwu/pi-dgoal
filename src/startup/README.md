@@ -1,13 +1,23 @@
-# src/startup — 启动与 Pi 注册（ADR 0024）
+# `src/startup/` — Pi 注册与事件 wiring
 
-启动模块承载 Pi 扩展注册、事件订阅 wiring、命令路由与启动闸门逻辑。`registerDgoal` 是 Pi 扩展入口，注册工具、命令与事件处理器；`session_start`、`session_tree`、`session_compact` 统一恢复持久化 goal，工具入口还提供内存状态丢失时的惰性恢复。`input` 只从空闲的 `interactive` / `rpc` 来源识别祈使式自然语言 dgoal 指令，拒绝问句、引用/讨论、仅否定使用 dgoal 的表达、标识符后缀及处理中追加输入；“不是……而是需要你用 dgoal……”按后半句明确动作授权。`before_agent_start` 要求 prompt 与 dgoal handler 观察到的文本完全一致并注入工具指导，`agent_settled` 清理未消费授权（ADR 0036）。Pi 不提供不可变 input 原文，早于 dgoal 的受信任 transform 属于扩展全权限信任边界。session 重同步交给 runtime 按实际 `setWidget` 能力恢复持续显示浮层，不依赖宿主可缺失的 `hasUI` / `mode` 标记。
+`registerDgoal` 是扩展入口，注册八个公共工具、`/dgoal` 命令与 session / input / agent / tool 事件处理器。
+
+## 职责
+
+- 注册 `task_plan` / `phase_plan` / `goal_plan`、`plan_create` / `plan_read` / `plan_update`、`phase_check` / `goal_check`。
+- `before_agent_start` 默认注入 Task Plan guidance：明确多步执行任务可主动建计划；讨论和单步回答不建；不得自行升级 Phase/Goal Plan。
+- 识别真实用户明确要求使用 dgoal 的自然语言显式授权，并叠加 Phase/Goal Plan 启动 guidance；能力问句、引用、否定与 extension 注入不授权。
+- `session_start` / `session_tree` / `session_compact` 恢复 `dgoal-plan-v1` 状态和持续显示浮层。
+- 在工具结束和 agent turn 结束时刷新状态投影与无进展熔断。
+
+不存在隐式 proposal、runtime budget 消费或隐式动作 preflight。Task Plan 不扩大宿主权限；真实工具动作仍由 Pi 与对应扩展的权限边界决定。
 
 ## 文件
 
-- `index.ts` — `registerDgoal`（Pi 扩展入口：注册工具/命令/事件）+ 事件处理器 wiring
+- `index.ts` — `registerDgoal` 与全部事件处理器 wiring
 
 ## 依赖
 
-- `src/runtime` — 工具定义、命令处理、事件处理函数、状态管理
+- `src/runtime` — 工具、命令、状态与 prompt
 - `src/goal-runtime` — 可变会话状态
-- 不被其他模块依赖（仅 `index.ts` 调用 `registerDgoal`）
+- 仅由仓库根 `index.ts` 调用

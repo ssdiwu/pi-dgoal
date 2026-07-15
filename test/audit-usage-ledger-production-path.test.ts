@@ -1,431 +1,159 @@
 import { EventEmitter } from "node:events";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import {
-  __executeDgoalCheckForTest,
-  __executeDgoalDoneForTest,
   __getGoalForTest,
   __resetGoalForTest,
+  __resetSpawnManagedSubprocessForTest,
   __setApiForTest,
   __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
   __setSpawnManagedSubprocessForTest,
-  __resetSpawnManagedSubprocessForTest,
+  goalCheckTool,
+  phaseCheckTool,
+  planUpdateTool,
 } from "../index.ts";
 
 let tempDir = "";
 let originalAgentDir = process.env.PI_CODING_AGENT_DIR;
+const ctx = {
+  cwd: process.cwd(),
+  model: { provider: "openai", id: "gpt-5" },
+  isProjectTrusted: () => true,
+  ui: { notify: () => {}, setStatus: () => {}, setWidget: () => {} },
+  sessionManager: { getBranch: () => [] },
+} as never;
 
 beforeEach(() => {
   __resetGoalForTest();
   originalAgentDir = process.env.PI_CODING_AGENT_DIR;
   tempDir = mkdtempSync(join(tmpdir(), "pi-dgoal-audit-prod-"));
   process.env.PI_CODING_AGENT_DIR = tempDir;
+  __setApiForTest({ appendEntry: () => {} });
 });
 
 afterEach(() => {
-  if (originalAgentDir === undefined) {
-    delete process.env.PI_CODING_AGENT_DIR;
-  } else {
-    process.env.PI_CODING_AGENT_DIR = originalAgentDir;
-  }
+  if (originalAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalAgentDir;
   rmSync(tempDir, { recursive: true, force: true });
   __resetSpawnManagedSubprocessForTest();
+  __setCompletionAuditorOverrideForTest(undefined);
 });
 
-test("有效审核结论优先于同一 message_end 的 WebSocket error", async () => {
-  __setSpawnManagedSubprocessForTest((_command, _args, _cwd) => {
+function fakeAudit(events: object[], pid = 42): void {
+  __setSpawnManagedSubprocessForTest(() => {
     const stdout = new EventEmitter();
     const proc = new EventEmitter() as any;
     proc.stdout = stdout;
     proc.stderr = new EventEmitter();
-    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
-    proc.pid = 42;
+    proc.stdin = { write: (_value: string, callback?: (error?: Error | null) => void) => callback?.() };
+    proc.pid = pid;
     proc.exitCode = null;
     proc.signalCode = null;
-    proc.kill = () => {
-      proc.exitCode = 0;
-      proc.signalCode = "SIGTERM";
-    };
+    proc.kill = () => { proc.exitCode = 0; proc.signalCode = "SIGTERM"; };
     setTimeout(() => {
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "## 验收结论\n<REJECTED>" }],
-          errorMessage: "WebSocket error",
-        },
-      })}\n`);
+      for (const event of events) stdout.emit("data", `${JSON.stringify(event)}\n`);
       proc.exitCode = 0;
       proc.emit("close", 0);
     }, 0);
     return proc;
   });
+}
 
-  const persisted: Array<{ type: string; data?: any }> = [];
-  __setApiForTest({ appendEntry: (type: string, data: any) => persisted.push({ type, data }) });
+function setGoalPlan(id: string, phaseStatus: "in_progress" | "done" = "in_progress"): void {
   __setGoalForTest({
-    id: "audit-websocket-report",
-    objective: "报告优先级回归",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
-    plan: {
-      phases: [
-        { id: 1, subject: "验收", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] },
-        { id: 3, subject: "后续", status: "pending", tasks: [] },
-      ],
-      nextId: 4,
-    },
+    id, objective: "审核回归", planType: "goal", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+    verification: "npm test", acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
+    plan: { revision: 0, nextId: 3, phases: [{
+      id: 1, subject: "验收", status: phaseStatus,
+      acceptanceCriteria: [{ criterion: "阶段可测试", evidence: "npm test" }],
+      tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }],
+    }] },
   } as never);
+}
 
-  const result = await __executeDgoalCheckForTest(
-    { phaseId: 1 },
-    {
-      cwd: process.cwd(),
-      model: { provider: "openai", id: "gpt-5" },
-      isProjectTrusted: () => true,
-      ui: { notify: () => {} },
-    } as never,
-  );
+const phaseCheck = () => phaseCheckTool.execute("test", { phaseId: 1 }, undefined, undefined, ctx);
+const goalCheck = () => goalCheckTool.execute("test", { summary: "完成", verification: "npm test" }, undefined, undefined, ctx);
 
+test("phase rejection wins over a WebSocket error in the same message_end", async () => {
+  fakeAudit([{ type: "message_end", message: {
+    role: "assistant", content: [{ type: "text", text: "## 结论\n<REJECTED>" }], errorMessage: "WebSocket error",
+  } }]);
+  setGoalPlan("phase-report-priority");
+  const result = await phaseCheck();
   expect(result.isError).toBe(false);
   expect(result.details?.approved).toBe(false);
-  expect(result.details?.liveness).toBe("rejected");
   expect(__getGoalForTest()?.status).toBe("active");
-  expect(__getGoalForTest()?.pauseReason).toBeUndefined();
-  expect(persisted.at(-1)?.data.goal?.phaseFeedbackById?.["1"]?.report).toContain("<REJECTED>");
+  expect(__getGoalForTest()?.plan?.phases[0].check?.status).toBe("rejected");
+  expect(__getGoalForTest()?.phaseFeedbackById?.["1"]?.report).toContain("<REJECTED>");
 });
 
-test("goal 终审 APPROVED 优先于同一 message_end 的 WebSocket error", async () => {
-  __setSpawnManagedSubprocessForTest((_command, _args, _cwd) => {
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter() as any;
-    proc.stdout = stdout;
-    proc.stderr = new EventEmitter();
-    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
-    proc.pid = 43;
-    proc.exitCode = null;
-    proc.signalCode = null;
-    proc.kill = () => {
-      proc.exitCode = 0;
-      proc.signalCode = "SIGTERM";
-    };
-    setTimeout(() => {
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "## 验收结论\n<APPROVED>" }],
-          errorMessage: "WebSocket error",
-        },
-      })}\n`);
-      proc.exitCode = 0;
-      proc.emit("close", 0);
-    }, 0);
-    return proc;
-  });
-
-  const persisted: Array<{ type: string; data?: any }> = [];
+test("goal approval wins over a WebSocket error; plan_update finalizes afterward", async () => {
+  fakeAudit([{ type: "message_end", message: {
+    role: "assistant", content: [{ type: "text", text: "## 结论\n<APPROVED>" }], errorMessage: "WebSocket error",
+  } }], 43);
+  const persisted: Array<{ type: string; data: any }> = [];
   __setApiForTest({ appendEntry: (type: string, data: any) => persisted.push({ type, data }) });
-  __setGoalForTest({
-    id: "audit-websocket-goal",
-    objective: "终审报告优先级回归",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
-    plan: {
-      phases: [
-        { id: 1, subject: "阶段一", status: "done", tasks: [{ id: 2, subject: "实现一", status: "done", evidence: "npm test" }] },
-        { id: 3, subject: "阶段二", status: "done", tasks: [{ id: 4, subject: "实现二", status: "done", evidence: "npm test" }] },
-      ],
-      nextId: 5,
-    },
-  } as never);
-
-  const result = await __executeDgoalDoneForTest(
-    { summary: "完成", verification: "npm test" },
-    {
-      cwd: process.cwd(),
-      model: { provider: "openai", id: "gpt-5" },
-      isProjectTrusted: () => true,
-      ui: { notify: () => {} },
-    } as never,
-  );
-
-  expect(result.isError).not.toBe(true);
-  expect(result.details?.audited).toBe(true);
-  expect(result.details?.auditOutput).toContain("<APPROVED>");
+  setGoalPlan("goal-report-priority", "done");
+  const checked = await goalCheck();
+  expect(checked.details?.approved).toBe(true);
+  expect(__getGoalForTest()?.status).toBe("active");
+  expect(__getGoalForTest()?.goalCheck?.report).toContain("<APPROVED>");
+  const finished = await planUpdateTool.execute("test", { target: "goal", status: "done", summary: "完成", verification: "npm test" }, undefined, undefined, ctx);
+  expect(finished.details?.completed).toBe(true);
   expect(__getGoalForTest()).toBeUndefined();
   expect(persisted.at(-1)?.data.goal).toBeNull();
 });
 
-test("dgoal_done 审核期间保持调用前状态，APPROVED 后才 finalize", async () => {
-  __setApiForTest({ appendEntry: () => {} });
-  for (const status of ["active", "rejected"] as const) {
-    __resetGoalForTest();
-    let observedStatus: string | undefined;
-    __setCompletionAuditorOverrideForTest(async () => {
-      observedStatus = __getGoalForTest()?.status;
-      return { approved: true, aborted: false, output: "<APPROVED>", modelId: "test/auditor", liveness: "approved" };
-    });
-    __setGoalForTest({
-      id: `causal-${status}`, objective: "终审因果时序", status,
-      startedAt: 1, updatedAt: 1, iteration: 0,
-      verification: "bun test", verificationPolicy: "final_only",
-      acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
-      plan: {
-        phases: [{ id: 1, subject: "交付", status: "in_progress", progressCompleted: true, tasks: [{ id: 2, subject: "实现", status: "done", evidence: "bun test" }] }],
-        nextId: 3,
-      },
-    } as never);
-    const result = await __executeDgoalDoneForTest({
-      summary: "完成", verification: "bun test",
-      verificationBundle: { changes: "none", acceptanceEvidence: "bun test", selfTest: "bun test", risks: "none" },
-    }, { cwd: process.cwd(), ui: { notify: () => {} } } as never);
-    expect(observedStatus).toBe(status);
-    expect(result.details?.audited).toBe(true);
-    expect(__getGoalForTest()).toBeUndefined();
-  }
-  __setCompletionAuditorOverrideForTest(undefined);
+test("goal_check keeps the pre-call active state; only plan_update writes done", async () => {
+  let observedStatus: string | undefined;
+  __setCompletionAuditorOverrideForTest(async () => {
+    observedStatus = __getGoalForTest()?.status;
+    return { approved: true, output: "<APPROVED>", modelId: "test/auditor", liveness: "approved" };
+  });
+  setGoalPlan("causal-order", "done");
+  const checked = await goalCheck();
+  expect(observedStatus).toBe("active");
+  expect(checked.details?.approved).toBe(true);
+  expect(__getGoalForTest()?.status).toBe("active");
+  await planUpdateTool.execute("test", { target: "goal", status: "done", summary: "完成", verification: "npm test" }, undefined, undefined, ctx);
+  expect(__getGoalForTest()).toBeUndefined();
 });
 
-test("审核 child 的成功 bash 事件会持久化为可恢复 phase 检查点", async () => {
-  __setSpawnManagedSubprocessForTest((_command, _args, _cwd) => {
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter() as any;
-    proc.stdout = stdout;
-    proc.stderr = new EventEmitter();
-    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
-    proc.pid = 44;
-    proc.exitCode = null;
-    proc.signalCode = null;
-    proc.kill = () => { proc.exitCode = 0; proc.signalCode = "SIGTERM"; };
-    setTimeout(() => {
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_start",
-        toolCallId: "checkpoint-bash",
-        toolName: "bash",
-        args: { command: "printf checkpoint" },
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_end",
-        toolCallId: "checkpoint-bash",
-        toolName: "bash",
-        result: { content: [{ type: "text", text: "checkpoint" }] },
-        isError: false,
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_end",
-        message: { role: "assistant", content: [{ type: "text", text: "<APPROVED>" }] },
-      })}\n`);
-      proc.exitCode = 0;
-      proc.emit("close", 0);
-    }, 0);
-    return proc;
-  });
-
-  __setApiForTest({ appendEntry: () => {} });
-  __setGoalForTest({
-    id: "checkpoint-production-path",
-    objective: "审核检查点回归",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
-    plan: {
-      phases: [
-        { id: 1, subject: "验收", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] },
-        { id: 3, subject: "后续", status: "pending", tasks: [] },
-      ],
-      nextId: 4,
-    },
-  } as never);
-
-  const result = await __executeDgoalCheckForTest(
-    { phaseId: 1 },
-    { cwd: process.cwd(), model: { provider: "openai", id: "gpt-5" }, isProjectTrusted: () => true, ui: { notify: () => {} } } as never,
-  );
-
+test("successful auditor tool events persist a reusable checkpoint and usage record", async () => {
+  fakeAudit([
+    { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "printf checkpoint" } },
+    { type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: { content: [] }, isError: false },
+    { type: "message_end", message: {
+      role: "assistant", content: [{ type: "text", text: "<APPROVED>" }],
+      usage: { input: 12, output: 8, totalTokens: 20, cost: { input: 0.12, output: 0.08 } },
+    } },
+  ], 44);
+  setGoalPlan("checkpoint-and-usage");
+  const result = await phaseCheck();
   expect(result.details?.approved).toBe(true);
-  const checkpoint = __getGoalForTest()?.auditCheckpoints?.phase;
-  expect(checkpoint?.records).toEqual([expect.objectContaining({
-    toolName: "bash",
-    args: { command: "printf checkpoint" },
-    started: true,
-    ended: true,
-    status: "success",
+  expect(__getGoalForTest()?.auditCheckpoints?.phase?.records).toEqual([expect.objectContaining({
+    toolName: "bash", args: { command: "printf checkpoint" }, started: true, ended: true, status: "success",
   })]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  const records = readFileSync(join(tempDir, "audit-usage.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
+  expect(records).toHaveLength(1);
+  expect(records[0]).toMatchObject({ scope: "phase", model: "openai/gpt-5", usage: { input: 12, output: 8, totalTokens: 20 } });
 });
 
-test("异常 tool_execution_end 不能生成可复用成功检查点", async () => {
-  __setSpawnManagedSubprocessForTest((_command, _args, _cwd) => {
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter() as any;
-    proc.stdout = stdout;
-    proc.stderr = new EventEmitter();
-    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
-    proc.pid = 46;
-    proc.exitCode = null;
-    proc.signalCode = null;
-    proc.kill = () => { proc.exitCode = 0; proc.signalCode = "SIGTERM"; };
-    setTimeout(() => {
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_start",
-        toolCallId: "mismatched-tool",
-        toolName: "bash",
-        args: { command: "printf mismatch" },
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_end",
-        toolCallId: "mismatched-tool",
-        toolName: "read",
-        isError: false,
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_start",
-        toolCallId: "unknown-status",
-        toolName: "bash",
-        args: { command: "printf unknown" },
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "tool_execution_end",
-        toolCallId: "unknown-status",
-        toolName: "bash",
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_end",
-        message: { role: "assistant", content: [{ type: "text", text: "<APPROVED>" }] },
-      })}\n`);
-      proc.exitCode = 0;
-      proc.emit("close", 0);
-    }, 0);
-    return proc;
-  });
-
-  __setApiForTest({ appendEntry: () => {} });
-  __setGoalForTest({
-    id: "checkpoint-invalid-end",
-    objective: "校验异常审核事件",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
-    plan: {
-      phases: [
-        { id: 1, subject: "验收", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] },
-        { id: 3, subject: "后续", status: "pending", tasks: [] },
-      ],
-      nextId: 4,
-    },
-  } as never);
-
-  const result = await __executeDgoalCheckForTest(
-    { phaseId: 1 },
-    { cwd: process.cwd(), model: { provider: "openai", id: "gpt-5" }, isProjectTrusted: () => true, ui: { notify: () => {} } } as never,
-  );
-
+test("mismatched or unknown tool end events never become successful checkpoints", async () => {
+  fakeAudit([
+    { type: "tool_execution_start", toolCallId: "mismatch", toolName: "bash", args: { command: "printf mismatch" } },
+    { type: "tool_execution_end", toolCallId: "mismatch", toolName: "read", isError: false },
+    { type: "tool_execution_start", toolCallId: "unknown", toolName: "bash", args: { command: "printf unknown" } },
+    { type: "tool_execution_end", toolCallId: "unknown", toolName: "bash" },
+    { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "<APPROVED>" }] } },
+  ], 46);
+  setGoalPlan("invalid-checkpoint");
+  const result = await phaseCheck();
   expect(result.details?.approved).toBe(true);
   const records = __getGoalForTest()?.auditCheckpoints?.phase?.records ?? [];
   expect(records.some((record) => record.status === "success")).toBe(false);
-});
-
-test("生产审核 child message_end.usage 可写入 audit-usage jsonl", async () => {
-  const spawnCalls: { command?: string; cwd?: string }[] = [];
-  __setSpawnManagedSubprocessForTest((command, _args, cwd) => {
-    spawnCalls.push({ command, cwd });
-    const stdout = new EventEmitter();
-    const proc = new EventEmitter() as any;
-    proc.stdout = stdout;
-    proc.stderr = new EventEmitter();
-    proc.stdin = { write: (_value: string, cb?: (err?: Error | null) => void) => cb?.() };
-    proc.pid = 42;
-    proc.exitCode = null;
-    proc.signalCode = null;
-    proc.kill = () => {
-      proc.exitCode = 0;
-      proc.signalCode = "SIGTERM";
-    };
-    setTimeout(() => {
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_update",
-        assistantMessageEvent: { type: "text_delta", delta: "审查中" },
-      })}\n`);
-      stdout.emit("data", `${JSON.stringify({
-        type: "message_end",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "<APPROVED> unified phase check" }],
-          usage: {
-            input: 12,
-            output: 8,
-            totalTokens: 20,
-            cost: { input: 0.12, output: 0.08 },
-          },
-        },
-      })}\n`);
-      proc.exitCode = 0;
-      proc.emit("close", 0);
-    }, 0);
-
-    return proc;
-  });
-
-  const persisted: Array<{ type: string }> = [];
-  __setApiForTest({ appendEntry: (type: string) => persisted.push({ type }) });
-  __setGoalForTest({
-    id: "auditor-production-path",
-    objective: "单 phase 统一建检账本回归",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "npm test" }],
-    plan: {
-      phases: [{ id: 1, subject: "验收", status: "in_progress", tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] }],
-      nextId: 3,
-    },
-  } as never);
-
-  const result = await __executeDgoalCheckForTest(
-    { phaseId: 1 },
-    {
-      cwd: process.cwd(),
-      model: { provider: "openai", id: "gpt-5" },
-      isProjectTrusted: () => true,
-      ui: { notify: () => {} },
-    } as never,
-  );
-  expect(result.details?.approved).toBe(true);
-  expect(spawnCalls).toHaveLength(1);
-  expect(__getGoalForTest()?.singlePhaseAudit?.modelId).toBe("openai/gpt-5");
-
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  const lines = readFileSync(join(tempDir, "audit-usage.jsonl"), "utf-8").trim().split("\n").filter(Boolean);
-  expect(lines).toHaveLength(1);
-  const record = JSON.parse(lines[0]);
-  expect(record.scope).toBe("goal");
-  expect(record.model).toBe("openai/gpt-5");
-  expect(record.usage).toMatchObject({
-    input: 12,
-    output: 8,
-    totalTokens: 20,
-    cost: { input: 0.12, output: 0.08 },
-  });
-
-  expect(persisted.length).toBeGreaterThanOrEqual(2);
-  expect(persisted.every((entry) => entry.type === "dgoal-goal-vnext")).toBe(true);
 });

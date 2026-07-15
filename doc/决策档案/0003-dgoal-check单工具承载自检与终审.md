@@ -1,5 +1,7 @@
 # ADR 0003：dgoal_check 单工具承载自检与终审
 
+> Status：已被 ADR 0038 覆盖。独立审核拆为 `phase_check` 与 `goal_check`，且 check 只记录结论、不直接写完成状态。
+
 ## 背景
 
 完成审核员（auditor）原是 `loop_complete` 内部自动 spawn 的隔离子进程，agent 不可控。引入 Task Plan 后，agent 执行中也有"自检某 step 是否真完成"的需求。

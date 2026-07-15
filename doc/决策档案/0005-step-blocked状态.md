@@ -1,5 +1,7 @@
 # ADR 0005：step blocked 状态
 
+> Status：部分被 ADR 0038 覆盖。`blocked` 与必填原因继续保留；blocked 作为完成放行条件的旧语义已删除，task/phase 必须真正 done 才能完成。
+
 ## 背景
 
 step 状态机原为三态 `pending → in_progress → completed`。调研（9 小时 /goal 实战）最硬教训：goal 契约必须配诚实失败条款，否则死循环（契约太紧）或假完成（契约太松）。agent 跑到某 step 发现做不下去（外部依赖缺失、需要权限、技术上不可行）时，三态只能：标 completed（假完成）、留 in_progress（卡死，dgoal_done 永远放行不了）、新建接续 step（原 step 还挂着）。

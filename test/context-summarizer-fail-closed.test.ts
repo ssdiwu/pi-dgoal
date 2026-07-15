@@ -20,6 +20,6 @@ describe("proposal 主导背景固化（ADR 0033）", () => {
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(__getGoalForTest()?.contextSummary).toBeUndefined();
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("dgoal_propose");
+    expect(sent[0]).toContain("phase_plan 或 goal_plan");
   });
 });

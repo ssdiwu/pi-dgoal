@@ -1,23 +1,27 @@
-# runtime
+# `src/runtime/`
 
-工具实现、审计编排、prompt 构建与 TUI 渲染的承载层。管理 dgoal 工具（dgoal_propose/dgoal_plan/dgoal_check/dgoal_done/dgoal_pause）、命令处理、审计子进程编排、启动闸门逻辑与持久化。
+三档 Plan 的运行时承载层：八个公共工具、`/dgoal` 命令、proposal 语义预审、独立审核编排、持久化、prompt 和浮层投影。
 
-`src/plan/`、`src/audit/`、`src/isolated-pi/`、`src/tui/` 已按真实职责迁出。可变会话状态归 `src/goal-runtime/state.ts` 单例；Pi 注册与事件订阅归 `src/startup/index.ts`。本模块被 startup 导入工具定义和事件处理函数（见 ADR 0024/0025）。
+## 公共工具
 
-## 自然语言显式启动
+- 建立：`task_plan` / `phase_plan` / `goal_plan`
+- 管理：`plan_create` / `plan_read` / `plan_update`
+- 审核：`phase_check` / `goal_check`
 
-冷会话中，若 Goal Runtime 已记录当前真实用户明确要求使用/启动 dgoal 的一次性授权，`dgoal_propose` 不设置 `implicit` 即可提交普通显式 proposal；只有结构校验和语义预审成功后才消费授权并创建 pending goal，失败不留半启动状态。该路径支持完整策略与计划内外部动作，但不扩张 `implicit=true` 的权限（ADR 0036/0037）。
+Task Plan 可直接建立和整份替换，隐藏内部单 phase。Phase/Goal Plan 复用显式启动闸门；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。
 
-## 轻提案、硬执行
+`phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。用户命令与技术熔断仍可暂停/恢复；Plan 写操作使旧审核记录失效。
 
-`validateProposalInput` 只校验非空字段、层级、策略/预算组合等确定性不变量，不再用命令名、文件扩展名或 `API response JSON` 等 evidence 词形作语义硬门。当前会话 LLM 是 proposal 的唯一语义判断层：保留独立验收条件、迁移非阻塞用户复核、拒绝仍缺用户专属输入的真实 blocker；隐式 proposal 若只需显示计划补足授权，则返回 `requiresExplicitConfirmation` 并降级为普通 pending goal。已识别的高风险动作仍由 startup 注册的 `tool_call` preflight 拦截。
+## Proposal 语义预审
 
-新隐式/自然语言启动只在结构与语义均成功后写 goal + pendingProposal；显式 `/dgoal` 已有 pending goal 的重提语义保持不变。`dgoal_done` auditor 在当前 tool result 与 `status=done` 之前运行，prompt 明确禁止要求后置结果预先存在；`final_only` 审核投影显式携带 `progressCompleted`。
+只用于 Phase/Goal Plan。确定性代码校验结构、状态、Plan 类型与用户授权；当前会话模型负责独立验收 / 用户复核 / 人工 blocker 语义分流。预审默认 60 秒 idle timeout，可配置 `proposalSemanticReviewIdleTimeoutSeconds`；终态为 approved / rewritten / rejected / technical_error。
 
-## 语义预审可观测性
+自然语言明确要求使用 dgoal 可形成一次性显式授权，但仍经过预审与确认 UI。不存在隐式 proposal 或 runtime budget 路径。
 
-`dgoal_propose` 的启动前语义预审以流式接收当前会话模型响应，默认 60s idle timeout（无有效流事件才超时，收到任意事件重置；可通过 `pi-dgoal.json` 的 `proposalSemanticReviewIdleTimeoutSeconds` 配置）。预审过程通过工具 `onUpdate` 输出活性状态（认证中/接收评审结果/校验评审 JSON）与空闲倒计时。终态拆为 `approved` / `rewritten` / `rejected`（语义，`isError:false`）与 `technical_error`（基础设施失败，`isError:true`）。这与 `dgoal_check` / `dgoal_done` 的隔离建检共享“有事件续命、无进展才超时”的计时理念，但预审不启动子进程、不授予工具、不走审核候选链、不认 APPROVED/REJECTED 标记。
+## 独立审核
 
-持续显示浮层在 goal 激活与 session 重同步时按 `setWidget` 能力确保初始化，不依赖宿主可能缺失的 `hasUI` / `mode` 标记；渲染异常仍只降级展示，不影响业务状态。
+phase/goal check 复用 `src/audit/` 与 `src/isolated-pi/`。业务 rejection 保持 Plan active；技术异常候选耗尽则 paused(audit_error)。审核通过不直接完成，后续必须由 `plan_update` 通过状态守卫。
 
-隔离建检区分模型和工具两种静默：模型思考/报告阶段保持 180s idle timeout；Pi 的 `tool_execution_*` 事件表明审核器正在跑内置工具时，窗口扩展到 1800s。`bash` 运行全量测试期间不会持续产生 child 事件，这个区分避免把正常的长验证误杀为 `auditor_error`。
+## 持久化与 UI 边界
+
+新状态写入 `dgoal-plan-v1`；旧 entry 不迁移。持久化必须先于 UI 更新，`setWidget` / status / notify / Modal 异常不能阻断状态机。

@@ -7,7 +7,7 @@
 1. `README.md`（功能、安装、使用、完成审核机制、设计边界——必读）
 2. `doc/术语表.md`（含建检循环第一性原理 + 全部术语定义）
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
-4. `doc/决策档案/README.md`（决策档案索引；0006 是建检循环基本盘，0016 是独立验收条件与用户复核边界，0037 是轻提案/硬执行的语义职责分层，其他决策按索引按需深入）
+4. `doc/决策档案/README.md`（决策档案索引；0038 是三档 Plan 当前权威，0016 是独立验收条件与用户复核边界，0037 是轻提案/硬执行的语义职责分层，其他历史决策按索引与“被覆盖”状态按需深入）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
 6. `index.ts`（扩展组合根；运行时职责位于 `src/`）
 
@@ -37,9 +37,9 @@ pi-dgoal/
 ## 代码边界
 
 - **会话内单目标**：只支持当前会话内单目标，不做多目标池。
-- **Task Plan 必选**：`/dgoal` 即复合目标，必须有 plan（phase + task 两层内容）；无空 plan 放行。详见 ADR 0002/0006。
-- **三层内容 + 建检循环**：goal（冻结）/phase（task 聚合）/task（按需分解）三层；phased dgoal 是建检循环——定义 goal + 完成后 check，不过继续干，过则结束。phase completed 唯一入口是 `dgoal_check`（独立子进程，建检不可绕过）；`final_only` 只记录 phase progress，由 `complete_progress` 标记进度，最终统一走 goal 终审。详见 ADR 0006、`doc/10-架构与运行/`。
-- **工具规范化**：agent 与 dgoal 状态机的交互统一用 `dgoal_` 前缀工具：`dgoal_propose`（提交计划）、`dgoal_plan`（更新 task/phase progress）、`dgoal_check`（phased 的 phase completed 唯一入口，只负责阶段建检）、`dgoal_done`（所有 phased phase 或 final_only progress 完成后声明完成并触发 goal 级终审）、`dgoal_pause`（遇到需用户决策的死锁时主动暂停）。原 `loop_complete` 已改名 `dgoal_done`。
+- **Plan 必选**：显式 `/dgoal` 必须提交 Phase Plan 或 Goal Plan，并至少包含一个 phase；task 可在提案中预置，也可在执行中按需新增，不允许空 phase 列表越过启动闸门。详见 ADR 0038。
+- **三档 Plan + 三层内容**：Task / Phase / Goal Plan 共享 goal（全局）/phase（task 聚合）/task（按需分解）数据结构。Task Plan 隐藏内部单 phase、无独立审核；Phase Plan 只做 goal check；Goal Plan 做 phase + goal 两级 check。详见 ADR 0038 与 `doc/10-架构与运行/`。
+- **八工具职责分离**：建立用 `task_plan` / `phase_plan` / `goal_plan`，管理用 `plan_create` / `plan_read` / `plan_update`，独立审核用 `phase_check` / `goal_check`。check 只写 `CheckRecord`，只有 `plan_update` 能写 phase/goal done 与暂停状态；公共工具不带 `dgoal_` 前缀。
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
 - **背景固化是补充**：当前生产启动不再运行独立背景摘要子进程；主 agent 可在 proposal 中提供可选 `contextSummary`，它仍是补充信息，不替代把关键约束写进 objective 或文档。
@@ -48,17 +48,17 @@ pi-dgoal/
 
 ## 提案语义与执行护栏准则
 
-- **轻提案、硬执行**：`dgoal_propose` 的代码层只硬校验结构、状态、策略/预算组合与用户授权；不得用命令名、文件扩展名、`API response JSON` 等词表代替语义理解。详见 ADR 0037。
-- **LLM 独占 proposal 语义判断**：语义预审判断任务能否自主闭环，并把候选条件分为独立验收条件、非阻塞 `userReviewItems`、真实人工 blocker；只有最后一类可阻塞启动。隐式路径若通过显式确认即可补足授权，应先降级显式；仍缺用户决策/信息/凭据/授权时才拒绝 proposal，不得扩张目标。
-- **LLM 不是安全边界**：真实高风险动作继续由 `tool_call` preflight 根据工具名、参数和项目边界 fail-closed；proposal 自由文本不作为平行安全硬门，含义不确定时由 LLM 降级显式确认，不得把 `nonGoals` / `guardrails` 的否定声明按关键词当成执行意图。
-- **先校验后落状态**：隐式 proposal 在权限、结构和语义预审成功前不得留下半启动 goal；若明确保留可重提 pending，错误结果必须说明当前状态和重试方式。
-- **终审不建自指完成门**：审核器只审冻结条件与调用前工件；当前 `dgoal_done` 的成功 response 必须等审核器返回 `<APPROVED>` 后生成，不得要求它预先存在，也不得因审核前 goal 仍为 active/rejected 而拒绝。
-- 修改 proposal/semantic preflight/implicit guard/final audit 时，回归测试至少覆盖：人工条件三分流、否定式边界、失败 proposal 状态原子性和 `dgoal_done` 审核→finalize→tool result 的因果时序。
+- **轻提案、硬执行**：`phase_plan` / `goal_plan` 的代码层只硬校验结构、状态、Plan 类型与显式用户授权；不得用命令名、文件扩展名、`API response JSON` 等词表代替语义理解。Task Plan 不走 proposal。详见 ADR 0037/0038。
+- **LLM 独占 proposal 语义判断**：语义预审判断 Phase/Goal Plan 能否自主闭环，并把候选条件分为独立验收条件、非阻塞 `userReviewItems`、真实人工 blocker；只有最后一类可阻塞启动，不得扩张目标。
+- **LLM 不是安全边界**：真实动作仍由宿主工具权限与执行护栏约束；proposal 自由文本不作为平行安全硬门，不得把 `nonGoals` / `guardrails` 的否定声明按关键词当成执行意图。
+- **先校验后落状态**：显式 proposal 在授权、结构和语义预审成功前不得留下半激活 Plan；错误结果必须说明当前状态和重试方式。
+- **审核不建自指完成门**：审核器只审冻结条件与调用前工件；`phase_check` / `goal_check` 先生成审核记录，再由后续 `plan_update` 写完成。不得要求后置 done 状态预先存在。
+- 修改 proposal/check/finalize 时，回归测试至少覆盖：人工条件三分流、失败 proposal 状态原子性、check 与 update 分离、plan revision 使旧批准失效，以及 update→persist→UI 的因果时序。
 
 ## TUI 边界防护
 
 - dgoal 的状态机、持久化和审计结果不能依赖 TUI 渲染成功；UI 只是展示层。
-- `finalizeGoal`、`dgoal_done`、`dgoal_check`、overlay/status 更新等路径必须防御 Pi 主程序 TUI 抛错（典型症状：`Spacer is not defined`）；持续浮层按真实 `setWidget` 能力初始化，不依赖宿主可缺失的 `hasUI` / `mode` 标记。
+- `finalizeGoal`、`phase_check`、`goal_check`、`plan_update`、overlay/status 更新等路径必须防御 Pi 主程序 TUI 抛错（典型症状：`Spacer is not defined`）；持续浮层按真实 `setWidget` 能力初始化，不依赖宿主可缺失的 `hasUI` / `mode` 标记。
 - 终审通过后的 `persistGoal(null)`、失败报告注入、phase/task 状态推进必须先于或独立于 UI 展示；UI 抛错只能降级提示，不能阻断 goal 闭环。
 - 改动完成、审核、overlay、status、notification 相关代码时，必须补“UI 抛错仍保持状态正确”的红绿回归测试。
 
@@ -68,11 +68,11 @@ pi-dgoal/
 
 ```bash
 npm run test:rpc      # RPC 加载 + /dgoal 命令注册（python）
-npm run test:context  # 启动背景固化逻辑（bun test）
+npm run test:context  # context / prompt 注入逻辑（bun test）
 npm test              # 全量 bun test
 ```
 
-**AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用宿主 Pi 的 `-ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展（`-ne` 禁扩展发现、`-ns/-np` 禁 skill/prompt 发现），让主模型真实跑一个多 phase dgoal，覆盖 `dgoal_propose → dgoal_plan → dgoal_check → dgoal_done` 全工具链。driver 会跳过 npm 注入的项目 local `node_modules/.bin/pi`（避免其版本落后于用户模型注册表）；可用 `PI_DGOAL_SMOKE_PI` 显式覆盖，`npm run test:smoke:runtime` 验证选择逻辑。⚠️ 消耗真实 token，需网络与已配置 provider。关键约束：启动闸门与建检依赖 `ui.select` 确认，纯 `-p`/`--mode json` 下 UI 方法是 no-op 会跑不通，必须用 `--mode rpc` + driver 注入确认响应；隔离扩展发现用 `-ne -ns -np`，**不要**设空 `PI_CODING_AGENT_DIR`（会把 provider 凭据一起隔离，pi 拿不到 API key 卡在网络层），凭据靠继承真实配置保留。
+**AI 驱动 smoke（真实模型 × 隔离环境）**：`npm run test:smoke`（即 `test/test-ai-smoke.py`）用宿主 Pi 的 `-ne -e ./index.ts -ns -np --mode rpc --no-session` 只加载本扩展。当前 smoke 应覆盖 `goal_plan → plan_update(task) → phase_check → plan_update(phase) → goal_check → plan_update(goal)`；driver 会跳过项目 local `node_modules/.bin/pi`，可用 `PI_DGOAL_SMOKE_PI` 覆盖，`npm run test:smoke:runtime` 验证选择逻辑。⚠️ 消耗真实 token；启动闸门依赖 RPC 注入确认响应，且不要清空 `PI_CODING_AGENT_DIR`，否则 provider 凭据也会被隔离。
 
 **人工 TUI smoke（用户复核项）**：浮层/overlay/modal 渲染、启动闸门确认 UI 的真实交互、终审 rejected 回环等纯渲染与交互行为，仍建议用户在 Pi TUI 用真实模型人工复核；不作为 dgoal phase/goal 的自动完成门。依据 ADR 0016。
 

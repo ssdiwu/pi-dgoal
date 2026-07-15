@@ -5,16 +5,18 @@
 import { describe, expect, test } from "bun:test";
 
 import dgoal, {
-  __executeDgoalCheckForTest,
-  __executeDgoalDoneForTest,
-  __executeDgoalPlanForTest,
   __getGoalForTest,
   __resetGoalForTest,
   __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
   __setPhaseCheckOverrideForTest,
   __setPlanOverlayForTest,
+  __setProposalSemanticReviewForTest,
   disposePlanOverlay,
+  goalCheckTool,
+  phaseCheckTool,
+  phasePlanTool,
+  planReadTool,
   resyncGoalFromSession,
   type GoalState,
   type Phase,
@@ -51,7 +53,7 @@ function makeCtx(entries: Array<{ type?: string; customType?: string; data?: unk
 }
 
 function dgoalEntry(goal: GoalState) {
-  return { type: "custom", customType: "dgoal-goal-vnext", data: { goal } };
+  return { type: "custom", customType: "dgoal-plan-v1", data: { goal } };
 }
 
 function captureHandlers() {
@@ -74,9 +76,9 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     const staleGoal = makeGoal();
     __setGoalForTest(staleGoal);
 
-    // tree 之后：新分支的 goal 已推进（phase 1 completed，task done）
+    // tree 之后：新分支的 goal 已推进（phase 1 done，task done）
     const newGoal = makeGoal({
-      plan: { phases: [phase(1, "p1", [task(1, "a", "done")], "completed")], nextId: 2 },
+      plan: { phases: [phase(1, "p1", [task(1, "a", "done")], "done")], nextId: 2 },
       updatedAt: 999,
     });
     resyncGoalFromSession(makeCtx([dgoalEntry(newGoal)]) as never);
@@ -85,7 +87,7 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     const after = __getGoalForTest();
     expect(after).not.toBe(staleGoal);
     expect(after?.updatedAt).toBe(999);
-    expect(after?.plan?.phases[0].status).toBe("completed");
+    expect(after?.plan?.phases[0].status).toBe("done");
     expect(after?.plan?.phases[0].tasks[0].status).toBe("done");
   });
 
@@ -93,7 +95,7 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     __resetGoalForTest();
     __setGoalForTest(makeGoal()); // tree 之前有 goal
 
-    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-goal-vnext entry
+    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-plan-v1 entry
 
     expect(__getGoalForTest()).toBeUndefined();
   });
@@ -108,36 +110,52 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
 
   test("session_compact 复用恢复入口加载持久化 goal", () => {
     __resetGoalForTest();
-    const compactedGoal = makeGoal({ id: "compact-goal", status: "rejected" });
+    const compactedGoal = makeGoal({ id: "compact-goal", status: "active" });
     const handlers = captureHandlers();
     __setGoalForTest(undefined);
     handlers.session_compact({}, makeCtx([dgoalEntry(compactedGoal)]) as never);
     expect(__getGoalForTest()?.id).toBe("compact-goal");
-    expect(__getGoalForTest()?.status).toBe("rejected");
+    expect(__getGoalForTest()?.status).toBe("active");
   });
 
-  test("内存 goal 为空时 dgoal_plan/check/done 从 session 惰性恢复", async () => {
+  test("内存 Plan 为空时 public read/check tools 从 session 惰性恢复", async () => {
     __resetGoalForTest();
     const active = makeGoal({ id: "lazy-active", plan: { phases: [phase(1, "p1", [task(1, "a", "pending")])], nextId: 2 } });
-    const ctx = makeCtx([dgoalEntry(active)]) as never;
-    const planResult = await __executeDgoalPlanForTest({ action: "list" }, ctx);
-    expect(planResult.details?.error).not.toBe("no active goal");
+    const context = makeCtx([dgoalEntry(active)]) as never;
+    const planResult = await planReadTool.execute("test", { target: "plan" }, undefined, undefined, context);
+    expect(planResult.details?.error).toBeUndefined();
     expect(__getGoalForTest()?.id).toBe("lazy-active");
 
     __setGoalForTest(undefined);
-    const checkGoal = makeGoal({ id: "lazy-check", plan: { phases: [phase(1, "p1", [task(1, "a", "done")])], nextId: 2 } });
+    const pending = makeGoal({ id: "lazy-pending", status: "pending", plan: undefined });
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    const proposalResult = await phasePlanTool.execute("test", {
+      objective: "交付", verification: "bun test", acceptanceCriteria: [{ criterion: "通过", evidence: "bun test" }], phases: [{ subject: "实现" }],
+    }, undefined, undefined, makeCtx([dgoalEntry(pending)]) as never);
+    expect(proposalResult.details?.planType).toBe("phase");
+    expect(__getGoalForTest()?.id).toBe("lazy-pending");
+
+    __setGoalForTest(undefined);
+    const checkGoal = makeGoal({ id: "lazy-check", planType: "goal", plan: { revision: 0, phases: [{ ...phase(1, "p1", [{ ...task(1, "a", "done"), evidence: "bun test" }], "in_progress"), acceptanceCriteria: [{ criterion: "ok", evidence: "bun test" }] }], nextId: 2 } });
     __setPhaseCheckOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
-    const checkResult = await __executeDgoalCheckForTest({ phaseId: 1 }, makeCtx([dgoalEntry(checkGoal)]) as never);
-    expect(checkResult.details?.error).not.toBe("no active goal/plan");
+    const checkResult = await phaseCheckTool.execute("test", { phaseId: 1 }, undefined, undefined, makeCtx([dgoalEntry(checkGoal)]) as never);
+    expect(checkResult.details?.approved).toBe(true);
     expect(__getGoalForTest()?.id).toBe("lazy-check");
 
     __setGoalForTest(undefined);
-    const doneGoal = makeGoal({ id: "lazy-done", status: "rejected", verification: "通过测试", plan: { phases: [phase(1, "p1", [task(1, "a", "done")], "completed")], nextId: 2 } });
+    const goalToCheck = makeGoal({
+      id: "lazy-goal-check",
+      planType: "phase",
+      verification: "通过测试",
+      acceptanceCriteria: [{ criterion: "测试通过", evidence: "npm test" }],
+      plan: { revision: 0, phases: [phase(1, "p1", [{ ...task(1, "a", "done"), evidence: "npm test" }], "done")], nextId: 2 },
+    });
     __setCompletionAuditorOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
-    const doneResult = await __executeDgoalDoneForTest({ summary: "完成", verification: "npm test" }, makeCtx([dgoalEntry(doneGoal)]) as never);
-    expect(doneResult.details?.error).not.toBe("no active goal");
+    const goalResult = await goalCheckTool.execute("test", { summary: "完成", verification: "npm test" }, undefined, undefined, makeCtx([dgoalEntry(goalToCheck)]) as never);
+    expect(goalResult.details?.approved).toBe(true);
     __setPhaseCheckOverrideForTest(undefined);
     __setCompletionAuditorOverrideForTest(undefined);
+    __setProposalSemanticReviewForTest(undefined);
   });
 
   test("stale session context 不清空现有 goal，其他读取错误继续抛出", () => {

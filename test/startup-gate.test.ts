@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __executeDgoalProposeForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
+import { __executePlanProposalForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
 
@@ -64,7 +64,6 @@ describe("提案就绪度评估", () => {
     expect(readiness.gaps).toContain("acceptanceCriteria");
     expect(readiness.gaps).toContain("nonGoals");
     expect(readiness.gaps).toContain("guardrails");
-    expect(readiness.gaps).toContain("budget");
   });
 
   test("仅补齐边界字段但缺独立验收条件时仍为 L1", () => {
@@ -74,7 +73,6 @@ describe("提案就绪度评估", () => {
       phaseCount: 2,
       nonGoals: ["不重构 i18n 框架"],
       guardrails: ["不改跨会话状态"],
-      budget: "预计 2-3 轮，先跑 bun test",
     });
     expect(readiness.level).toBe("L1");
     expect(readiness.gaps).toContain("acceptanceCriteria");
@@ -82,10 +80,10 @@ describe("提案就绪度评估", () => {
 });
 
 describe("验收契约校验", () => {
-  test("真实 dgoal_propose execute 拒绝混合空 criterion/evidence", async () => {
+  test("真实 proposal execute 拒绝混合空 criterion/evidence", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "v",
       acceptanceCriteria: criteria,
@@ -110,10 +108,10 @@ describe("验收契约校验", () => {
   });
 
   test("非空 evidence 不靠魔法词过结构门并进入 LLM 语义预审", async () => {
-    const evidenceWithoutMagicWords = [{ criterion: "task 状态可读取", evidence: "dgoal_plan(action=list) 的工具返回" }];
+    const evidenceWithoutMagicWords = [{ criterion: "task 状态可读取", evidence: "plan_read 的工具返回" }];
     expect(validateProposalInput({
       objective: "o", verification: "v", acceptanceCriteria: evidenceWithoutMagicWords,
-      phaseCount: 1, phaseAcceptanceCriteria: [undefined], verificationPolicy: "final_only",
+      phaseCount: 1, phaseAcceptanceCriteria: [undefined], planType: "phase",
     })).toBeNull();
 
     __resetGoalForTest();
@@ -123,8 +121,8 @@ describe("验收契约校验", () => {
       reviewCalls += 1;
       return { decision: "approve" };
     });
-    const result = await __executeDgoalProposeForTest({
-      objective: "o", verification: "v", verificationPolicyRecommendation: "final_only",
+    const result = await __executePlanProposalForTest({
+      objective: "o", planType: "phase", verification: "v",
       acceptanceCriteria: evidenceWithoutMagicWords,
       phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
     });
@@ -138,16 +136,16 @@ describe("验收契约校验", () => {
     __setGoalForTest({ id: "pending-rewrite-evidence-semantics", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => ({
       decision: "rewrite",
-      acceptanceCriteria: [{ criterion: "task 状态可读取", evidence: "dgoal_plan(action=list) 的工具返回" }],
+      acceptanceCriteria: [{ criterion: "task 状态可读取", evidence: "plan_read 的工具返回" }],
       migratedUserReviewItems: [{ sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
-      objective: "o", verification: "v", verificationPolicyRecommendation: "final_only",
+    const result = await __executePlanProposalForTest({
+      objective: "o", planType: "phase", verification: "v",
       acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "npm test" }],
       phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
     });
     expect(result.details?.error).toBeUndefined();
-    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria?.[0].evidence).toBe("dgoal_plan(action=list) 的工具返回");
+    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria?.[0].evidence).toBe("plan_read 的工具返回");
     __resetGoalForTest();
   });
 
@@ -155,7 +153,7 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-reject", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "criterion requires stakeholder sign-off" }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "npm test",
       acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "npm test 通过" }],
@@ -176,7 +174,7 @@ describe("验收契约校验", () => {
       userReviewItems: ["甲方签字属于完成后的人工复核"],
       migratedUserReviewItems: [{ sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "bun test 通过" }],
@@ -199,7 +197,7 @@ describe("验收契约校验", () => {
       phaseAcceptanceCriteria: [[{ criterion: "测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" }]],
       userReviewItems: ["检查文档排版"],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -218,7 +216,7 @@ describe("验收契约校验", () => {
       acceptanceCriteria: [{ criterion: "测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" }],
       phaseAcceptanceCriteria: [[{ criterion: "测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" }]],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -238,7 +236,7 @@ describe("验收契约校验", () => {
       acceptanceCriteria: [criteria[0]],
       phaseAcceptanceCriteria: [[{ criterion: "stakeholder signs off", evidence: "bun test 通过" }]],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -260,7 +258,7 @@ describe("验收契约校验", () => {
       userReviewItems: ["甲方签字属于完成后的人工复核"],
       migratedUserReviewItems: [{ sourceCriterion: "stakeholder signs off", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -282,7 +280,7 @@ describe("验收契约校验", () => {
       userReviewItems: ["甲方签字属于完成后的人工复核"],
       migratedUserReviewItems: [{ sourceCriterion: "stakeholder signs off", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -303,7 +301,7 @@ describe("验收契约校验", () => {
       phaseAcceptanceCriteria: [[criteria[0]]],
       userReviewItems: ["甲方签字属于完成后的人工复核"],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -323,7 +321,7 @@ describe("验收契约校验", () => {
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test test/startup-gate.test.ts" }],
       phaseAcceptanceCriteria: [[criteria[0]]],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -345,7 +343,7 @@ describe("验收契约校验", () => {
       userReviewItems: ["甲方签字属于完成后的人工复核"],
       migratedUserReviewItems: [{ sourceCriterion: "stakeholder signs off", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -368,7 +366,7 @@ describe("验收契约校验", () => {
       phaseAcceptanceCriteria: [[criteria[0], extra]],
       userReviewItems: ["甲方签字属于完成后的人工复核"],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "stakeholder signs off", evidence: "bun test 通过" }],
@@ -392,7 +390,7 @@ describe("验收契约校验", () => {
       userReviewItems: ["第二个原始条件的复核"],
       migratedUserReviewItems: [{ sourceCriterion: "第二个原始条件", userReviewItem: "第二个原始条件的复核" }],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test",
       acceptanceCriteria: [
@@ -416,7 +414,7 @@ describe("验收契约校验", () => {
       acceptanceCriteria: [second, first],
       phaseAcceptanceCriteria: [[criteria[0]]],
     }));
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test",
       acceptanceCriteria: [first, second],
@@ -431,11 +429,11 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-stale", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => approvedReview);
-    await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-stale");
 
     __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "human-only completion condition" }));
-    const rejected = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: [{ criterion: "由甲方签字", evidence: "bun test" }], phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    const rejected = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: [{ criterion: "由甲方签字", evidence: "bun test" }], phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(rejected.details?.error).toBe("semantic review rejected");
     expect(__getPendingProposalForTest()).toBeUndefined();
     __resetGoalForTest();
@@ -444,7 +442,7 @@ describe("验收契约校验", () => {
   test("用户中断语义预审时保持 pending 且不写入 proposal", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-abort", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, { signal: AbortSignal.abort() });
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, { signal: AbortSignal.abort() });
     // 技术失败（用户中断）与语义打回分离：isError:true，error 标为 technical error。
     expect(result.details?.error).toBe("semantic review technical error");
     expect(String(result.content?.[0]?.text ?? "")).toContain("semantic review aborted");
@@ -456,7 +454,7 @@ describe("验收契约校验", () => {
   test("没有当前模型时语义预审 fail-closed", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-unavailable", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
-    const result = await __executeDgoalProposeForTest({
+    const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test",
       acceptanceCriteria: criteria,
@@ -479,14 +477,14 @@ describe("验收契约校验", () => {
       model: {},
       modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
     };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.semanticReview).toBe("approve");
     expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria).toEqual(criteria);
     expect(__getPendingProposalForTest()?.proposal.phases[0].acceptanceCriteria).toEqual(criteria);
     __resetGoalForTest();
   });
 
-  test("语义预审解析 requiresExplicitConfirmation 并保留原契约", async () => {
+  test("显式 proposal 忽略旧 requiresExplicitConfirmation 标记并保留原契约", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-confirm", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticCompletionForTest(() => ({
@@ -497,9 +495,9 @@ describe("验收契约校验", () => {
       model: {},
       modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
     };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.semanticReview).toBe("approve");
-    expect(result.details?.requiresExplicitConfirmation).toBe(true);
+    expect(result.details?.startMode).toBe("explicit_confirmation");
     expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria).toEqual(criteria);
     __resetGoalForTest();
   });
@@ -514,13 +512,12 @@ describe("验收契约校验", () => {
     for (const payload of [
       { decision: "approve", acceptanceCriteria: "invalid" },
       { decision: "approve", phaseAcceptanceCriteria: "invalid" },
-      { decision: "approve", requiresExplicitConfirmation: "yes" },
     ]) {
       __setProposalSemanticCompletionForTest(() => ({
         stopReason: "stop",
         content: [{ type: "text", text: JSON.stringify(payload) }],
       }));
-      const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+      const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
       expect(result.details?.error).toBe("semantic review technical error");
       expect(String(result.details?.reason)).toContain("invalid JSON");
       expect(__getPendingProposalForTest()).toBeUndefined();
@@ -536,7 +533,7 @@ describe("验收契约校验", () => {
       acceptanceCriteria: [{ criterion: "被审核器改写的条件", evidence: "bun test" }],
       phaseAcceptanceCriteria: [criteria],
     }));
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(result.details?.error).toBe("semantic review rejected");
     expect(String(result.details?.reason)).toContain("changed criteria");
     expect(__getPendingProposalForTest()).toBeUndefined();
@@ -563,7 +560,7 @@ describe("验收契约校验", () => {
       model: {},
       modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
     };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.semanticReview).toBe("approve");
     expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-empty-migrations");
     __resetGoalForTest();
@@ -577,7 +574,7 @@ describe("验收契约校验", () => {
       return criterion.includes("甲方") ? { decision: "reject", reason: "human-only criterion" } : approvedReview;
     });
     for (const evidence of ["npm test 通过", "artifacts/review.json", "README.md:42 已更新"]) {
-      const result = await __executeDgoalProposeForTest({
+      const result = await __executePlanProposalForTest({
         objective: "o",
         verification: evidence,
         acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence }],
@@ -605,7 +602,7 @@ describe("验收契约校验", () => {
       model: {},
       modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) },
     };
-    const pending = __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const pending = __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     await started;
     abortController.abort();
     releaseCompletion({
@@ -632,7 +629,7 @@ describe("验收契约校验", () => {
         stopReason,
         content: [{ type: "text", text: '{"decision":"approve"}' }],
       }));
-      const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+      const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
       expect(result.details?.error).toBe("semantic review technical error");
       expect(result.isError).toBe(true);
       expect(__getPendingProposalForTest()).toBeUndefined();
@@ -646,7 +643,7 @@ describe("验收契约校验", () => {
     __setProposalSemanticReviewTimeoutForTest(5);
     __setProposalSemanticCompletionForTest(() => new Promise(() => {}));
     const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.error).toBe("semantic review technical error");
     expect(result.isError).toBe(true);
     expect(String(result.content?.[0]?.text ?? "")).toContain("timeout");
@@ -658,13 +655,13 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-retry", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => { throw new Error("provider unavailable"); });
-    const failed = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    const failed = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(failed.details?.error).toBe("semantic review technical error");
     expect(failed.isError).toBe(true);
     expect(__getPendingProposalForTest()).toBeUndefined();
 
     __setProposalSemanticReviewForTest(() => approvedReview);
-    const retried = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    const retried = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(retried.details?.semanticReview).toBe("approve");
     expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-retry");
     __resetGoalForTest();
@@ -687,7 +684,7 @@ describe("验收契约校验", () => {
     __setProposalSemanticStreamForTest(() => streamingEvents());
     const updates: Array<{ liveness?: string }> = [];
     const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
-    const result = await __executeDgoalProposeForTest(
+    const result = await __executePlanProposalForTest(
       { objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] },
       ctx,
       (u) => { updates.push(u.details as { liveness?: string }); },
@@ -711,7 +708,7 @@ describe("验收契约校验", () => {
     }
     __setProposalSemanticStreamForTest(() => silentStream());
     const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.error).toBe("semantic review technical error");
     expect(result.isError).toBe(true);
     expect(String(result.content?.[0]?.text ?? "")).toContain("idle timeout");
@@ -731,7 +728,7 @@ describe("验收契约校验", () => {
     }
     __setProposalSemanticStreamForTest(() => rejectStream());
     const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
-    const result = await __executeDgoalProposeForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
+    const result = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: criteria, phases: [{ subject: "p", acceptanceCriteria: criteria }] }, ctx);
     expect(result.details?.error).toBe("semantic review rejected");
     expect(result.isError).toBe(false);
     expect(String(result.content?.[0]?.text ?? "")).toContain("human sign-off");
@@ -755,11 +752,13 @@ describe("验收契约校验", () => {
     expect(text).toContain("就绪度：L2");
   });
 
-  test("buildProposePrompt 引导 agent 二次复核 acceptanceCriteria 不混入人工条件", () => {
+  test("buildProposePrompt 引导选择 Phase/Goal Plan 并保持独立验收边界", () => {
     const prompt = buildProposePrompt(goal());
-    expect(prompt).toContain("二次复核");
-    expect(prompt).toContain("read/grep/find/ls/bash 独立复验");
-    expect(prompt).toContain("移到 userReviewItems");
+    expect(prompt).toContain("Phase Plan");
+    expect(prompt).toContain("Goal Plan");
+    expect(prompt).toContain("read/grep/find/ls/bash");
+    expect(prompt).toContain("userReviewItems");
+    expect(prompt).toContain("phase_plan 或 goal_plan");
   });
 });
 
@@ -829,26 +828,23 @@ describe("切片4 · handleProposalConfirmation", () => {
     expect(optionsSeen[2][3]).toBe("展开 task");
   });
 
-  test("从 unbounded 切到 bounded 时自动补齐结构化 runtimeBudget", async () => {
+  test("Phase Plan 切换为 Goal Plan 时返回重新提案反馈", async () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
+      planType: "phase",
       verification: "npm test auth 全过",
-      budgetPolicyRecommendation: "unbounded",
       phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
     };
-    const choices = ["切换预算策略", "确认，开始执行"];
     const result = await __handleProposalConfirmationForTest({
       cwd: process.cwd(),
       ui: {
         notify: () => {},
         setStatus: () => {},
-        select: async () => choices.shift(),
+        select: async () => "切换为 Goal Plan",
         editor: async () => undefined,
       },
     } as never, goal(), proposal);
-    expect(result).toBe("confirmed");
-    expect(proposal.budgetPolicyRecommendation).toBe("bounded");
-    expect(proposal.runtimeBudget).toEqual({ maxTurns: 24, maxWallClockMinutes: 60, maxRepairAttempts: 1, grace: { maxTurns: 24, maxWallClockMinutes: 0 } });
+    expect(result).toEqual({ feedback: expect.stringContaining("goal_plan") });
   });
 
   test("选择反馈意见时调用 editor 并返回去首尾空白后的反馈", async () => {
@@ -956,10 +952,10 @@ describe("切片4 · formatProposalForConfirm", () => {
   test("showTasks=true 时显示 task 明细与已提供的边界字段", () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
+      planType: "phase",
       verification: "npm test auth 全过",
       nonGoals: ["不拆 PR"],
       guardrails: ["不改跨会话状态"],
-      budget: "预计 2 轮内完成",
       phases: [
         {
           subject: "修复登录",
@@ -974,7 +970,7 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("就绪度：L1");
     expect(text).toContain("不做什么：不拆 PR");
     expect(text).toContain("护栏：不改跨会话状态");
-    expect(text).toContain("预算：预计 2 轮内完成");
+    expect(text).toContain("Plan 类型：Phase Plan");
     expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).toContain("- task 1: 修登录用例");
     expect(text).toContain("说明：覆盖 token 过期");
@@ -1037,7 +1033,6 @@ describe("切片4 · formatProposalForConfirm", () => {
           "dgoal.proposal.gapsHeading": "Gaps:",
           "dgoal.proposal.gap.nonGoals": "  - non-goals: the plan never states what this goal will not do",
           "dgoal.proposal.gap.guardrails": "  - guardrails: high-risk boundaries / explicit do-not-touch areas are missing",
-          "dgoal.proposal.gap.budget": "  - budget: missing cost or turn-boundary expectations",
           "dgoal.proposal.planHeading": "Phase plan ({count} phases):",
           "dgoal.proposal.taskCount": " ({count} tasks)",
           "dgoal.proposal.taskLine": "     - task {index}: {subject}",

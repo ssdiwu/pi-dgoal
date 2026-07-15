@@ -56,7 +56,7 @@ class ResolvePiExecutableTest(unittest.TestCase):
 
 
 class SmokeResultPassedTest(unittest.TestCase):
-    """负向回归：终审 rejected（isError=false 但 audited!=true）不得误判为通过。"""
+    """负向回归：只有最终 plan_update 明确 completed 才算通过。"""
 
     def _base_result(self) -> SMOKE.SmokeResult:
         r = SMOKE.SmokeResult(tmp_dir="/tmp", work_dir="/tmp", duration=0.0)
@@ -67,15 +67,15 @@ class SmokeResultPassedTest(unittest.TestCase):
             r.tool_calls[name] = SMOKE.ToolCall(count=1, errors=0)
         return r
 
-    def test_passed_when_final_audit_approved(self) -> None:
+    def test_passed_when_goal_update_completed(self) -> None:
         r = self._base_result()
-        r.done_audited = True
+        r.goal_completed = True
         self.assertTrue(r.passed())
 
-    def test_failed_when_final_audit_not_approved(self) -> None:
-        # 终审 rejected/aborted 同样 isError=false，但 audited!=true → 不得通过
+    def test_failed_when_goal_update_not_completed(self) -> None:
+        # check rejected/aborted 可以是 isError=false，但没有 completed goal update 仍不得通过。
         r = self._base_result()
-        r.done_audited = False
+        r.goal_completed = False
         self.assertFalse(r.passed())
 
 

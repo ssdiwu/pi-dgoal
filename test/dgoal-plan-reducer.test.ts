@@ -1,11 +1,10 @@
-// 切片 2：dgoal_plan reducer（纯函数）测试。
+// 切片 2：plan_create / plan_read / plan_update reducer（纯函数）测试。
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 2 验收。
 import { describe, expect, test } from "bun:test";
 
 import {
   applyPlanMutation,
   detectPlanCycle,
-  setPhaseCompleted,
   type GoalState,
   type PlanAction,
   type Task,
@@ -86,10 +85,10 @@ describe("切片2 · create task", () => {
     expect(r.op.kind).toBe("error");
   });
 
-  test("create 带初始 blockedBy，依赖不存在报错", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a")])]);
-    const r = run(goal, "create", { phaseId: 1, subject: "b", blockedBy: [999] });
-    expect(r.op.kind).toBe("error");
+  test("create 带初始 blockedBy，依赖不存在或来自后续 phase 时拒绝", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a")]), phase(2, "p2", [task(2, "future")])]);
+    expect(run(goal, "create", { phaseId: 1, subject: "b", blockedBy: [999] }).op.kind).toBe("error");
+    expect(run(goal, "create", { phaseId: 1, subject: "b", blockedBy: [2] }).op.kind).toBe("error");
   });
 });
 
@@ -143,29 +142,33 @@ describe("切片2 · update task 状态机", () => {
     expect(run(goal, "update", { id: 2, status: "in_progress" }).op.kind).toBe("error");
   });
 
-  test("pending → in_progress 合法", () => {
+  test("pending → in_progress 合法，但不能跳过执行直接 done", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);
+    expect(run(goal, "update", { id: 1, status: "done", evidence: "跳步" }).op.kind).toBe("error");
     const r = run(goal, "update", { id: 1, status: "in_progress", activeForm: "正在做 a" });
     expect(r.op.kind).toBe("update");
     if (r.op.kind !== "update") return;
     expect(r.op.toStatus).toBe("in_progress");
   });
 
-  test("completed → in_progress 拒绝（completed 不回退）", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "completed")])]);
+  test("done → in_progress 拒绝（done 不回退）", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a", "done")])]);
     const r = run(goal, "update", { id: 1, status: "in_progress" });
     expect(r.op.kind).toBe("error");
   });
 
-  test("completed → pending 拒绝", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "completed")])]);
+  test("in_progress → pending 与 done → pending 都拒绝", () => {
+    const active = makeGoal([phase(1, "p1", [task(1, "a", "in_progress")])]);
+    expect(run(active, "update", { id: 1, status: "pending" }).op.kind).toBe("error");
+    const goal = makeGoal([phase(1, "p1", [task(1, "a", "done")])]);
     const r = run(goal, "update", { id: 1, status: "pending" });
     expect(r.op.kind).toBe("error");
   });
 
-  test("in_progress → completed 合法", () => {
+  test("in_progress → done 必须带可复验 evidence", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "in_progress")])]);
-    const r = run(goal, "update", { id: 1, status: "completed", evidence: "npm test ok" });
+    expect(run(goal, "update", { id: 1, status: "done" }).op.kind).toBe("error");
+    const r = run(goal, "update", { id: 1, status: "done", evidence: "npm test ok" });
     expect(r.op.kind).toBe("update");
     expect(r.goal.plan!.phases[0].tasks[0].evidence).toBe("npm test ok");
   });
@@ -180,17 +183,18 @@ describe("切片2 · update task 状态机", () => {
     expect(r.goal.plan!.phases[0].tasks[0].blockedReason).toBe("缺权限");
   });
 
-  test("blocked → in_progress 可回退", () => {
+  test("blocked → in_progress 可回退并清除 blockedReason", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "blocked", { blockedReason: "x" })])]);
     const r = run(goal, "update", { id: 1, status: "in_progress" });
     expect(r.op.kind).toBe("update");
     expect(r.op.toStatus).toBe("in_progress");
+    expect(r.goal.plan!.phases[0].tasks[0].blockedReason).toBeUndefined();
   });
 
-  test("无可变字段报错", () => {
+  test("无可变字段或空 subject 报错", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);
-    const r = run(goal, "update", { id: 1 });
-    expect(r.op.kind).toBe("error");
+    expect(run(goal, "update", { id: 1 }).op.kind).toBe("error");
+    expect(run(goal, "update", { id: 1, subject: "   " }).op.kind).toBe("error");
   });
 
   test("task 不存在报错", () => {
@@ -214,6 +218,11 @@ describe("切片2 · blockedBy 增量合并", () => {
     expect(r.op.kind).toBe("error");
   });
 
+  test("addBlockedBy 拒绝依赖后续 phase", () => {
+    const goal = makeGoal([phase(1, "p1", [task(1, "a")]), phase(2, "p2", [task(2, "future")])]);
+    expect(run(goal, "update", { id: 1, addBlockedBy: [2] }).op.kind).toBe("error");
+  });
+
   test("addBlockedBy 成环拒绝", () => {
     // 1 blockedBy 2，给 2 加 blockedBy 1 → 环
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending", { blockedBy: [2] }), task(2, "b")])]);
@@ -226,6 +235,26 @@ describe("切片2 · blockedBy 增量合并", () => {
     const r = run(goal, "update", { id: 2, removeBlockedBy: [1] });
     expect(r.op.kind).toBe("update");
     expect(r.goal.plan!.phases[0].tasks[1].blockedBy ?? []).toEqual([]);
+  });
+});
+
+describe("切片2 · phase 顺序守卫", () => {
+  test("当前 phase 未 done 时拒绝创建或更新后续 phase task，但允许只读", () => {
+    const goal = makeGoal([
+      phase(1, "p1", [task(1, "current")], "in_progress"),
+      phase(2, "p2", [task(2, "future")], "pending"),
+    ], 3);
+    expect(run(goal, "create", { phaseId: 2, subject: "too soon" }).op.kind).toBe("error");
+    expect(run(goal, "update", { id: 2, status: "in_progress" }).op.kind).toBe("error");
+    expect(run(goal, "get", { id: 2 }).op.kind).toBe("get");
+  });
+
+  test("前序 phase done 后允许推进当前 phase", () => {
+    const goal = makeGoal([
+      phase(1, "p1", [task(1, "done", "done", { evidence: "ok" })], "done"),
+      phase(2, "p2", [task(2, "current")], "pending"),
+    ], 3);
+    expect(run(goal, "update", { id: 2, status: "in_progress" }).op.kind).toBe("update");
   });
 });
 
@@ -248,8 +277,8 @@ describe("切片2 · list / get", () => {
   });
 
   test("list 按 status 过滤", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "completed"), task(2, "b", "pending")])]);
-    const r = run(goal, "list", { status: "completed" });
+    const goal = makeGoal([phase(1, "p1", [task(1, "a", "done"), task(2, "b", "pending")])]);
+    const r = run(goal, "list", { status: "done" });
     expect(r.op.kind).toBe("list");
     if (r.op.kind !== "list") return;
     expect(r.op.tasks).toHaveLength(1);
@@ -286,39 +315,21 @@ describe("切片2 · phase 聚合（recomputePhaseStatus）", () => {
     expect(r.goal.plan!.phases[0].status).toBe("blocked");
   });
 
-  test("全 completed 不主动升 phase completed（由 dgoal_check 接管）", () => {
+  test("全 done 不主动升 phase done（由 plan_update 的 phase 完成守卫接管）", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "in_progress")], "in_progress")]);
-    const r = run(goal, "update", { id: 1, status: "completed", evidence: "ok" });
-    // phase 状态保持，不主动变 completed
-    expect(r.goal.plan!.phases[0].status).not.toBe("completed");
-  });
-});
-
-describe("切片2 · setPhaseCompleted（dgoal_check 专用入口）", () => {
-  test("task 全终态 → 允许标 phase completed", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "completed")], "in_progress")]);
-    const r = setPhaseCompleted(goal, 1);
-    expect(r.goal.plan!.phases[0].status).toBe("completed");
-  });
-
-  test("task 未全终态 → 拒绝标 phase completed", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "in_progress")])]);
-    const r = setPhaseCompleted(goal, 1);
-    expect(r.op.kind).toBe("error");
-  });
-
-  test("phase 不存在 → 报错", () => {
-    const goal = makeGoal([phase(1, "p1", [])]);
-    const r = setPhaseCompleted(goal, 99);
-    expect(r.op.kind).toBe("error");
+    const r = run(goal, "update", { id: 1, status: "done", evidence: "ok" });
+    // phase 状态保持，不主动变 done
+    expect(r.goal.plan!.phases[0].status).not.toBe("done");
   });
 });
 
 describe("切片2 · 不可变更新", () => {
-  test("reducer 不 mutate 原 goal", () => {
+  test("reducer 不 mutate 原 goal，且 create 保留 revision", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);
+    goal.plan!.revision = 7;
     const originalTasksLen = goal.plan!.phases[0].tasks.length;
-    run(goal, "create", { phaseId: 1, subject: "b" });
+    const result = run(goal, "create", { phaseId: 1, subject: "b" });
     expect(goal.plan!.phases[0].tasks.length).toBe(originalTasksLen); // 原 goal 未变
+    expect(result.goal.plan?.revision).toBe(7);
   });
 });

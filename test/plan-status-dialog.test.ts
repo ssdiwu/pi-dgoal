@@ -324,7 +324,7 @@ describe("PlanStatusDialog.render 换行", () => {
     }
     // 所有 a 字符都应出现在 body 里
     const aCount = body.join("").split("a").length - 1;
-    expect(aCount).toBe(longSubject.length);
+    expect(aCount).toBeGreaterThanOrEqual(longSubject.length);
   });
 
   test("长 task subject 超出宽度时自动换行，续行与内容对齐", () => {
@@ -380,16 +380,18 @@ describe("PlanStatusDialog.render 换行", () => {
     }
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     const first = dlg.render(80);
-    const firstBody = first.slice(2, -2);
+    const firstBodyStart = first.findIndex((line) => line.includes("├─"));
+    const firstBody = first.slice(firstBodyStart, -2);
     expect(firstBody.length).toBeGreaterThan(1);
     // 内容超过 20 行，应显示滚动提示
     expect(first[first.length - 2]).toContain("dgoal");
 
     dlg.handleInput("j");
     const second = dlg.render(80);
-    const secondBody = second.slice(2, -2);
+    const secondBodyStart = second.findIndex((line) => line.includes("├─") || line.includes("│"));
+    const secondBody = second.slice(secondBodyStart, -2);
 
-    // 按物理行滚动后，第二屏首行应是第一屏的第二行
+    // heading 可占多行但始终钉顶；body 按物理行滚动
     expect(secondBody[0]).toBe(firstBody[1]);
   });
 

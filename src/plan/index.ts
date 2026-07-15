@@ -1,9 +1,20 @@
 // Task Plan domain primitives: shared types and pure status/dependency helpers.
 
-export type PlanStatus = "pending" | "in_progress" | "done" | "completed" | "blocked";
+export type PlanStatus = "pending" | "in_progress" | "done" | "blocked";
+export type PlanType = "task" | "phase" | "goal";
+export type CheckStatus = "approved" | "rejected" | "audit_error";
+
+export interface CheckRecord {
+  status: CheckStatus;
+  report?: string;
+  modelId?: string;
+  checkedAt?: number;
+  /** Plan revision that was checked. Any later mutation invalidates the approval. */
+  revision?: number;
+}
 
 export function isDonePlanStatus(status: PlanStatus): boolean {
-  return status === "done" || status === "completed";
+  return status === "done";
 }
 
 export interface AcceptanceCriterion {
@@ -27,8 +38,8 @@ export interface Phase {
   subject: string;
   description?: string;
   acceptanceCriteria?: AcceptanceCriterion[];
-  /** final_only 的进度事实；不同于 status=done（独立 phase 建检通过）。 */
-  progressCompleted?: boolean;
+  /** Goal Plan only: latest independent phase_check result. */
+  check?: CheckRecord;
   status: PlanStatus;
   tasks: Task[];
   blockedReason?: string;
@@ -37,6 +48,12 @@ export interface Phase {
 export interface TaskPlan {
   phases: Phase[];
   nextId: number;
+  /** Monotonic mutation counter used to invalidate stale check approvals and tool calls. */
+  revision?: number;
+}
+
+export function countDoneTasks(phase: Phase): number {
+  return phase.tasks.filter((task) => isDonePlanStatus(task.status)).length;
 }
 
 export function flattenTasks(plan: TaskPlan | undefined): Task[] {

@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-AI 驱动 smoke：真实模型 × 隔离环境跑通 dgoal 全工具链（默认单 phase，对齐 ADR 0017）。
+AI 驱动 smoke：真实模型 × 隔离环境跑通 Goal Plan 全工具链（单 phase）。
 
 与 test-extension-rpc.py（离线、仅断言加载/命令注册）区别：
-  - 不设 PI_OFFLINE（需联网调真实模型 + 建检/终审子进程也调模型）
-  - Popen cwd 设为临时工作目录（主 agent 与 dgoal_check 子进程同 cwd）
-  - 扩展 UI 回复以通过启动闸门：select 取 options[0]=confirmStart、confirm true、editor cancelled
-  - 多轮事件循环，追踪 dgoal_* 工具调用与 agent_end
+  - 不设 PI_OFFLINE（主 agent、phase check 与 goal check 都调真实模型）
+  - Popen cwd 设为临时工作目录
+  - 扩展 UI 自动确认启动闸门
+  - 多轮事件循环追踪八工具中的 Goal Plan 完成链
 
 ⚠️ 成本：消耗真实 token，需网络与已配置的 pi provider（API key）。不在 CI 跑。
 
 成功判据（全部满足）：
-  1. dgoal_propose / dgoal_plan / dgoal_check / dgoal_done 均被调用且 isError=false
+  1. goal_plan / plan_update / phase_check / goal_check 均被调用且 isError=false
   2. 目标文件产物（hello.txt）存在且内容正确
-  3. 启动闸门 select 被正确回复（goal 进入 active）
-  4. dgoal_done 终审 approved（result.details.audited=true）；rejected/aborted 同样 isError=false，不算通过
+  3. 启动闸门 select 被正确回复
+  4. 最终 plan_update 返回 completed=true
 
 用法：
   python3 test/test-ai-smoke.py
@@ -64,27 +64,26 @@ def resolve_pi_executable(root: Path = ROOT, env: dict[str, str] | None = None) 
 # 不需要回复的 fire-and-forget UI 方法（rpc.md:996）
 UI_NO_REPLY_METHODS = {"notify", "setStatus", "setWidget", "setTitle", "set_editor_text"}
 
-# 全工具链硬性必需（空 phase 无法建检 → agent 必然调 dgoal_plan 推进 task，见 index.ts:767）
-REQUIRED_TOOLS = ["dgoal_propose", "dgoal_plan", "dgoal_check", "dgoal_done"]
+# Goal Plan 的最小完整链；plan_update 会分别推进 task、phase 与 goal。
+REQUIRED_TOOLS = ["goal_plan", "plan_update", "phase_check", "goal_check"]
+PUBLIC_TOOLS = {"task_plan", "phase_plan", "goal_plan", "plan_create", "plan_read", "plan_update", "phase_check", "goal_check"}
 
-# 终止判定：agent_end 后连续 N 秒无新事件，视为 agent 自然停止（dgoal_done 成功返回 terminate:true 不再续跑）
+# 终止判定：agent_end 后连续 N 秒无新事件，视为 agent 自然停止。
 IDLE_AFTER_AGENT_END = 20
 # 单次读事件超时
 READ_TIMEOUT = 6
-# 总超时（含主 agent 多轮 + 每次 dgoal_check/done 的建检子进程 LLM 调用）
+# 总超时（含主 agent 多轮 + phase/goal 独立审核）。
 TOTAL_TIMEOUT = 900
 
 EXPECTED_FILE = "hello.txt"
 EXPECTED_CONTENT = "Hello from dgoal smoke"
 
-# 轻引导一个可独立建检的交付（实现 + 验证作为 task），让 agent 自然组织 phase 数（ADR 0017：默认一个 phase）。
-# 不强制两个 phase：简单任务强行拆 phase 与 ADR 0017 冲突，会让模型在 proposal 阶段反复重提。
+# 强制走 Goal Plan，以覆盖 phase_check 与 goal_check 两级审核。
 SMOKE_GOAL = (
-    f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}。"
-    "然后独立验证文件内容与上述要求完全一致。"
-    "请用 dgoal_propose 提交一次计划（任务简单时一个 phase 即可，不要为凑结构强行拆 phase），"
-    "确认后用 dgoal_plan 推进 task 状态，阶段 task 全部终态后调用 dgoal_check 建检并读取结果；"
-    "只有阶段被 dgoal_check 明确通过后，才调用一次 dgoal_done 结束。不要重复提案。"
+    f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}，并验证内容完全一致。"
+    "这是 Goal Plan smoke：请只提交一个带独立 phase 验收条件的 goal_plan。"
+    "确认后用 plan_update 推进 task，并带可复验证据标 done；task 全部 done 后调用 phase_check，approved 后再用 plan_update 标 phase done；"
+    "随后调用 goal_check，approved 后用 plan_update(target=goal,status=done) 收口。不要改用 Task Plan 或 Phase Plan。"
 )
 
 
@@ -105,7 +104,7 @@ class SmokeResult:
     file_content: str | None = None
     agent_ends: int = 0
     events_seen: int = 0
-    done_audited: bool = False  # dgoal_done 终审 approved（details.audited=true）
+    goal_completed: bool = False
     error: str | None = None
     stderr_tail: str = ""
 
@@ -119,7 +118,7 @@ class SmokeResult:
         return self.file_exists and self.file_content == EXPECTED_CONTENT
 
     def passed(self) -> bool:
-        return self.error is None and self.goal_activated and self.required_tools_ok() and self.file_ok() and self.done_audited
+        return self.error is None and self.goal_activated and self.required_tools_ok() and self.file_ok() and self.goal_completed
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -143,7 +142,7 @@ class SmokeResult:
             },
             "agent_ends": self.agent_ends,
             "events_seen": self.events_seen,
-            "done_audited": self.done_audited,
+            "goal_completed": self.goal_completed,
             "stderr_tail": self.stderr_tail[-2000:],
         }
 
@@ -224,11 +223,12 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any], result: SmokeR
         session.send({"type": "extension_ui_response", "id": request_id, "confirmed": True})
         return None
     if method == "select":
-        # 启动闸门确认 plan：options[0] 恒为 confirmStart（index.ts buildProposalConfirmationOptions）
+        # 启动闸门确认 Plan：options[0] 恒为确认开始。
         options = event.get("options") or []
         if not options:
             return f"select 请求无 options：{json.dumps(event, ensure_ascii=False)}"
         session.send({"type": "extension_ui_response", "id": request_id, "value": options[0]})
+        result.goal_activated = True
         return None
     if method == "editor":
         # 仅「用户给反馈」分支用 editor；smoke 不给反馈 → cancelled（等同拒绝反馈）
@@ -243,7 +243,7 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any], result: SmokeR
 def run_smoke(session: RpcSession, result: SmokeResult) -> None:
     deadline = time.time() + TOTAL_TIMEOUT
     last_agent_end_at: float | None = None
-    done_ok = False  # dgoal_done 终审 approved（details.audited=true）——不可逆成功信号
+    done_ok = False  # plan_update(goal, done) 的不可逆成功信号
 
     session.send({"id": "smoke-prompt", "type": "prompt", "message": f"/dgoal {SMOKE_GOAL}"})
 
@@ -275,26 +275,19 @@ def run_smoke(session: RpcSession, result: SmokeResult) -> None:
 
         if etype == "tool_execution_end":
             name = event.get("toolName") or ""
-            if name.startswith("dgoal_"):
+            if name in PUBLIC_TOOLS:
                 tc = result.tool_calls.setdefault(name, ToolCall())
                 tc.count += 1
                 is_err = bool(event.get("isError"))
                 if is_err:
                     tc.errors += 1
                 print(f"[smoke] tool {name} #{tc.count} isError={is_err}", file=sys.stderr, flush=True)
-                # dgoal_plan 成功 ⟺ goal 已 active（index.ts 硬约束：plan 只在 active 后工作）
-                if name == "dgoal_plan" and not is_err:
-                    result.goal_activated = True
-                # dgoal_done 需终审 approved（details.audited=true）才算成功；
-                # rejected / aborted / auditError 同样 isError=false，不能误判为通过。
-                if name == "dgoal_done" and not is_err:
+                if name == "plan_update" and not is_err:
                     details = (event.get("result") or {}).get("details") or {}
-                    if details.get("audited") is True:
+                    if details.get("completed") is True and details.get("status") == "done":
                         done_ok = True
-                        result.done_audited = True
-                        result.error = None  # 清掉之前可能的 rejected 记录
-                    elif not result.error:
-                        result.error = f"dgoal_done 终审未通过（未收到 audited:true，details={details}）"
+                        result.goal_completed = True
+                        result.error = None
             continue
 
         if etype == "agent_end":
@@ -302,7 +295,7 @@ def run_smoke(session: RpcSession, result: SmokeResult) -> None:
             last_agent_end_at = time.time()
             tools_so_far = ",".join(f"{n}×{tc.count}" for n, tc in sorted(result.tool_calls.items())) or "(none)"
             print(f"[smoke] agent_end #{result.agent_ends} | tools: {tools_so_far}", file=sys.stderr, flush=True)
-            # dgoal_done 已成功 + agent_end 到达（terminate 生效）→ 完成
+            # goal 已完成 + agent_end 到达 → 完成
             if done_ok:
                 return
             continue

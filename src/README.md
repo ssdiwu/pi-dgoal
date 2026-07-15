@@ -6,8 +6,8 @@ pi-dgoal 的运行时代码，按职责拆分为计划数据、Goal Runtime、Pi
 
 | 目录 | 职责 | 边界 |
 |---|---|---|
-| `plan/` | `Phase`、`Task`、`TaskPlan`、验收条件与纯 reducer/helper | 无 Pi、TUI、session 或持久化副作用 |
-| `runtime/` | dgoal 工具、命令、prompt、审核编排、持久化与 Goal Runtime 过渡协调 | 主运行时编排层；不把 TUI 当业务状态源 |
+| `plan/` | `PlanType`、`Phase`、`Task`、`TaskPlan`、`CheckRecord` 与纯数据 helper | 无 Pi、TUI、session 或持久化副作用 |
+| `runtime/` | 三档 Plan 的八工具、命令、prompt、审核编排、持久化与 Goal Runtime 协调 | 主运行时编排层；check 只记录，状态写入统一守卫；不把 TUI 当业务状态源 |
 | `startup/` | Pi 扩展注册、工具/命令注册、事件订阅与启动闸门 wiring | 由根 `index.ts` 间接调用 `registerDgoal` |
 | `goal-runtime/` | 当前 session 的可变 goal、proposal、续跑与审核运行态单例 | 只提供状态容器，不负责工具或 UI 编排 |
 | `audit/` | 审核结论解析、进度摘要、用户复核建议与脱敏检查点/用量账本 | 不负责启动审核子进程或推进 Goal Runtime |

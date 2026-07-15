@@ -1,5 +1,7 @@
 # ADR 0031：dgoal_pause——agent 主动暂停出口
 
+> Status：工具形态已被 ADR 0038 覆盖。`agent_blocked` 暂停语义保留，入口并入 `plan_update(target=goal,status=paused,reason=...)`。
+
 ## 背景
 
 dgoal 的核心心智是「agent 围绕目标持续工作，直到显式完成并给出验证证据」。continuation（自动续跑）在 goal active 时每轮 agent 结束后催下一轮，假设 agent 总能通过「继续工作」推进。

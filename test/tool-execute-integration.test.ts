@@ -1,19 +1,10 @@
-// 工具 execute 真实端到端测试：mock ctx + active goal + 调 dgoal_ 工具 execute，验证 currentGoal 真实变化 + persist 调用。
-// 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md。
+// Plan reducer、proposal 转换、持久化与 i18n 组合路径测试。
 import { beforeEach, describe, expect, test } from "bun:test";
 
-// 设 env 在 import index 前（AUDITOR_DISABLED 是模块级 const）
-// Bun 行为：import 是静态的先解析，env 设置在 import 后执行——所以 AUDITOR_DISABLED 仍是 false。
-// 解决：在 import index 之后用 Object.defineProperty 覆盖 AUDITOR_DISABLED 不行（const）。
-// 备选：写一个**测试专用 index re-exporter**先设 env 再 re-export——复杂。
-// 实际：我直接测不依赖 AUDITOR 的工具（dgoal_plan/dgoal_propose/dgoal_check），
-// dgoal_done 测无 goal / 异常分支，不测终审通过（需 spawn）。
 process.env.PI_DGOAL_NO_AUDIT = "1";
 
 import {
-  __executeDgoalCheckForTest,
-  __executeDgoalPlanForTest,
-  __executeDgoalProposeForTest,
+  __executePlanProposalForTest,
   __getGoalForTest,
   __getPendingProposalForTest,
   __resetGoalForTest,
@@ -30,23 +21,13 @@ import {
   type Task,
 } from "../index.ts";
 
-// 注入 currentGoal（直接通过 dgoal 内部模块设）—— 我们没有 export setter。
-// 但 persistGoal 是 export 的，可以验证 persist 序列。
-// currentGoal 只能通过工具 execute 改。
-// 解法：让 dgoal_propose execute 写 pendingProposal，然后...dgoal_propose 需要 currentGoal 是 pending。
-// 我们手动 import 模块级 currentGoal——但它不是 export。
-// 折中：先通过 dgoal_propose 模拟启动闸门（需 currentGoal=pending），但无法设 currentGoal。
-// 解决：把工具 execute 提取为内部函数并 export（最小改动），或写一个"工具 handler" 测试入口。
-// 更实际：测纯函数（applyPlanMutation / setPhaseCompleted / proposalToPlan / formatPlanResult）的真实序列，
-// 加上对工具 schema 的存在性验证（工具名/参数描述）。
-
-describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工具行为", () => {
+describe("Plan reducer 与持久化组合路径", () => {
   beforeEach(() => {
     __resetGoalForTest();
   });
 
-  test("dgoal_plan create + update + list + get 真实序列（模拟工具 execute）", () => {
-    // 模拟 dgoal_plan 工具 execute 的实际行为：reducer → commit → persist
+  test("plan_create / plan_read / plan_update create + update + list + get 真实序列（模拟工具 execute）", () => {
+    // 模拟 plan_create / plan_read / plan_update 工具 execute 的实际行为：reducer → commit → persist
     const { api, writes } = makeApi();
     __setApiForTest(api);
 
@@ -68,11 +49,11 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     expect(goal.plan!.phases[0].tasks[0].status).toBe("in_progress");
     expect(goal.plan!.phases[0].status).toBe("in_progress"); // phase 聚合
 
-    // update task: in_progress → completed（带 evidence）
-    const r3 = applyPlanMutation(goal, "update", { id: r1.op.taskId, status: "completed", evidence: "npm test ok" });
+    // update task: in_progress → done（带 evidence）
+    const r3 = applyPlanMutation(goal, "update", { id: r1.op.taskId, status: "done", evidence: "npm test ok" });
     goal = r3.goal;
     api.appendEntry(STATE_ENTRY_TYPE, { goal });
-    expect(goal.plan!.phases[0].tasks[0].status).toBe("completed");
+    expect(goal.plan!.phases[0].tasks[0].status).toBe("done");
     expect(goal.plan!.phases[0].tasks[0].evidence).toBe("npm test ok");
 
     // list
@@ -94,7 +75,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     expect(writes.every((w) => w.type === STATE_ENTRY_TYPE)).toBe(true);
   });
 
-  test("dgoal_plan 错误分支：create 缺 subject 报 error（工具 execute 透传不 persist）", () => {
+  test("plan_create / plan_read / plan_update 错误分支：create 缺 subject 报 error（工具 execute 透传不 persist）", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
     let goal: GoalState = makeActiveGoal();
@@ -107,7 +88,7 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     expect(goal.plan!.phases[0].tasks).toHaveLength(0);
   });
 
-  test("completed 不回退的不可逆性（连续 reject）", () => {
+  test("done 不回退的不可逆性（连续 reject）", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
     let goal: GoalState = makeActiveGoal();
@@ -115,24 +96,26 @@ describe("工具 execute 真实端到端 · 纯函数序列模拟 dgoal_plan 工
     if (c.op.kind !== "create") throw new Error("setup");
     goal = c.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
     const cid = c.op.taskId;
-    const r = applyPlanMutation(goal, "update", { id: cid, status: "completed", evidence: "ok" });
+    const started = applyPlanMutation(goal, "update", { id: cid, status: "in_progress" });
+    goal = started.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
+    const r = applyPlanMutation(goal, "update", { id: cid, status: "done", evidence: "ok" });
     goal = r.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
 
     // 尝试回退
     const r2 = applyPlanMutation(goal, "update", { id: cid, status: "in_progress" });
     expect(r2.op.kind).toBe("error");
     // goal 不变（不 commit）
-    expect(goal.plan!.phases[0].tasks[0].status).toBe("completed");
-    // persist 序列：create + completed = 2 次（reject 不增）
-    expect(writes.length).toBe(2);
+    expect(goal.plan!.phases[0].tasks[0].status).toBe("done");
+    // persist 序列：create + in_progress + done = 3 次（reject 不增）
+    expect(writes.length).toBe(3);
   });
 });
 
 describe("工具 execute 真实端到端 · proposalToPlan + plan 注入", () => {
-  test("真实场景：dgoal_propose 产出 3 phase 6 task plan，AI 可见注入正确", () => {
+  test("真实场景：phase_plan / goal_plan 产出 3 phase 6 task plan，AI 可见注入正确", () => {
     const { api } = makeApi();
     __setApiForTest(api);
-    // 模拟 dgoal_propose 内部: proposalToPlan
+    // 模拟 phase_plan / goal_plan 内部: proposalToPlan
     const proposal: PlanProposal = {
       objective: "大型任务",
       phases: [
@@ -141,7 +124,7 @@ describe("工具 execute 真实端到端 · proposalToPlan + plan 注入", () =>
         { subject: "验证", tasks: [{ subject: "跑测试" }, { subject: "做回归" }] },
       ],
     };
-    // proposalToPlan 是 dgoal_propose 工具 execute 调用的真实函数
+    // proposalToPlan 是 phase_plan / goal_plan 工具 execute 调用的真实函数
     const plan = proposalToPlan(proposal);
     expect(plan.phases).toHaveLength(3);
     expect(plan.phases[0].tasks).toHaveLength(2);
@@ -204,13 +187,13 @@ describe("工具 execute · proposal 语义预审状态边界", () => {
     };
 
     __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "human-only condition" }));
-    const rejected = await __executeDgoalProposeForTest(params);
+    const rejected = await __executePlanProposalForTest(params);
     expect(rejected.details?.error).toBe("semantic review rejected");
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(__getPendingProposalForTest()).toBeUndefined();
 
     __setProposalSemanticReviewForTest(() => { throw new Error("provider unavailable"); });
-    const errored = await __executeDgoalProposeForTest(params);
+    const errored = await __executePlanProposalForTest(params);
     expect(errored.details?.error).toBe("semantic review technical error");
     expect(errored.isError).toBe(true);
     expect(__getGoalForTest()?.status).toBe("pending");
@@ -221,7 +204,7 @@ describe("工具 execute · proposal 语义预审状态边界", () => {
       acceptanceCriteria: params.acceptanceCriteria,
       phaseAcceptanceCriteria: [params.phases[0].acceptanceCriteria],
     }));
-    const approved = await __executeDgoalProposeForTest(params);
+    const approved = await __executePlanProposalForTest(params);
     expect(approved.details?.semanticReview).toBe("approve");
     expect(__getGoalForTest()?.status).toBe("pending");
     expect(__getPendingProposalForTest()?.goalId).toBe("tool-proposal-1");
@@ -243,40 +226,14 @@ describe("工具 execute 用户可见固定文案 · i18n 覆盖", () => {
     }
   });
 
-  test("dgoal_propose 无 pending goal 的固定结果文案可被英文 i18n 覆盖", async () => {
+  test("phase_plan / goal_plan 无 pending goal 的固定结果文案可被英文 i18n 覆盖", async () => {
     __resetGoalForTest();
     __setI18nForTest({
       t: (key: string) => key === "dgoal.tool.propose.noPendingGoal" ? "There is no pending /dgoal goal (startup gate is not active)." : undefined,
     });
     try {
-      const result = await __executeDgoalProposeForTest({ objective: "o", phases: [{ subject: "p" }], verification: "v" });
+      const result = await __executePlanProposalForTest({ objective: "o", phases: [{ subject: "p" }], verification: "v" });
       expect(String(result.content?.[0]?.text ?? "")).toBe("There is no pending /dgoal goal (startup gate is not active).");
-    } finally {
-      __setI18nForTest(undefined);
-    }
-  });
-
-  test("dgoal_check 无 active goal 的固定结果文案可被英文 i18n 覆盖", async () => {
-    __resetGoalForTest();
-    __setI18nForTest({
-      t: (key: string) => key === "dgoal.tool.check.noGoal" ? "There is no active /dgoal goal or plan; cannot run phase check." : undefined,
-    });
-    try {
-      const result = await __executeDgoalCheckForTest({ phaseId: 1 });
-      expect(String(result.content?.[0]?.text ?? "")).toBe("There is no active /dgoal goal or plan; cannot run phase check.");
-    } finally {
-      __setI18nForTest(undefined);
-    }
-  });
-
-  test("dgoal_plan 无 active goal 的固定结果文案可被英文 i18n 覆盖", async () => {
-    __resetGoalForTest();
-    __setI18nForTest({
-      t: (key: string) => key === "dgoal.tool.plan.noGoal" ? "There is no active /dgoal goal; cannot operate on the plan." : undefined,
-    });
-    try {
-      const result = await __executeDgoalPlanForTest({ action: "list" });
-      expect(String(result.content?.[0]?.text ?? "")).toBe("There is no active /dgoal goal; cannot operate on the plan.");
     } finally {
       __setI18nForTest(undefined);
     }

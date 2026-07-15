@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import select
+import shutil
 import subprocess
 import tempfile
 import time
@@ -30,7 +31,19 @@ class RpcSession:
         existing_node_path = env.get("NODE_PATH")
         env["NODE_PATH"] = ":".join([*node_paths, existing_node_path] if existing_node_path else node_paths)
         proc = subprocess.Popen(
-            ["pi", "-e", str(ROOT), "--mode", "rpc", "--no-session"],
+            [
+                "pi",
+                "-ne",
+                "-e",
+                str(ROOT / "index.ts"),
+                "-e",
+                str(ROOT / "test" / "rpc-tool-probe.ts"),
+                "-ns",
+                "-np",
+                "--mode",
+                "rpc",
+                "--no-session",
+            ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -92,11 +105,11 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any]) -> None:
     raise RuntimeError(f"Unhandled extension UI method: {method}")
 
 
-def command_names(response: dict[str, Any]) -> set[str]:
+def command_entries(response: dict[str, Any]) -> list[dict[str, Any]]:
     commands = response.get("commands") or response.get("data") or response.get("result") or []
     if isinstance(commands, dict):
         commands = commands.get("commands") or []
-    return {str(command.get("name")) for command in commands if isinstance(command, dict)}
+    return [command for command in commands if isinstance(command, dict)]
 
 
 def assert_commands(session: RpcSession) -> dict[str, Any]:
@@ -104,12 +117,47 @@ def assert_commands(session: RpcSession) -> dict[str, Any]:
     response, _events = wait_for_response(session, "commands", timeout=25)
     if not response.get("success", True):
         raise AssertionError(f"get_commands failed: {response}")
-    names = command_names(response)
-    required = {"dgoal"}
+    entries = command_entries(response)
+    names = {str(command.get("name")) for command in entries}
+    extension_names = {str(command.get("name")) for command in entries if command.get("source") == "extension"}
+    if extension_names != {"dgoal"}:
+        raise AssertionError(f"expected only the dgoal extension command; got={sorted(extension_names)}")
+    return {"extension": sorted(extension_names), "total_commands": len(names)}
+
+
+def assert_tools(session: RpcSession) -> dict[str, Any]:
+    session.send({"id": "state", "type": "get_state"})
+    state, events = wait_for_response(session, "state", timeout=25)
+    if not state.get("success", False):
+        raise AssertionError(f"get_state failed: {state}")
+
+    prefix = "PI_DGOAL_RPC_TOOLS:"
+    manifests = [
+        str(event.get("message"))[len(prefix):]
+        for event in events
+        if event.get("type") == "extension_ui_request"
+        and event.get("method") == "notify"
+        and str(event.get("message", "")).startswith(prefix)
+    ]
+    if len(manifests) != 1:
+        raise AssertionError(f"expected one RPC tool manifest, got={len(manifests)}")
+    names = {str(name) for name in json.loads(manifests[0])}
+    required = {
+        "task_plan",
+        "phase_plan",
+        "goal_plan",
+        "plan_create",
+        "plan_read",
+        "plan_update",
+        "phase_check",
+        "goal_check",
+    }
+    retired = {"dgoal_" + suffix for suffix in ("propose", "plan", "check", "done", "pause")}
     missing = sorted(required - names)
-    if missing:
-        raise AssertionError(f"missing commands: {missing}; got sample={sorted(names)[:20]}")
-    return {"required": sorted(required), "matched": sorted(required & names), "total_commands": len(names)}
+    leaked = sorted(retired & names)
+    if missing or leaked:
+        raise AssertionError(f"tool registration mismatch: missing={missing}, retired={leaked}, all={sorted(names)}")
+    return {"required": sorted(required), "retired": leaked, "total_tools": len(names)}
 
 
 def main() -> int:
@@ -118,6 +166,7 @@ def main() -> int:
         result = {
             "status": "ok",
             "tmp_dir": session.tmp_dir,
+            "tools": assert_tools(session),
             "commands": assert_commands(session),
         }
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -126,6 +175,7 @@ def main() -> int:
         stderr = session.close()
         if stderr:
             print(json.dumps({"stderr": stderr}, ensure_ascii=False, indent=2))
+        shutil.rmtree(session.tmp_dir, ignore_errors=True)
 
 
 

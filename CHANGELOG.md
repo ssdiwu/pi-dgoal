@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **三档 Plan 与八工具运行时**（ADR 0038）：公共 agent 工具改为 `task_plan` / `phase_plan` / `goal_plan`、`plan_create` / `plan_read` / `plan_update`、`phase_check` / `goal_check`；旧五个 `dgoal_*` 工具不再注册。新持久化键为 `dgoal-plan-v1`，旧 `dgoal-state` / `dgoal-goal-vnext` 活动状态不迁移。
+- **删除策略与隐式启动组合**：移除 `final_only` / `phased`、bounded / unbounded runtime budget、`implicitFinalOnlyStart` / `implicitFinalOnlyBudget` 与 proposal `implicit` 参数。保障强度统一由 `planType: task | phase | goal` 表达。
+- **状态收敛**：Goal 只保留 `pending | active | paused | done`，phase/task 只保留 `pending | in_progress | done | blocked`。业务 rejection 仅写入 `CheckRecord` 并保持 Goal active，不再进入 Goal `rejected`、固定三次拒绝暂停或 `completed` 兼容状态。
+
+### Added
+
+- **Task Plan 日常默认入口**：agent 可为明确多步执行任务主动建立可替换的 Task Plan；复用现有 reducer、持久化和浮层，但隐藏内部单 phase，不经过 proposal、确认或独立审核。
+- **可失效的审核记录**：phase/goal check 持久化带 plan revision 的 `CheckRecord`；任一受审事实变化都会使旧 approval 失效，审核运行期间 revision 变化时丢弃迟到结果。
+
+### Changed
+
+- **check 与 update 职责分离**：`phase_check` / `goal_check` 只写审核结果；`plan_update` 是 task / phase / goal 状态、完成显示与 agent 主动暂停的唯一写入口。approved 不再隐式等于 done。
+- **显式 dgoal 选择 Plan 类型**：`/dgoal` 与自然语言显式启动由 agent 推荐 Phase Plan 或 Goal Plan，确认 UI 只切换 Plan 类型，不再切换验收或预算策略。
+- **任务状态守卫收紧**：task 必须按 `pending → in_progress → done` 推进，done 必须带可复验 evidence；blocked 解除后清理旧原因，且禁止依赖后续 phase 的 task。
+
 ## [0.7.2] - 2026-07-16
 
 ### Fixed
