@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-07-16
+
+### Fixed
+
+- **npm 包安装不再重装 Pi 核心依赖**：将运行时导入的 `@earendil-works/pi-ai` 从普通 dependency 改为宿主提供的 peer dependency，并补齐 `@earendil-works/pi-tui` 的 peer 声明；两者仅在本地开发时保留 dev dependency，避免 `pi install` / `/reload` 在共享 npm 前缀中大范围替换 Pi 依赖并触发 npm Arborist 回滚异常。
+
 ## [0.7.1] - 2026-07-16
 
 ### Added
