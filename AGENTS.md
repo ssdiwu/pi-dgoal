@@ -7,7 +7,7 @@
 1. `README.md`（功能、安装、使用、完成审核机制、设计边界——必读）
 2. `doc/术语表.md`（含建检循环第一性原理 + 全部术语定义）
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
-4. `doc/决策档案/README.md`（决策档案索引；0006 是建检循环基本盘，0016 是独立验收条件与用户复核边界，其他决策按索引按需深入）
+4. `doc/决策档案/README.md`（决策档案索引；0006 是建检循环基本盘，0016 是独立验收条件与用户复核边界，0037 是轻提案/硬执行的语义职责分层，其他决策按索引按需深入）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
 6. `index.ts`（扩展组合根；运行时职责位于 `src/`）
 
@@ -45,6 +45,15 @@ pi-dgoal/
 - **背景固化是补充**：当前生产启动不再运行独立背景摘要子进程；主 agent 可在 proposal 中提供可选 `contextSummary`，它仍是补充信息，不替代把关键约束写进 objective 或文档。
 - **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModels` / `goalAuditorModels`，以最多 3 个 `provider/model[:thinking]` 有序候选分别配置阶段建检与目标终审。项目候选链整体优先于全局链、不混合；同一来源内复数字段 > 对应单值字段 > 旧 `auditorModel`。复数字段 `null` 显式继承当次会话模型并阻断继续降级，旧单值字段保持兼容；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，查询失败保留候选；一次审核中每候选最多调用一次，技术/协议异常或缺终止标记的部分输出按候选切换，业务 `REJECTED`、用户中断不换模型；健康 fallback 在当前 goal/审核范围复用，耗尽后必须 `audit_error` 暂停。
 - 不硬编码密钥、token、私有路径。
+
+## 提案语义与执行护栏准则
+
+- **轻提案、硬执行**：`dgoal_propose` 的代码层只硬校验结构、状态、策略/预算组合与用户授权；不得用命令名、文件扩展名、`API response JSON` 等词表代替语义理解。详见 ADR 0037。
+- **LLM 独占 proposal 语义判断**：语义预审判断任务能否自主闭环，并把候选条件分为独立验收条件、非阻塞 `userReviewItems`、真实人工 blocker；只有最后一类可阻塞启动。隐式路径若通过显式确认即可补足授权，应先降级显式；仍缺用户决策/信息/凭据/授权时才拒绝 proposal，不得扩张目标。
+- **LLM 不是安全边界**：真实高风险动作继续由 `tool_call` preflight 根据工具名、参数和项目边界 fail-closed；proposal 文本检测仅可处理高置信已知动作，含义不确定时降级显式确认，不得把 `nonGoals` / `guardrails` 的否定声明按关键词当成执行意图。
+- **先校验后落状态**：隐式 proposal 在权限、结构和语义预审成功前不得留下半启动 goal；若明确保留可重提 pending，错误结果必须说明当前状态和重试方式。
+- **终审不建自指完成门**：审核器只审冻结条件与调用前工件；当前 `dgoal_done` 的成功 response 必须等审核器返回 `<APPROVED>` 后生成，不得要求它预先存在，也不得因审核前 goal 仍为 active/rejected 而拒绝。
+- 修改 proposal/semantic preflight/implicit guard/final audit 时，回归测试至少覆盖：人工条件三分流、否定式边界、失败 proposal 状态原子性和 `dgoal_done` 审核→finalize→tool result 的因果时序。
 
 ## TUI 边界防护
 
