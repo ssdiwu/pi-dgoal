@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Task Plan 用户中断恢复**：中断当前响应不再把 Task Plan 写成 `paused(user_abort)`；它保留 active 状态并清理旧 continuation，下一条用户输入可直接继续，无需 `/dgoal resume`。显式 Phase/Goal Plan 仍保留用户中断后的暂停语义。
+
 ## [0.7.4] - 2026-07-16
 
 ### Changed

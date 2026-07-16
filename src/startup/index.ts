@@ -248,7 +248,16 @@ export function registerDgoal(pi: ExtensionAPI) {
     const finalAssistant = findFinalAssistantMessage(event.messages);
     const errorDetail = finalAssistant?.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
 
-    // 用户主动中断：不重试，直接暂停。
+    // Task Plan 是日常执行脚手架：用户中断当前响应只停止这一轮，不能把 Plan 锁成
+    // 只能显式 resume 的状态。清掉旧 continuation 后，下一条用户输入会带着 active Plan 继续。
+    if (finalAssistant?.stopReason === "aborted" && resolvePlanType(goalRuntimeState.currentGoal) === "task") {
+      goalRuntimeState.consecutiveErrors = 0;
+      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      clearContinuation();
+      return;
+    }
+
+    // 显式 dgoal 的用户中断：不重试，直接暂停，保留用户对高保障 Plan 的停止权。
     if (finalAssistant?.stopReason === "aborted") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;

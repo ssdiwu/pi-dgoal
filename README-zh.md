@@ -115,7 +115,7 @@ Phase/Goal Plan 的 proposal 采用“轻提案、硬执行”（ADR 0037）：
 - 真实动作权限由宿主工具和执行边界决定，不靠 proposal 关键词猜测；
 - 独立审核器只核用户确认的冻结条件，不在执行中扩张完成门。
 
-隐式 proposal、`implicitFinalOnlyStart`、`implicitFinalOnlyBudget`、bounded/unbounded runtime budget 与 verification policy 已删除。仍保留固定技术熔断：用户中断、模型错误、连续无进展、审核器错误与审核 timeout。agent 需要用户决策时用：
+隐式 proposal、`implicitFinalOnlyStart`、`implicitFinalOnlyBudget`、bounded/unbounded runtime budget 与 verification policy 已删除。仍保留固定技术熔断：模型错误、连续无进展、审核器错误与审核 timeout；用户中断会暂停显式 Phase/Goal Plan，而 Task Plan 保持 active，等待下一条用户输入继续。agent 需要用户决策时用：
 
 ```text
 plan_update(target=goal, status=paused, reason="具体 blocker")

@@ -144,7 +144,7 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.pauseReason).toBe("no_progress");
   });
 
-  test("用户主动中断仍写 user_abort，不覆盖为 no_progress", async () => {
+  test("用户中断显式 Goal Plan 仍写 user_abort，不覆盖为 no_progress", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
 
@@ -152,6 +152,19 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.budgetUsage?.turns).toBeUndefined();
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("user_abort");
+  });
+
+  test("用户中断 Task Plan 不暂停，下一轮仍注入当前 Plan", async () => {
+    __setGoalForTest({ ...makeActiveGoal(), planType: "task" });
+    const ctx = mockCtx();
+
+    await runTurn(handlers, ctx, { stopReason: "aborted" });
+
+    expect(__getGoalForTest()).toMatchObject({ status: "active", planType: "task" });
+    expect(__getGoalForTest()?.pauseReason).toBeUndefined();
+    const guided = await handlers["before_agent_start"]({ prompt: "继续处理", systemPrompt: "base" }, ctx) as { systemPrompt?: string };
+    expect(guided.systemPrompt).toContain("<dgoal_goal>");
+    expect(guided.systemPrompt).toContain("当前是 Task Plan");
   });
 
   test("第 5 次连续模型错误才暂停，且暂停清理 pendingProposal、通知只报告实际 4 次 retry", async () => {

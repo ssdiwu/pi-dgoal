@@ -115,7 +115,7 @@ Phase/Goal proposals follow “thin proposal, hard execution” (ADR 0037):
 - actual action permissions remain governed by host tools and execution boundaries, not proposal keywords;
 - independent auditors verify only the user-confirmed frozen contract.
 
-Implicit proposals, `implicitFinalOnlyStart`, `implicitFinalOnlyBudget`, bounded/unbounded runtime budgets, and verification-policy switches are removed. Fixed technical circuit breakers remain: user abort, model error, no progress, auditor failure, and audit timeouts. When a user decision is required, the agent calls:
+Implicit proposals, `implicitFinalOnlyStart`, `implicitFinalOnlyBudget`, bounded/unbounded runtime budgets, and verification-policy switches are removed. Fixed technical circuit breakers remain: model error, no progress, auditor failure, and audit timeouts; user interruption pauses explicit Phase/Goal Plans, while a Task Plan remains active for the next user turn. When a user decision is required, the agent calls:
 
 ```text
 plan_update(target=goal, status=paused, reason="specific blocker")
