@@ -277,7 +277,16 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     expect(() => buildBodyLines(restored)).not.toThrow();
   });
 
-  test("UI 抛错不阻断状态重同步（TUI 边界防护）", () => {
+  test("旧持久 task 的 activeForm 在 load/resync 时被剥离", () => {
+    __resetGoalForTest();
+    const legacy = makeGoal({ plan: { phases: [phase(1, "legacy", [{ ...task(1, "旧任务"), activeForm: "旧进行时" } as never], "in_progress")], nextId: 2 } });
+    const context = makeCtx([dgoalEntry(legacy)]);
+    expect(loadGoal(context as never)?.plan?.phases[0].tasks[0]).not.toHaveProperty("activeForm");
+    resyncGoalFromSession(context as never);
+    expect(__getGoalForTest()?.plan?.phases[0].tasks[0]).not.toHaveProperty("activeForm");
+  });
+
+  test("UI 抛错不阻断状态重同步（TUI边界防护）", () => {
     __resetGoalForTest();
     const newGoal = makeGoal({ updatedAt: 555 });
     // setStatus 抛错模拟 TUI 渲染崩溃（如 Spacer is not defined）

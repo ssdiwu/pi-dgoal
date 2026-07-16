@@ -253,17 +253,21 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
-  test("expandTasks=true 显示未完成 phase 的 task（缩进 + 符号）", () => {
+  test("expandTasks=true 用 subject 后的动态省略点表示 in_progress", () => {
     __setI18nForTest(undefined);
-    const g = goal([p(1, "阶段", [t(1, "task1", "in_progress", { activeForm: "正在做" })], "in_progress")]);
-    const lines = renderPlanLines(g, { expandTasks: true });
-    expect(lines.some((l) => l.includes("task1"))).toBe(true);
-    const taskLine = lines.find((l) => l.includes("task1"))!;
-    expect(taskLine).toContain("│");
-    expect(taskLine).toContain("◐");
-    expect(taskLine).toContain("(正在做)");
-    expect(lines.at(-1)).toContain("Ctrl+O 收起详情");
-    expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
+    const g = goal([p(1, "阶段", [t(1, "task1", "in_progress", { activeForm: "旧进行时文案" } as never)], "in_progress")]);
+    const frames = [0, 1, 2].map((activityFrame) =>
+      renderPlanLines(g, { expandTasks: true, activityFrame } as never)
+        .find((line) => line.includes("task1"))!,
+    );
+    expect(frames[0]).toContain("│");
+    expect(frames[0]).toContain("◐");
+    expect(frames[0]).toContain("task1.");
+    expect(frames[1]).toContain("task1..");
+    expect(frames[2]).toContain("task1...");
+    expect(frames.every((line) => !line.includes("旧进行时文案"))).toBe(true);
+    expect(renderPlanLines(g, { expandTasks: true }).at(-1)).toContain("Ctrl+O 收起详情");
+    expect(renderPlanLines(g, { expandTasks: true }).at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
   test("进行中 phase 内的 done task 在展开态仍显示删除线", () => {

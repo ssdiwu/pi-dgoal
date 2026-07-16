@@ -144,20 +144,20 @@ describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
     expect(taskLine.text).not.toContain("\u001b[9m✓");
   });
 
-  test("长 subject / blockedReason / activeForm 不再被 buildBodyLines 截断，交给 render 换行", () => {
+  test("长 subject / blockedReason 不再被 buildBodyLines 截断，交给 render 换行", () => {
     const longPhase = "p".repeat(200);
     const longReason = "r".repeat(50);
-    const longActive = "a".repeat(50);
+    const longSubject = "a".repeat(50);
     const g = goal([
       p(1, longPhase, [], "blocked", { blockedReason: longReason }),
-      p(2, "p2", [t(1, longActive, "in_progress", { activeForm: longActive })], "in_progress"),
+      p(2, "p2", [t(1, longSubject, "in_progress")], "in_progress"),
     ]);
     const lines = buildBodyLines(g);
     const phaseLine = lines.find((l) => l.type === "phase" && l.status === "blocked")!;
     const taskLine = lines.find((l) => l.type === "task" && l.status === "in_progress")!;
     expect(phaseLine.text).toContain(longPhase);
     expect(phaseLine.text).toContain(longReason);
-    expect(taskLine.text).toContain(longActive);
+    expect(taskLine.text).toContain(longSubject);
     expect(phaseLine.text).not.toContain("…");
     expect(taskLine.text).not.toContain("…");
   });

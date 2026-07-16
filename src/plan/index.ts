@@ -26,7 +26,6 @@ export interface Task {
   id: number;
   subject: string;
   description?: string;
-  activeForm?: string;
   status: PlanStatus;
   blockedBy?: number[];
   evidence?: string;

@@ -329,7 +329,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.taskCount": "（{count} 个 task）",
       "proposal.taskLine": "     - task {index}: {subject}",
       "proposal.taskDescription": "       说明：{description}",
-      "proposal.taskActiveForm": "       进行时：{activeForm}",
       "proposal.taskBlockedBy": "       依赖：{blockedBy}",
       "proposal.confirmTitle": "确认 /dgoal 计划？",
       "proposal.confirmTitleWithPlan": "确认 /dgoal 计划？\n\n{plan}",
@@ -412,7 +411,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.listEmpty": "当前没有 task",
       "tool.plan.error": "错误：{message}",
       "tool.plan.get.description": "  说明：{description}",
-      "tool.plan.get.activeForm": "  进行时：{activeForm}",
       "tool.plan.get.evidence": "  证据：{evidence}",
       "tool.plan.get.blockedReason": "  阻塞原因：{blockedReason}",
       "tool.plan.get.blockedBy": "  依赖：{blockedBy}",
@@ -508,7 +506,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.taskCount": " ({count} tasks)",
       "proposal.taskLine": "     - task {index}: {subject}",
       "proposal.taskDescription": "       Description: {description}",
-      "proposal.taskActiveForm": "       Active form: {activeForm}",
       "proposal.taskBlockedBy": "       Depends on: {blockedBy}",
       "proposal.confirmTitle": "Confirm /dgoal plan?",
       "proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
@@ -590,7 +587,6 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.listEmpty": "No tasks",
       "tool.plan.error": "Error: {message}",
       "tool.plan.get.description": "  Description: {description}",
-      "tool.plan.get.activeForm": "  Active form: {activeForm}",
       "tool.plan.get.evidence": "  Evidence: {evidence}",
       "tool.plan.get.blockedReason": "  Blocked reason: {blockedReason}",
       "tool.plan.get.blockedBy": "  Depends on: {blockedBy}",
@@ -756,6 +752,11 @@ function allTasksDoneWithEvidence(phase: Phase): boolean {
   return phase.tasks.length > 0 && phase.tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()));
 }
 
+function allPlanTasksDoneWithEvidence(plan: TaskPlan): boolean {
+  const tasks = flattenTasks(plan);
+  return tasks.length > 0 && tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()));
+}
+
 // 工具结果：goal 存在但暂停，返回结构化 paused 信息而非 noGoal。
 function pausedGoalResult(goal: GoalState) {
   const reason = goal.pauseReason ?? "unknown";
@@ -864,17 +865,15 @@ export function formatPlanResult(op: PlanOp): string {
       if (op.tasks.length === 0) return t("tool.plan.listEmpty");
       return op.tasks
         .map((t) => {
-          const form = t.status === "in_progress" && t.activeForm ? ` (${t.activeForm})` : "";
           const blk = t.status === "blocked" && t.blockedReason ? ` [blocked: ${t.blockedReason}]` : "";
           const dep = t.blockedBy?.length ? ` ⛓ ${t.blockedBy.map((d) => `#${d}`).join(",")}` : "";
-          return `[${t.status}] #${t.id} ${t.subject}${form}${blk}${dep}`;
+          return `[${t.status}] #${t.id} ${t.subject}${blk}${dep}`;
         })
         .join("\n");
     case "get": {
       const tsk = op.task;
       const lines = [`#${tsk.id} [${tsk.status}] ${tsk.subject}`];
       if (tsk.description) lines.push(t("tool.plan.get.description", { description: tsk.description }));
-      if (tsk.activeForm) lines.push(t("tool.plan.get.activeForm", { activeForm: tsk.activeForm }));
       if (tsk.evidence) lines.push(t("tool.plan.get.evidence", { evidence: tsk.evidence }));
       if (tsk.blockedReason) lines.push(t("tool.plan.get.blockedReason", { blockedReason: tsk.blockedReason }));
       if (tsk.blockedBy?.length) lines.push(t("tool.plan.get.blockedBy", { blockedBy: tsk.blockedBy.map((d) => `#${d}`).join(", ") }));
@@ -907,7 +906,7 @@ export interface PlanProposal {
     subject: string;
     description?: string;
     acceptanceCriteria?: AcceptanceCriterion[];
-    tasks?: Array<{ subject: string; description?: string; activeForm?: string; blockedBy?: number[] }>;
+    tasks?: Array<{ subject: string; description?: string; blockedBy?: number[] }>;
   }>;
 }
 
@@ -1035,7 +1034,6 @@ export function proposalToPlan(proposal: PlanProposal): TaskPlan {
         subject: tt.subject,
         status: "pending" as PlanStatus,
         ...(tt.description ? { description: tt.description } : {}),
-        ...(tt.activeForm ? { activeForm: tt.activeForm } : {}),
         ...(mappedBlockedBy.length ? { blockedBy: mappedBlockedBy } : {}),
       };
     });
@@ -1620,7 +1618,6 @@ const auditedPlanProposalTool = defineTool({
       tasks: Type.Optional(Type.Array(Type.Object({
         subject: Type.String(),
         description: Type.Optional(Type.String()),
-        activeForm: Type.Optional(Type.String()),
         blockedBy: Type.Optional(Type.Array(Type.Number())),
       }))),
     })),
@@ -1692,7 +1689,6 @@ const auditedPlanProposalTool = defineTool({
             return {
               subject: String(task.subject ?? "").trim(),
               ...(task.description?.trim() ? { description: task.description.trim() } : {}),
-              ...(task.activeForm?.trim() ? { activeForm: task.activeForm.trim() } : {}),
               ...(blockedBy.length ? { blockedBy } : {}),
             };
           }),
@@ -1864,7 +1860,6 @@ function definePublicTool(definition: any): any {
 const entryTaskSchema = Type.Object({
   subject: Type.String({ minLength: 1, description: "task 简述" }),
   description: Type.Optional(Type.String({ description: "task 说明" })),
-  activeForm: Type.Optional(Type.String({ description: "in_progress 时显示的进行时文案" })),
   blockedBy: Type.Optional(Type.Array(Type.Number(), { description: "同一初始 task 列表中的 1-based 依赖序号" })),
 });
 
@@ -1903,7 +1898,7 @@ function prepareEntryTaskArrays(args: unknown): unknown {
   return changed ? out : args;
 }
 
-function makeInitialTasks(rawTasks: Array<{ subject: string; description?: string; activeForm?: string; blockedBy?: number[] }>, firstId: number): { tasks?: Task[]; error?: string } {
+function makeInitialTasks(rawTasks: Array<{ subject: string; description?: string; blockedBy?: number[] }>, firstId: number): { tasks?: Task[]; error?: string } {
   const ids = rawTasks.map((_task, index) => firstId + index);
   const tasks: Task[] = [];
   for (const [index, raw] of rawTasks.entries()) {
@@ -1918,7 +1913,6 @@ function makeInitialTasks(rawTasks: Array<{ subject: string; description?: strin
     }
     const task: Task = { id: ids[index], subject, status: "pending" };
     if (raw.description?.trim()) task.description = raw.description.trim();
-    if (raw.activeForm?.trim()) task.activeForm = raw.activeForm.trim();
     if (blockedBy.length) task.blockedBy = blockedBy;
     tasks.push(task);
   }
@@ -1954,7 +1948,7 @@ export const taskPlanTool = definePublicTool({
       return { content: [{ type: "text", text: "An audited Phase Plan or Goal Plan is already active; task_plan cannot replace it." }], details: { error: "audited plan active" }, isError: true };
     }
     const objective = String(params.objective ?? "").trim();
-    const built = makeInitialTasks(params.tasks as Array<{ subject: string; description?: string; activeForm?: string; blockedBy?: number[] }>, 1);
+    const built = makeInitialTasks(params.tasks as Array<{ subject: string; description?: string; blockedBy?: number[] }>, 1);
     if (!objective || built.error || !built.tasks?.length) {
       return { content: [{ type: "text", text: built.error ?? "Task Plan requires a non-empty objective and at least one task." }], details: { error: built.error ?? "invalid task plan" }, isError: true };
     }
@@ -2131,7 +2125,6 @@ export const planCreateTool = definePublicTool({
     phaseNumber: Type.Optional(Type.Number()),
     subject: Type.String({ minLength: 1 }),
     description: Type.Optional(Type.String()),
-    activeForm: Type.Optional(Type.String()),
     blockedBy: Type.Optional(Type.Array(Type.Number())),
   }),
   prepareArguments: prepareEntryTaskArrays as never,
@@ -2251,12 +2244,12 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
 export const planUpdateTool = definePublicTool({
   name: PLAN_UPDATE_TOOL_NAME,
   label: "Plan Update",
-  description: "更新当前 Plan 的 task、phase 或 goal 状态。check 只写审核结果；所有完成划线、暂停与最终收口都由本工具执行。",
+  description: "更新当前 Plan 的 task、phase 或 goal 状态。Task Plan 在最后一个 task 完成时自动收口；Phase/Goal Plan 的 check 只写审核结果，由本工具显式完成 phase/goal。",
   promptSnippet: "更新 Plan 状态与显示",
   promptGuidelines: [
-    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence 且不回退，blocked 必须说明原因。",
+    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence 且不回退，blocked 必须说明原因。Task Plan 的最后一个 task done 后会自动完成并关闭 goal。",
     "target=phase 只能更新当前 phase；Phase Plan 要求 task 全 done，Goal Plan 还要求 phase_check approved。goal_check rejected 后可把受影响的 done phase 重开，再新增 follow-up task 修复。",
-    "target=goal status=done 是最终收口；Phase/Goal Plan 还要求 goal_check approved。",
+    "Phase/Goal Plan 用 target=goal status=done 最终收口，并要求 goal_check approved；Task Plan 通常无需另行更新 goal。",
     "只有确实需要用户决定的死锁才能把 goal 更新为 paused，且 reason 必填；agent 不得自行 resume。",
   ],
   parameters: Type.Object({
@@ -2265,7 +2258,6 @@ export const planUpdateTool = definePublicTool({
     phaseNumber: Type.Optional(Type.Number()),
     subject: Type.Optional(Type.String()),
     description: Type.Optional(Type.String()),
-    activeForm: Type.Optional(Type.String()),
     status: Type.Optional(Type.Union([
       Type.Literal("pending"), Type.Literal("in_progress"), Type.Literal("done"), Type.Literal("blocked"), Type.Literal("paused"),
     ])),
@@ -2305,9 +2297,30 @@ export const planUpdateTool = definePublicTool({
       if (result.op.kind === "error") return { content: [{ type: "text", text: formatPlanResult(result.op) }], details: { error: result.op.message } };
       goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
       clearCurrentCheckSnapshot();
+      const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
+      if (planType === "task" && allPlanTasksDoneWithEvidence(goalRuntimeState.currentGoal.plan)) {
+        const completionGoal = goalRuntimeState.currentGoal;
+        const tasks = flattenTasks(completionGoal.plan);
+        const summary = `Task Plan 的全部 ${tasks.length} 个 task 已完成。`;
+        const verification = tasks
+          .map((task) => `task #${task.id} ${task.subject}：${task.evidence?.trim()}`)
+          .join("\n");
+        finalizeGoal(ctx);
+        return {
+          content: [{ type: "text", text: buildCompletionReplySignal({ goal: completionGoal, summary, verification, audited: false }) }],
+          details: {
+            target: "task",
+            taskId,
+            status: params.status,
+            revision: completionGoal.plan.revision,
+            completed: true,
+            planType: "task",
+            display: [`完成总结：${summary}`, `验证：${verification}`].join("\n"),
+          },
+        };
+      }
       persistGoal(goalRuntimeState.currentGoal);
       safeUpdatePlanOverlay();
-      const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
       return {
         content: [{ type: "text", text: formatPlanResult(result.op) }],
         details: {
@@ -2398,7 +2411,7 @@ export const planUpdateTool = definePublicTool({
     if (requestedStatus !== "done") return { content: [{ type: "text", text: "goal update only accepts status=paused or status=done." }], details: { error: "invalid goal status" } };
     const allPhasesDone = goal.plan.phases.length > 0 && goal.plan.phases.every((phase) => isDonePlanStatus(phase.status));
     if (planType === "task") {
-      if (!goal.plan.phases[0] || !allTasksDoneWithEvidence(goal.plan.phases[0])) return { content: [{ type: "text", text: "Task Plan cannot finish until every task is done with reproducible evidence." }], details: { error: "tasks not done" } };
+      if (!allPlanTasksDoneWithEvidence(goal.plan)) return { content: [{ type: "text", text: "Task Plan cannot finish until every task is done with reproducible evidence." }], details: { error: "tasks not done" } };
     } else {
       if (!allPhasesDone) return { content: [{ type: "text", text: "All phases must be marked done before the Plan can finish." }], details: { error: "phases not done" } };
       if (goal.goalCheck?.status !== "approved" || goal.goalCheck.revision !== (goal.plan.revision ?? 0)) {
@@ -3126,7 +3139,7 @@ export function buildSystemPrompt(goal: GoalState) {
   const acceptanceContractBlock = planType === "task" ? "" : buildAcceptanceContractBlock(goal);
   const feedbackBlock = buildCheckFeedbackBlock(goal);
   const typeRule = planType === "task"
-    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；所有 task done 后用 plan_update(target=goal,status=done) 收口。用户改变目标时重新调用 task_plan，原子替换 objective 与全部 task。"
+    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal，不要再调用 plan_update(target=goal,status=done)。用户改变目标时重新调用 task_plan，原子替换 objective 与全部 task。"
     : planType === "phase"
       ? "- 当前是 Phase Plan：每个 phase 的 task 全 done 后用 plan_update(target=phase,status=done) 推进；所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。不要调用 phase_check。"
       : "- 当前是 Goal Plan：每个 phase 的 task 全 done 后调用 phase_check；通过后用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。";
@@ -3279,7 +3292,6 @@ export function formatProposalForConfirm(goal: GoalState, proposal: PlanProposal
     for (const [taskIndex, task] of (ph.tasks ?? []).entries()) {
       lines.push(t("proposal.taskLine", { index: taskIndex + 1, subject: task.subject }));
       if (task.description) lines.push(t("proposal.taskDescription", { description: task.description }));
-      if (task.activeForm) lines.push(t("proposal.taskActiveForm", { activeForm: task.activeForm }));
       if (task.blockedBy?.length) {
         lines.push(t("proposal.taskBlockedBy", { blockedBy: task.blockedBy.map((id) => `#${id}`).join(", ") }));
       }
@@ -3444,11 +3456,17 @@ function buildHelpPrompt(goal: GoalState | undefined) {
 }
 
 function buildResumePrompt(goal: GoalState) {
-  return `恢复当前 ${resolvePlanType(goal)} Plan 并继续直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n按 Plan 类型继续 plan_update / phase_check / goal_check，满足前置条件后用 plan_update(target=goal,status=done) 收口。`;
+  const completionInstruction = resolvePlanType(goal) === "task"
+    ? "继续更新 task；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal。"
+    : "按 Plan 类型继续 plan_update / phase_check / goal_check，满足前置条件后用 plan_update(target=goal,status=done) 收口。";
+  return `恢复当前 ${resolvePlanType(goal)} Plan 并继续直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n${completionInstruction}`;
 }
 
 function buildContinuePrompt(goal: GoalState, marker: string) {
-  return `继续当前 ${resolvePlanType(goal)} Plan 直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n自动续跑 #${goal.iteration}。从当前状态继续；保持 plan_update 与实际进度同步，满足对应 check 后最终更新 goal 为 done。\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  const completionInstruction = resolvePlanType(goal) === "task"
+    ? "保持 plan_update 与实际进度同步；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal。"
+    : "保持 plan_update 与实际进度同步，满足对应 check 后最终更新 goal 为 done。";
+  return `继续当前 ${resolvePlanType(goal)} Plan 直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n自动续跑 #${goal.iteration}。从当前状态继续；${completionInstruction}\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 export async function sendContinuation(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState) {
@@ -3507,16 +3525,24 @@ export function persistGoal(goal: GoalState | null, pendingProposal = goalRuntim
 }
 
 function normalizeLoadedGoal(goal: GoalState): GoalState {
-  if (!goal.plan?.phases?.some((phase) => !Array.isArray((phase as unknown as Record<string, unknown>).tasks))) return goal;
-  return {
-    ...goal,
-    plan: {
-      ...goal.plan,
-      phases: goal.plan.phases.map((phase) =>
-        Array.isArray((phase as unknown as Record<string, unknown>).tasks) ? phase : { ...phase, tasks: [] },
-      ),
-    },
-  };
+  if (!goal.plan?.phases) return goal;
+  let changed = false;
+  const phases = goal.plan.phases.map((phase) => {
+    const rawTasks = (phase as unknown as Record<string, unknown>).tasks;
+    if (!Array.isArray(rawTasks)) {
+      changed = true;
+      return { ...phase, tasks: [] };
+    }
+    const tasks = phase.tasks.map((task) => {
+      const record = task as unknown as Record<string, unknown>;
+      if (!("activeForm" in record)) return task;
+      changed = true;
+      const { activeForm: _legacyActiveForm, ...normalized } = record;
+      return normalized as unknown as Task;
+    });
+    return tasks === phase.tasks ? phase : { ...phase, tasks };
+  });
+  return changed ? { ...goal, plan: { ...goal.plan, phases } } : goal;
 }
 
 function loadPersistedState(ctx: DgoalContext): { goal?: GoalState; pendingProposal?: PendingProposalState } {
@@ -3789,7 +3815,7 @@ interface CompletionReplySignalArgs {
 export function buildCompletionReplySignal(args: CompletionReplySignalArgs) {
   const auditLine = args.audited
     ? `✅ 审核结论：已通过独立验收审核。${args.auditorModel ? ` ${formatAuditorModelLabel(args.auditorModel)}` : ""}`
-    : "⚠️ 审核结论：已按 PI_DGOAL_NO_AUDIT=1 跳过审核。";
+    : "ℹ️ 审核结论：Task Plan 无独立审核。";
   const whatChangedLines = args.whatChanged?.length
     ? [``, "改了什么：", ...args.whatChanged.map((item) => `  - ${item}`)]
     : [];
@@ -5784,7 +5810,6 @@ export function applyPlanMutation(
       }
       const newTask: Task = { id: goal.plan.nextId, subject, status: "pending" };
       if (params.description) newTask.description = String(params.description);
-      if (params.activeForm) newTask.activeForm = String(params.activeForm);
       if (initialBlockedBy.length) newTask.blockedBy = [...initialBlockedBy];
       const phases = goal.plan.phases.map((ph, i) =>
         i === phaseIdx ? { ...ph, tasks: [...ph.tasks, newTask] } : ph,
@@ -5811,7 +5836,6 @@ export function applyPlanMutation(
       const hasMutation =
         params.subject !== undefined ||
         params.description !== undefined ||
-        params.activeForm !== undefined ||
         params.status !== undefined ||
         params.evidence !== undefined ||
         params.blockedReason !== undefined ||
@@ -5864,7 +5888,6 @@ export function applyPlanMutation(
       const updated: Task = { ...current, status: newStatus };
       if (params.subject !== undefined) updated.subject = String(params.subject).trim();
       if (params.description !== undefined) updated.description = String(params.description);
-      if (params.activeForm !== undefined) updated.activeForm = String(params.activeForm);
       if (params.evidence !== undefined) {
         if (requestedEvidence) updated.evidence = requestedEvidence;
         else delete updated.evidence;
@@ -5930,6 +5953,8 @@ const PHASE_ICON: Record<PlanStatus, string> = {
 // 渲染选项：持续显示展开态跟随 Pi 的 app.tools.expand（默认 Ctrl+O）。
 interface RenderPlanOptions {
   expandTasks: boolean;
+  /** Deterministic animation frame for tests; production derives it from the current second. */
+  activityFrame?: number;
 }
 
 // 渲染计划浮层为字符串行数组。纯函数：不读模块状态，不调 setWidget。
@@ -5938,17 +5963,20 @@ function shouldExpandTasksInPersistentOverlay(status: Phase["status"]): boolean 
   return status === "pending" || status === "in_progress";
 }
 
-function formatTaskDisplay(task: Task, prefix: string, subjectMax?: number): string {
+function formatTaskDisplay(task: Task, prefix: string, subjectMax?: number, activitySuffix = ""): string {
   const icon = PHASE_ICON[task.status] ?? "○";
   const subject = subjectMax === undefined ? task.subject : truncateLine(task.subject, subjectMax);
   const rendered = isDonePlanStatus(task.status) ? ansiStrikethrough(subject) : subject;
-  const active = task.status === "in_progress" && task.activeForm
-    ? ` (${subjectMax === undefined ? task.activeForm : truncateLine(task.activeForm, 30)})`
-    : "";
+  const active = task.status === "in_progress" ? activitySuffix : "";
   const blocked = task.status === "blocked" && task.blockedReason
     ? ` [${subjectMax === undefined ? task.blockedReason : truncateLine(task.blockedReason, 24)}]`
     : "";
   return `${prefix}${icon} ${rendered}${active}${blocked}`;
+}
+
+function formatActivitySuffix(frame = Math.floor(Date.now() / 1000)): string {
+  const normalizedFrame = ((Math.floor(frame) % 3) + 3) % 3;
+  return ".".repeat(normalizedFrame + 1);
 }
 
 function formatPhaseDisplay(phase: Phase, prefix: string, subjectMax?: number): string {
@@ -6030,17 +6058,18 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
     : `${donePhases}/${visiblePhases.length}p ${doneTasks}/${totalTasks}t`;
   const heading = buildOverlayHeading(goal, progress, compactProgress, elapsed, compactElapsed, width);
   const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
+  const activitySuffix = formatActivitySuffix(opts.activityFrame);
   const showExpandedDetails = opts.expandTasks || goal.status === "done";
 
   const bodyLines: string[] = [];
   if (showExpandedDetails && activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
   if (planType === "task") {
-    for (const task of taskPlanPhase.tasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52));
+    for (const task of taskPlanPhase.tasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52, activitySuffix));
   } else {
     for (const phase of visiblePhases) {
       bodyLines.push(formatPhaseDisplay(phase, "├─ ", 44));
       if (showExpandedDetails && (goal.status === "done" || shouldExpandTasksInPersistentOverlay(phase.status))) {
-        for (const task of phase.tasks) bodyLines.push(formatTaskDisplay(task, "│    ", 46));
+        for (const task of phase.tasks) bodyLines.push(formatTaskDisplay(task, "│    ", 46, activitySuffix));
       }
     }
   }

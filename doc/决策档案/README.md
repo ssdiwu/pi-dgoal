@@ -44,3 +44,4 @@
 | [0038](./0038-三档Plan与八工具职责分离.md) | 三档 Plan 与八工具职责分离 | Task/Phase/Goal Plan 共享运行时；八个两词工具分离建立、管理与审核，check 不再直接写完成 |
 | [0039](./0039-Phase与Task使用独立ID命名空间.md) | Phase 与 Task 使用独立 ID 命名空间 | phase 与 plan-global task 各自从 1 编号，类型化工具消除同号歧义，旧 Plan 原样兼容 |
 | [0040](./0040-工具结果人类可读投影.md) | 工具结果人类可读投影 | 公开工具以摘要与文字展开投影展示，details 不直出 |
+| [0041](./0041-TaskPlan末任务自动收口.md) | Task Plan 末任务自动收口 | 最后一个带证据 task 的完成更新原子关闭 Task Plan；进行中仅用动态省略点投影 |

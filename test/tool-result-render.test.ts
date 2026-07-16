@@ -38,7 +38,7 @@ describe("public tool result projection", () => {
     }, undefined, undefined, ctx);
     expect(expandedText(taskPlanTool, created)).toContain("读源码");
 
-    const added = await planCreateTool.execute("create-task", { subject: "验证投影", activeForm: "正在验证" }, undefined, undefined, ctx);
+    const added = await planCreateTool.execute("create-task", { subject: "验证投影" }, undefined, undefined, ctx);
     expect(expandedText(planCreateTool, added)).toContain("验证投影");
 
     const updated = await planUpdateTool.execute("update-task", { target: "task", id: 1, status: "in_progress" }, undefined, undefined, ctx);

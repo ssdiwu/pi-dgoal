@@ -20,7 +20,7 @@
 | 路径 | 风险 | 要求 |
 |---|---|---|
 | `finalizeGoal` | goal done 后完成浮层 / 状态栏清空抛错，阻断 `persistGoal(null)` | 先完成状态清理，UI 展示独立容错 |
-| `plan_update(target=goal,status=done)` | 完成守卫通过但最终提示渲染失败 | 工具结果仍返回完成信号，goal 仍关闭 |
+| Task Plan 最后一个 `plan_update(target=task,status=done)`，或 Phase/Goal Plan 的 `plan_update(target=goal,status=done)` | 完成守卫通过但最终提示渲染失败 | 工具结果仍返回完成信号，goal 仍关闭 |
 | `phase_check` / `goal_check` | 审核进度流或报告展示异常 | CheckRecord 优先落地；check 不代写 phase/goal 完成状态 |
 | plan overlay / status bar | aboveEditor 或状态栏组件异常 | 降级或跳过刷新，不影响 task/phase 状态 |
 | startup gate | 确认 UI 异常 | 不得创建半激活 goal；要返回可读错误或保持 pending 可恢复 |
@@ -29,7 +29,7 @@
 
 `finalizeGoal` 的目标是结束 goal，不是展示动画。正确顺序是：
 
-1. `plan_update` 按 Plan 类型确认完成守卫：Task Plan 的 task 全部带证据 done；Phase/Goal Plan 另需当前 revision 的 `goal_check` approved。
+1. `plan_update` 按 Plan 类型确认完成守卫：Task Plan 的最后一个 task 完成时确认全部 task 带证据 done；Phase/Goal Plan 另需当前 revision 的 `goal_check` approved。
 2. 将 goal 状态推进到 `done`。
 3. 清空运行态引用并持久化：`currentGoal = null` / `persistGoal(null)`。
 4. 尝试展示完成浮层、清空状态栏、发通知。
@@ -53,7 +53,8 @@
 
 ```text
 /dgoal <一个可快速完成的小目标>
-# agent 完成最后一个 phase 后依次调用 goal_check
+# Task Plan：最后一个 task 带 evidence 进入 done 后自动收口
+# Phase/Goal Plan：完成最后一个 phase 后依次调用 goal_check
 # 再由 plan_update(target=goal,status=done) 收口
 /dgoal status
 ```

@@ -926,7 +926,7 @@ describe("切片4 · formatProposalForConfirm", () => {
         {
           subject: "修复登录",
           tasks: [
-            { subject: "修登录用例", description: "覆盖 token 过期", activeForm: "正在修登录", blockedBy: [1] },
+            { subject: "修登录用例", description: "覆盖 token 过期", blockedBy: [1] },
             { subject: "修权限用例" },
           ],
         },
@@ -943,7 +943,6 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).not.toContain("- task 1: 修登录用例");
     expect(text).not.toContain("说明：覆盖 token 过期");
-    expect(text).not.toContain("进行时：正在修登录");
     expect(text).not.toContain("依赖：#1");
     expect(text).not.toContain("- task 2: 修权限用例");
     expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
@@ -960,7 +959,7 @@ describe("切片4 · formatProposalForConfirm", () => {
         {
           subject: "修复登录",
           tasks: [
-            { subject: "修登录用例", description: "覆盖 token 过期", activeForm: "正在修登录", blockedBy: [1] },
+            { subject: "修登录用例", description: "覆盖 token 过期", blockedBy: [1] },
             { subject: "修权限用例" },
           ],
         },
@@ -974,7 +973,6 @@ describe("切片4 · formatProposalForConfirm", () => {
     expect(text).toContain("1. 修复登录（2 个 task）");
     expect(text).toContain("- task 1: 修登录用例");
     expect(text).toContain("说明：覆盖 token 过期");
-    expect(text).toContain("进行时：正在修登录");
     expect(text).toContain("依赖：#1");
     expect(text).toContain("- task 2: 修权限用例");
   });
@@ -1089,11 +1087,10 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
   test("初始 task 状态为 pending", () => {
     const proposal: PlanProposal = {
       objective: "o",
-      phases: [{ subject: "p", tasks: [{ subject: "t", activeForm: "正在做" }] }],
+      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
     };
     const plan = proposalToPlan(proposal);
     expect(plan.phases[0].tasks[0].status).toBe("pending");
-    expect(plan.phases[0].tasks[0].activeForm).toBe("正在做");
   });
 
   test("phase 无 task 时 tasks 为空数组", () => {

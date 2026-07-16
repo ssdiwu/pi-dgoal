@@ -145,7 +145,7 @@ describe("切片2 · update task 状态机", () => {
   test("pending → in_progress 合法，但不能跳过执行直接 done", () => {
     const goal = makeGoal([phase(1, "p1", [task(1, "a", "pending")])]);
     expect(run(goal, "update", { id: 1, status: "done", evidence: "跳步" }).op.kind).toBe("error");
-    const r = run(goal, "update", { id: 1, status: "in_progress", activeForm: "正在做 a" });
+    const r = run(goal, "update", { id: 1, status: "in_progress" });
     expect(r.op.kind).toBe("update");
     if (r.op.kind !== "update") return;
     expect(r.op.toStatus).toBe("in_progress");
@@ -297,11 +297,11 @@ describe("切片2 · list / get", () => {
   });
 
   test("get 返回单 task", () => {
-    const goal = makeGoal([phase(1, "p1", [task(1, "a", "in_progress", { activeForm: "正在做" })])]);
+    const goal = makeGoal([phase(1, "p1", [task(1, "a", "in_progress")])]);
     const r = run(goal, "get", { id: 1 });
     expect(r.op.kind).toBe("get");
     if (r.op.kind !== "get") return;
-    expect(r.op.task.activeForm).toBe("正在做");
+    expect(r.op.task.subject).toBe("a");
   });
 
   test("list/get 不改 goal（纯读）", () => {

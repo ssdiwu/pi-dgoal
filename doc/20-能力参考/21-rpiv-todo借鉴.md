@@ -24,7 +24,7 @@ overlay 在 `tool_execution_end` 触发 update，但不 replay（branch 已 stal
 
 - **4 状态机**：pending → in_progress → completed + deleted tombstone。dgoal 借鉴 pending/in_progress/completed，但用 `blocked` 替代 `deleted`（dgoal 单 agent 不需要墓碑，用 blocked 表达诚实失败）。
 - **blockedBy 依赖 + 环检测**：create 传初始集，update 用 add/remove 增量合并，detectCycle 在 add 前预检。dgoal 的 task 直接借鉴。
-- **activeForm**：present-continuous 标签，in_progress 时浮层显示。dgoal 借鉴。
+- **activeForm**：rpiv-todo 的 present-continuous 标签，曾被 dgoal 借鉴；dgoal 已由 ADR 0041 改为用 task subject 后的动态省略点投影，避免重复持久化文案。
 - **metadata 开放字段**：dgoal 用 evidence/blockedReason 等显式字段替代，更结构化。
 
 ## 借鉴的 TUI 浮层（aboveEditor overlay）

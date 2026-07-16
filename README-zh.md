@@ -45,7 +45,7 @@ pi -e ./index.ts
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ plan_update(goal, done)
+→ 最后一个 task 带 evidence 进入 done 时自动关闭 goal
 ```
 
 Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。
@@ -101,7 +101,7 @@ phase 与 task 使用独立 ID namespace：二者都从 `1` 开始；task ID 在
 
 ## 完成守卫
 
-- **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；blocked task 不算完成。
+- **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；最后一个 task 的完成更新会原子关闭 goal，blocked task 不算完成。
 - **Phase Plan**：phase 的 task 全部 done 后才可更新 phase done；blocked 表示尚未完成。所有 phase done、当前 revision 的 `goal_check` approved 后才可完成 goal。
 - **Goal Plan**：phase 还必须有当前 revision 的 `phase_check` approved；goal 同样需要 `goal_check` approved。
 - check 结果为 `approved | rejected | audit_error`。rejected 让 agent 修复并重审；audit_error 会安全暂停。
@@ -186,7 +186,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md) 与 [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md) 与 [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md)。
 
 ## 协议
 

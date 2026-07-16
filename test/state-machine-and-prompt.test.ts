@@ -44,6 +44,12 @@ describe("Goal 状态机类型完整性", () => {
 });
 
 describe("Three-Plan prompt", () => {
+  test("Task Plan 明确最后一个 task done 会自动收口", () => {
+    const text = buildSystemPrompt(goal({ planType: "task" }));
+    expect(text).toContain("最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal");
+    expect(text).toContain("不要再调用 plan_update(target=goal,status=done)");
+  });
+
   test("Phase Plan 只要求 goal_check", () => {
     const text = buildSystemPrompt(goal({ planType: "phase" }));
     expect(text).toContain("当前是 Phase Plan");
@@ -78,7 +84,7 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
           p(1, "修复auth", [t(1, "登录", "done", { evidence: "npm test ok" })], "done"),
           p(2, "加回归", [
             t(2, "CI钩子", "done", { evidence: "加了 .github/workflows" }),
-            t(3, "跑一次", "in_progress", { activeForm: "正在跑" }),
+            t(3, "跑一次", "in_progress"),
           ], "in_progress"),
         ],
         nextId: 4,

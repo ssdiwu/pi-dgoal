@@ -45,7 +45,7 @@ Ask for a concrete multi-step task normally. When tracking adds value, the agent
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ plan_update(goal, done)
+→ last task done (with evidence) automatically closes the goal
 ```
 
 Task Plan has no startup review, confirmation dialog, or independent auditor, and it grants no extra tool permissions.
@@ -101,7 +101,7 @@ Phase and task identifiers use separate namespaces: each starts at `1`, while ta
 
 ## Completion Guards
 
-- **Task Plan:** every task must carry reproducible evidence and be done; blocked tasks do not count as complete.
+- **Task Plan:** every task must carry reproducible evidence and be done; the final task update atomically closes the goal. Blocked tasks do not count as complete.
 - **Phase Plan:** a phase may be marked done only after every task is done; blocked still means incomplete. The goal requires all phases done plus a current-revision approved `goal_check`.
 - **Goal Plan:** each phase additionally requires a current-revision approved `phase_check`; the goal likewise requires `goal_check` approval.
 - Check results are `approved | rejected | audit_error`. Rejection keeps work active for repair; audit errors pause safely.
@@ -186,7 +186,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), and [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), and [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md).
 
 ## License
 

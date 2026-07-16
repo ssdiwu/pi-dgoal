@@ -71,6 +71,15 @@ describe("Three-Plan public tool surface", () => {
     expect(names.every((name) => name.split("_").length === 2)).toBe(true);
   });
 
+  test("public Plan schemas do not expose the redundant activeForm field", () => {
+    const taskEntry = (taskPlanTool.parameters as any).properties.tasks.items.properties;
+    const phaseTaskEntry = (phasePlanTool.parameters as any).properties.phases.items.properties.tasks.items.properties;
+    expect(taskEntry.activeForm).toBeUndefined();
+    expect(phaseTaskEntry.activeForm).toBeUndefined();
+    expect((planCreateTool.parameters as any).properties.activeForm).toBeUndefined();
+    expect((planUpdateTool.parameters as any).properties.activeForm).toBeUndefined();
+  });
+
   test("an explicit natural-language /dgoal request cannot silently downgrade to Task Plan", async () => {
     authorizeNaturalLanguageStart("请使用 dgoal 完成");
     const result = await execute(taskPlanTool, { objective: "交付", tasks: [{ subject: "实现" }] });
@@ -93,7 +102,52 @@ describe("Three-Plan public tool surface", () => {
     }
   });
 
-  test("Task Plan is direct, task-first, replaceable, and closes without audit", async () => {
+  test("Task Plan automatically closes when its last task completes", async () => {
+    const persistedStatuses: Array<string | null> = [];
+    __setApiForTest({
+      appendEntry: (_type: string, data: { goal?: { status?: string } | null }) => {
+        persistedStatuses.push(data.goal?.status ?? null);
+      },
+    });
+    await execute(taskPlanTool, { objective: "更新文档", tasks: [{ subject: "更新 README" }] });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+
+    const finished = await execute(planUpdateTool, {
+      target: "task",
+      id: 1,
+      status: "done",
+      evidence: "README 已更新并通过检查",
+    });
+
+    expect(finished.details).toMatchObject({ target: "task", taskId: 1, status: "done", completed: true, planType: "task" });
+    expect(finished.content[0].text).toContain("Task Plan 的全部 1 个 task 已完成");
+    expect(finished.content[0].text).toContain("Task Plan 无独立审核");
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(persistedStatuses.slice(-2)).toEqual(["done", null]);
+  });
+
+  test("Task Plan auto-close remains correct when the completion overlay throws", async () => {
+    const overlay = new PlanOverlay();
+    overlay.showDoneThenHide = () => { throw new Error("Spacer is not defined"); };
+    __setPlanOverlayForTest(overlay);
+    try {
+      await execute(taskPlanTool, { objective: "修复展示", tasks: [{ subject: "验证完成路径" }] });
+      await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+      const finished = await execute(planUpdateTool, {
+        target: "task",
+        id: 1,
+        status: "done",
+        evidence: "完成路径已验证",
+      });
+      expect(finished.details).toMatchObject({ completed: true, planType: "task" });
+      expect(__getGoalForTest()).toBeUndefined();
+    } finally {
+      __setPlanOverlayForTest(undefined);
+      overlay.dispose();
+    }
+  });
+
+  test("Task Plan is direct, task-first, replaceable, and auto-closes without audit", async () => {
     const started = await execute(taskPlanTool, {
       objective: "修复键盘",
       tasks: [{ subject: "定位" }, { subject: "修复", blockedBy: [1] }, { subject: "验证", blockedBy: [2] }],
@@ -121,10 +175,8 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("done");
     await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" });
     await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "fixed" });
-    await execute(planUpdateTool, { target: "task", id: 3, status: "in_progress" });
-    await execute(planUpdateTool, { target: "task", id: 3, status: "done", evidence: "tests pass" });
     lines = renderPlanLines(__getGoalForTest(), { expandTasks: false });
-    expect(lines[0]).toContain("3/3 tasks");
+    expect(lines[0]).toContain("2/3 tasks");
     __setGoalForTest({ ...__getGoalForTest()!, iteration: 5, pausedTotalMs: 1_000, contextSummary: "旧任务背景" });
 
     const replaced = await execute(taskPlanTool, { objective: "改为修文档", tasks: [{ subject: "更新 README" }] });
@@ -135,9 +187,8 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.contextSummary).toBeUndefined();
     expect(renderPlanLines(__getGoalForTest(), { expandTasks: false })[0]).toContain("0/1 tasks");
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
-    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
-    const finished = await execute(planUpdateTool, { target: "goal", status: "done", summary: "更新文档", verification: "README 可读" });
-    expect(finished.details.completed).toBe(true);
+    const finished = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
+    expect(finished.details).toMatchObject({ completed: true, planType: "task" });
     expect(__getGoalForTest()).toBeUndefined();
   });
 

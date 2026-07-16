@@ -31,7 +31,6 @@ function makeGoalWithPlan(overrides: Partial<GoalState> = {}): GoalState {
   const task: Task = {
     id: 1,
     subject: "修登录测试",
-    activeForm: "正在修登录测试",
     status: "in_progress",
     evidence: "npm test auth 全过",
   };
