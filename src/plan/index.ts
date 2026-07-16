@@ -47,6 +47,7 @@ export interface Phase {
 
 export interface TaskPlan {
   phases: Phase[];
+  /** Next plan-global task ID; phases use a separate 1-based ID namespace. */
   nextId: number;
   /** Monotonic mutation counter used to invalidate stale check approvals and tool calls. */
   revision?: number;

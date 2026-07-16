@@ -163,7 +163,8 @@ describe("showStatus 回归", () => {
       await Promise.resolve();
       expect(calls.custom).toHaveLength(2);
       expect(widgetCalls).toHaveLength(2);
-      expect(widgetCalls[1]).toEqual(expect.arrayContaining([expect.stringContaining("phase")]));
+      const factory = widgetCalls[1] as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+      expect(factory({}, {}).render(80)).toEqual(expect.arrayContaining([expect.stringContaining("phase")]));
       expect(__getGoalForTest()).toEqual(current);
       expect(__getRuntimeStateForTest()).toEqual(runtimeBefore);
     } finally {

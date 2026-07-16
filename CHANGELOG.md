@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-07-16
+
 ### Breaking
 
 - **三档 Plan 与八工具运行时**（ADR 0038）：公共 agent 工具改为 `task_plan` / `phase_plan` / `goal_plan`、`plan_create` / `plan_read` / `plan_update`、`phase_check` / `goal_check`；旧五个 `dgoal_*` 工具不再注册。新持久化键为 `dgoal-plan-v1`，旧 `dgoal-state` / `dgoal-goal-vnext` 活动状态不迁移。
@@ -23,9 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **check 与 update 职责分离**：`phase_check` / `goal_check` 只写审核结果；`plan_update` 是 task / phase / goal 状态、完成显示与 agent 主动暂停的唯一写入口。approved 不再隐式等于 done。
 - **显式 dgoal 选择 Plan 类型**：`/dgoal` 与自然语言显式启动由 agent 推荐 Phase Plan 或 Goal Plan，确认 UI 只切换 Plan 类型，不再切换验收或预算策略。
 - **任务状态守卫收紧**：task 必须按 `pending → in_progress → done` 推进，done 必须带可复验 evidence；blocked 解除后清理旧原因，且禁止依赖后续 phase 的 task。
+- **Phase/Task ID 双命名空间**（ADR 0039）：phase 与 plan-global task 各自从 ID `1` 连续编号，`nextId` 只分配 task；类型化工具区分同号对象，旧 `dgoal-plan-v1` 保留原编号并继续可写。
 
 ### Fixed
 
+- **持续浮层标题不再因中文宽字符换行**：widget 通过 `Component.render(width)` 获取当前终端宽度，优先保留进度与耗时，并按真实显示宽度动态裁切 objective 与各行内容。
 - **恢复投递失败不再假 active**：`/dgoal resume` 的恢复 prompt 发送失败时恢复原 paused 原因并持久化，避免没有执行 turn 的 active Plan 永久停滞。
 
 ## [0.7.2] - 2026-07-16

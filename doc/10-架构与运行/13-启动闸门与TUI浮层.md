@@ -74,6 +74,7 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
 使用 `setWidget("dgoal-plan", ..., { placement: "aboveEditor" })`：
 
 - Task Plan：heading 为 `done/total tasks`，下方直接列 task；隐藏 phase 永不显示。
+- heading 优先保留进度与耗时，objective 按当前终端显示宽度（含中文宽字符）动态裁切，禁止自动换成第二行。
 - Phase/Goal Plan：heading 同时显示 phase 进度与聚合 task 进度；默认列 phase。
 - `Ctrl+O`：Phase/Goal Plan 展开未完成 phase 的 task；Task Plan 本来就显示 task。
 - 最多 10 行，过长时显示折叠提示。

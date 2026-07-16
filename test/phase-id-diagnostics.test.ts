@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import {
+  __getGoalForTest,
   __resetGoalForTest,
   __setGoalForTest,
   loadGoal,
@@ -20,8 +21,8 @@ const execute = (tool: { execute: Function }, params: Record<string, unknown>) =
 const task = (id: number, subject: string, status: Task["status"] = "pending"): Task => ({ id, subject, status });
 const phase = (id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase => ({ id, subject, tasks, status });
 
-describe("new Plan phase IDs are contiguous", () => {
-  test("phase IDs are 1..N and task IDs remain globally unique", () => {
+describe("new Plan uses separate phase/task ID namespaces", () => {
+  test("phase IDs and plan-global task IDs each start at 1", () => {
     const proposal: PlanProposal = {
       objective: "o", planType: "goal",
       phases: [
@@ -31,22 +32,39 @@ describe("new Plan phase IDs are contiguous", () => {
     };
     const plan = proposalToPlan(proposal);
     expect(plan.phases.map((item) => item.id)).toEqual([1, 2]);
-    expect(plan.phases.flatMap((item) => item.tasks.map((value) => value.id))).toEqual([3, 4, 5]);
-    expect(plan.nextId).toBe(6);
+    expect(plan.phases.flatMap((item) => item.tasks.map((value) => value.id))).toEqual([1, 2, 3]);
+    expect(plan.nextId).toBe(4);
   });
 
   test("empty phases still receive contiguous IDs", () => {
     const plan = proposalToPlan({ objective: "o", planType: "phase", phases: [{ subject: "p1" }, { subject: "p2" }, { subject: "p3" }] });
     expect(plan.phases.map((item) => item.id)).toEqual([1, 2, 3]);
-    expect(plan.nextId).toBe(4);
+    expect(plan.nextId).toBe(1);
   });
 
-  test("blockedBy local indexes map to global task IDs", () => {
+  test("blockedBy local indexes map to plan-global task IDs", () => {
     const plan = proposalToPlan({
       objective: "o", planType: "phase",
       phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" as never }] }],
     });
-    expect(plan.phases[0].tasks[1].blockedBy).toEqual([2]);
+    expect(plan.phases[0].tasks[1].blockedBy).toEqual([1]);
+  });
+
+  test("phase #1 and task #1 remain unambiguous through typed tool targets", async () => {
+    const plan = proposalToPlan({
+      objective: "o", planType: "phase",
+      phases: [{ subject: "阶段一", tasks: [{ subject: "任务一" }] }],
+    });
+    __setGoalForTest({
+      id: "separate-namespaces", objective: "o", planType: "phase", status: "active",
+      startedAt: 1, updatedAt: 1, iteration: 0, plan,
+    } as GoalState);
+    const phaseResult = await execute(planReadTool, { target: "phase", id: 1 });
+    const taskResult = await execute(planReadTool, { target: "task", id: 1 });
+    expect(JSON.parse(phaseResult.content[0].text).subject).toBe("阶段一");
+    expect(JSON.parse(taskResult.content[0].text).subject).toBe("任务一");
+    const created = await execute(planCreateTool, { phaseId: 1, subject: "任务二" });
+    expect(created.content[0].text).toContain("task #2");
   });
 });
 
@@ -89,6 +107,13 @@ describe("phase diagnostics preserve non-contiguous legacy IDs inside dgoal-plan
   test("phaseNumber maps to the real phase ID", async () => {
     const result = await execute(planReadTool, { target: "phase", phaseNumber: 2 });
     expect(String(result.content?.[0]?.text ?? "")).toContain("阶段二");
+  });
+
+  test("legacy shared-namespace nextId remains a safe next task ID", async () => {
+    const result = await execute(planCreateTool, { phaseId: 4, subject: "旧 Plan 后续任务" });
+    expect(String(result.content?.[0]?.text ?? "")).toContain("task #10");
+    expect(__getGoalForTest()?.plan?.nextId).toBe(11);
+    expect(__getGoalForTest()?.plan?.phases[1].tasks.at(-1)?.id).toBe(10);
   });
 
   test("invalid phaseNumber returns the complete mapping", async () => {

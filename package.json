@@ -1,14 +1,16 @@
 {
   "name": "pi-dgoal",
-  "version": "0.7.2",
-  "description": "Pi extension with Task, Phase, and Goal Plans plus revision-safe independent audits.",
+  "version": "0.7.3",
+  "description": "Pi extension for everyday Task Plans and independently audited Phase and Goal Plans.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi",
     "extension",
     "goal",
-    "loop",
+    "task-plan",
+    "phase-plan",
+    "goal-plan",
     "agent"
   ],
   "license": "MIT",

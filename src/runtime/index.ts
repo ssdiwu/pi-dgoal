@@ -1006,8 +1006,7 @@ const MAX_PROPOSAL_RETRIES = 2;
 // 这样用户阶段序号与 phaseId 一致，避免 task 占用 id 导致 #1/#4/#8/#12 的歧义。
 // 旧 plan 的 phase ID 保留原样，不做迁移。
 export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  const phaseCount = proposal.phases.length;
-  let nextId = phaseCount + 1;
+  let nextId = 1;
   const phaseIds = proposal.phases.map((_, index) => index + 1);
   const phases: Phase[] = proposal.phases.map((ph, phaseIndex) => {
     const phaseId = phaseIds[phaseIndex];
@@ -1891,7 +1890,7 @@ export const taskPlanTool = defineTool({
       return { content: [{ type: "text", text: "An audited Phase Plan or Goal Plan is already active; task_plan cannot replace it." }], details: { error: "audited plan active" }, isError: true };
     }
     const objective = String(params.objective ?? "").trim();
-    const built = makeInitialTasks(params.tasks as Array<{ subject: string; description?: string; activeForm?: string; blockedBy?: number[] }>, 2);
+    const built = makeInitialTasks(params.tasks as Array<{ subject: string; description?: string; activeForm?: string; blockedBy?: number[] }>, 1);
     if (!objective || built.error || !built.tasks?.length) {
       return { content: [{ type: "text", text: built.error ?? "Task Plan requires a non-empty objective and at least one task." }], details: { error: built.error ?? "invalid task plan" }, isError: true };
     }
@@ -1904,8 +1903,9 @@ export const taskPlanTool = defineTool({
       planType: "task",
       status: "active",
       plan: {
+        // Phase 与 task 使用独立 ID namespace；隐藏 phase 和公开 task 都可从 #1 开始。
         phases: [{ id: 1, subject: objective, status: "pending", tasks: built.tasks }],
-        nextId: built.tasks.length + 2,
+        nextId: built.tasks.length + 1,
         revision,
       },
       contextSummary: undefined,
@@ -6215,19 +6215,74 @@ function shouldExpandTasksInPersistentOverlay(status: Phase["status"]): boolean 
   return status === "pending" || status === "in_progress";
 }
 
-export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOptions): string[] {
+function fitOverlayLines(lines: string[], width: number | undefined): string[] {
+  if (width === undefined) return lines;
+  if (!Number.isFinite(width) || width <= 0) return [];
+  const maxWidth = Math.floor(width);
+  return lines.map((line) => truncateToWidth(line, maxWidth, "…"));
+}
+
+function formatCompactElapsed(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  if (totalSeconds >= 3600) return `${Math.floor(totalSeconds / 3600)}h`;
+  if (totalSeconds >= 60) return `${Math.floor(totalSeconds / 60)}m`;
+  return `${totalSeconds}s`;
+}
+
+function buildOverlayHeading(
+  goal: GoalState,
+  progress: string,
+  compactProgress: string,
+  elapsed: string,
+  compactElapsed: string,
+  width: number | undefined,
+): string {
+  const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
+  if (width === undefined) return `🎯 ${truncateLine(objectiveFirstLine, 40)} · ${progress} ⏱️ ${elapsed}`;
+  if (!Number.isFinite(width) || width <= 0) return "";
+
+  const maxWidth = Math.floor(width);
+  const prefix = "🎯 ";
+  const suffixes = [
+    ` · ${progress} ⏱️ ${elapsed}`,
+    ` · ${compactProgress} ⏱${compactElapsed}`,
+  ];
+  for (const suffix of suffixes) {
+    const objectiveWidth = maxWidth - visibleWidth(prefix) - visibleWidth(suffix);
+    if (objectiveWidth < 1) continue;
+    const objective = truncateToWidth(objectiveFirstLine, objectiveWidth, "…");
+    return `${prefix}${objective}${suffix}`;
+  }
+
+  const compactStatus = `${compactProgress} ⏱${compactElapsed}`;
+  if (visibleWidth(compactStatus) <= maxWidth) return compactStatus;
+  const progressWithTimer = `${compactProgress} ⏱`;
+  if (visibleWidth(progressWithTimer) <= maxWidth) return progressWithTimer;
+  if (visibleWidth(compactProgress) <= maxWidth) return compactProgress;
+  return truncateToWidth(compactProgress, maxWidth, "…");
+}
+
+export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOptions, width?: number): string[] {
   if (!goal || !goal.plan || goal.plan.phases.length === 0) return [];
   if (goal.status === "pending") return [];
 
   const planType = resolvePlanType(goal);
   const visiblePhases = goal.plan.phases;
   const phaseDone = (phase: Phase) => isDonePlanStatus(phase.status);
-  const elapsed = formatElapsed(getGoalElapsedMs(goal));
+  const elapsedMs = getGoalElapsedMs(goal);
+  const elapsed = formatElapsed(elapsedMs);
+  const compactElapsed = formatCompactElapsed(elapsedMs);
   const taskPlanPhase = visiblePhases[0];
+  const doneTasks = visiblePhases.reduce((sum, phase) => sum + countDoneTasks(phase), 0);
+  const totalTasks = visiblePhases.reduce((sum, phase) => sum + phase.tasks.length, 0);
+  const donePhases = visiblePhases.filter(phaseDone).length;
   const progress = planType === "task"
-    ? `${countDoneTasks(taskPlanPhase)}/${taskPlanPhase.tasks.length} tasks`
-    : `${visiblePhases.filter(phaseDone).length}/${visiblePhases.length} phases · ${visiblePhases.reduce((sum, phase) => sum + countDoneTasks(phase), 0)}/${visiblePhases.reduce((sum, phase) => sum + phase.tasks.length, 0)} tasks`;
-  const heading = `🎯 ${truncateLine(goal.objective, 40)} · ${progress} ⏱️ ${elapsed}`;
+    ? `${doneTasks}/${totalTasks} tasks`
+    : `${donePhases}/${visiblePhases.length} phases · ${doneTasks}/${totalTasks} tasks`;
+  const compactProgress = planType === "task"
+    ? `${doneTasks}/${totalTasks}`
+    : `${donePhases}/${visiblePhases.length}p ${doneTasks}/${totalTasks}t`;
+  const heading = buildOverlayHeading(goal, progress, compactProgress, elapsed, compactElapsed, width);
   const activityLine = formatCheckActivityLine(currentCheckSnapshot);
 
   const bodyLines: string[] = [];
@@ -6268,11 +6323,11 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
       ? t("overlay.hideTasks", { commands })
       : t("overlay.showTasks", { commands });
   const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2; // heading + 底部 hint
-  if (bodyLines.length <= maxBodyLines) return [heading, ...bodyLines, hintLine];
+  if (bodyLines.length <= maxBodyLines) return fitOverlayLines([heading, ...bodyLines, hintLine], width);
 
   const visibleBodyLines = bodyLines.slice(0, Math.max(0, maxBodyLines - 1));
   const hidden = bodyLines.length - visibleBodyLines.length;
-  return [heading, ...visibleBodyLines, t("overlay.more", { count: hidden }), hintLine];
+  return fitOverlayLines([heading, ...visibleBodyLines, t("overlay.more", { count: hidden }), hintLine], width);
 }
 
 // =============================================================================
@@ -6487,15 +6542,19 @@ export class PlanOverlay {
       const goal = this.doneSnapshot ?? goalRuntimeState.currentGoal;
       if (goal && isGoalRunning(goal.status)) this.startTick();
       else this.stopTick();
-      const lines = renderPlanLines(goal, {
-        hiddenPhaseIds: new Set(),
+      const renderOptions = {
+        hiddenPhaseIds: new Set<number>(),
         expandTasks: this.expandTasks,
-      });
-      if (lines.length === 0) {
+      };
+      const preview = renderPlanLines(goal, renderOptions);
+      if (preview.length === 0) {
         this.ui.setWidget(PLAN_WIDGET_KEY, undefined);
         return;
       }
-      this.ui.setWidget(PLAN_WIDGET_KEY, lines, { placement: "aboveEditor" });
+      this.ui.setWidget(PLAN_WIDGET_KEY, () => ({
+        render: (width: number) => renderPlanLines(goal, renderOptions, width),
+        invalidate: () => {},
+      }), { placement: "aboveEditor" });
     } catch {
       // 异步/同步 TUI 渲染失败不能形成未捕获异常或阻断状态机。
     }

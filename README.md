@@ -2,19 +2,27 @@
 
 English | [中文](./README-zh.md)
 
-A Pi extension with one Task Plan runtime and three assurance levels: agents can structure ordinary multi-step work by default, while explicitly activated dgoal runs can add independent phase and goal audits.
+A Pi extension that matches planning assurance to the work: **Task Plan** gives agents a lightweight default for ordinary multi-step execution, while explicit dgoal runs can add independently audited **Phase Plans** or **Goal Plans** when the outcome needs a stronger completion contract.
 
-> **The next release is a breaking change** (ADR 0038): the old five-tool surface becomes eight two-word tools; Task Plan becomes the everyday default; Phase Plan and Goal Plan still require explicit dgoal activation. Old persisted state is not migrated.
+> **v0.7.3 is a breaking release** (ADR 0038): the old five-tool surface becomes eight two-word tools; Task Plan becomes the everyday default; Phase Plan and Goal Plan still require explicit dgoal activation. Old persisted state is not migrated.
 
-## Three Plan Types
+## Choose the Right Plan
 
-| Plan | Who can start it | Structure | Independent audit |
+| Plan | Choose it when | Who can start it | Independent audit |
 |---|---|---|---|
-| **Task Plan** | Agent, when useful | Hidden single phase + tasks | None |
-| **Phase Plan** | User explicitly invokes `/dgoal` or asks to use dgoal | 1..N phases + tasks + goal contract | `goal_check` |
-| **Goal Plan** | Same | 1..N phases + tasks + phase/goal contracts | `phase_check` + `goal_check` |
+| **Task Plan** | Clear multi-step work needs visible progress, not ceremony | Agent, when useful | None |
+| **Phase Plan** | The goal needs a frozen completion contract and one final independent check | User explicitly invokes `/dgoal` or asks to use dgoal | `goal_check` |
+| **Goal Plan** | Each delivery stage and the final outcome both need independent verification | Same | `phase_check` + `goal_check` |
 
-Task Plan is the default structured path for clear multi-step execution, not a ritual for every reply. Discussions, explanations, capability questions, and one-step answers should not create a plan. An agent may not silently upgrade work to Phase Plan or Goal Plan; it can only recommend `/dgoal` when frozen acceptance or independent auditing is warranted.
+### Start with Task Plan
+
+Task Plan is the everyday structured path: the agent can turn a normal request into a visible, evidence-backed task list and keep moving until it closes. It skips proposal review, confirmation, and auditor overhead, so it fits implementation, debugging, documentation, migration, and other clear multi-step work.
+
+It is not a ritual for every reply: discussions, explanations, capability questions, and one-step answers should not create a plan. An agent may not silently upgrade work to Phase Plan or Goal Plan; it can only recommend `/dgoal` when the user needs a frozen acceptance contract or independent auditing.
+
+### Escalate Deliberately
+
+Phase Plan adds a final independent review for the whole goal. Goal Plan adds a separate independent review at every phase **and** at final completion. Both are explicit user choices through `/dgoal`, so higher assurance never appears as hidden process overhead.
 
 ## Install
 
@@ -89,6 +97,8 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 
 Tool names follow a two-word rule and do not use a `dgoal_` prefix. `dgoal` remains the product and user-command name.
 
+Phase and task identifiers use separate namespaces: each starts at `1`, while task IDs remain unique across the whole Plan so `blockedBy` can reference tasks in the same or an earlier phase. Typed tool targets disambiguate phase `#1` from task `#1`; `nextId` allocates tasks only. Existing persisted Plans keep their original IDs.
+
 ## Completion Guards
 
 - **Task Plan:** every task must carry reproducible evidence and be done; blocked tasks do not count as complete.
@@ -113,7 +123,7 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 ## TUI
 
-- **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings show aggregate progress.
+- **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
 - **`Ctrl+O`:** expands tasks under unfinished Phase/Goal Plan phases.
 - **`/dgoal s` modal:** shows the full visible plan; Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
@@ -176,7 +186,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), and [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), and [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md).
 
 ## License
 

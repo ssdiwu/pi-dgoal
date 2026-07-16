@@ -1070,7 +1070,7 @@ describe("切片4 · formatProposalForConfirm", () => {
 });
 
 describe("切片4 · proposalToPlan 转换（id 分配）", () => {
-  test("phase 和 task 顺序分配 id，nextId 递增", () => {
+  test("phase/task 独立从 1 分配，nextId 只推进 task", () => {
     const proposal: PlanProposal = {
       objective: "o",
       acceptanceCriteria: criteria,
@@ -1080,14 +1080,10 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
       ],
     };
     const plan = proposalToPlan(proposal);
-    // phase ID 连续（1,2），task 从 phaseCount+1 起全局唯一。
-    expect(plan.phases[0].id).toBe(1);
-    expect(plan.phases[1].id).toBe(2);
+    expect(plan.phases.map((phase) => phase.id)).toEqual([1, 2]);
     expect(plan.phases.map((phase) => phase.acceptanceCriteria)).toEqual([criteria, criteria]);
-    expect(plan.phases[0].tasks[0].id).toBe(3);
-    expect(plan.phases[0].tasks[1].id).toBe(4);
-    expect(plan.phases[1].tasks[0].id).toBe(5);
-    expect(plan.nextId).toBe(6);
+    expect(plan.phases.flatMap((phase) => phase.tasks.map((task) => task.id))).toEqual([1, 2, 3]);
+    expect(plan.nextId).toBe(4);
   });
 
   test("初始 task 状态为 pending", () => {
@@ -1114,7 +1110,7 @@ describe("切片4 · proposalToPlan 转换（id 分配）", () => {
       phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" }] }],
     };
     const plan = proposalToPlan(proposal);
-    // phaseCount=1 → phaseId=1, t1=2, t2=3；t2 局部索引 1 → t1 全局 id 2
-    expect(plan.phases[0].tasks[1].blockedBy).toEqual([2]);
+    // phase 与 task 使用独立 namespace；t2 局部索引 1 → plan-global task id 1。
+    expect(plan.phases[0].tasks[1].blockedBy).toEqual([1]);
   });
 });

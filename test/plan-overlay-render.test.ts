@@ -1,6 +1,7 @@
 // 切片 3：计划浮层渲染纯函数测试。
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 3 验收。
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import { __resetGoalForTest, __setCheckSnapshotForTest, __setGoalForTest, __setI18nForTest, PlanOverlay, renderPlanLines, type GoalState, type Phase, type Task, type TaskPlan } from "../index.ts";
 
@@ -143,7 +144,7 @@ describe("切片3 · done phase 持久显示", () => {
 
 describe("切片3 · PlanOverlay reload 恢复", () => {
   test("重载恢复后 done phase 仍持久显示", () => {
-    const widgets: Array<string[] | undefined> = [];
+    const widgets: unknown[] = [];
     const overlay = new PlanOverlay();
     const restored = goal([
       p(1, "已完成A", [], "done"),
@@ -152,15 +153,17 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
 
     __setGoalForTest(restored);
     overlay.setUI({
-      setWidget: (_key, value) => widgets.push(value as string[] | undefined),
+      setWidget: (_key, value) => widgets.push(value),
       getToolsExpanded: () => false,
     });
 
     try {
       overlay.update();
       overlay.update();
-      expect(widgets.at(-1)?.some((line) => line.includes("已完成A"))).toBe(true);
-      expect(widgets.at(-1)?.some((line) => line.includes("进行中B"))).toBe(true);
+      const factory = widgets.at(-1) as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+      const lines = factory({}, {}).render(100);
+      expect(lines.some((line) => line.includes("已完成A"))).toBe(true);
+      expect(lines.some((line) => line.includes("进行中B"))).toBe(true);
     } finally {
       overlay.dispose();
       __resetGoalForTest();
@@ -311,11 +314,47 @@ describe("切片3 · 10 行折叠", () => {
     expect(lines.length).toBeLessThanOrEqual(10);
   });
 
-  test("objective 过长被截断", () => {
-    const long = "甲".repeat(100);
-    const g = goal([p(1, "阶段", [], "pending")], { objective: long });
-    const lines = renderPlanLines(g, noHide);
-    expect(lines[0].length).toBeLessThan(long.length);
+  test("heading 按当前终端宽度裁切 objective，并保留进度与耗时", () => {
+    const width = 52;
+    const long = "这是一个很长的中文 Task Plan 标题，需要根据当前终端宽度主动裁切";
+    const g = goal([p(0, long, [t(1, "任务")], "pending")], { objective: long, planType: "task" });
+    const lines = renderPlanLines(g, noHide, width);
+    expect(visibleWidth(lines[0])).toBeLessThanOrEqual(width);
     expect(lines[0]).toContain("…");
+    expect(lines[0]).toContain("0/1 tasks");
+    expect(lines[0]).toContain("⏱️");
+  });
+
+  test("极窄宽度优先保留紧凑进度/耗时，非正宽度不输出越界行", () => {
+    const g = goal([p(0, "内部", [t(1, "任务")])], { objective: "极窄终端标题", planType: "task" });
+    const narrow = renderPlanLines(g, noHide, 10);
+    expect(narrow.every((line) => visibleWidth(line) <= 10)).toBe(true);
+    expect(narrow[0]).toContain("0/1");
+    expect(narrow[0]).toContain("⏱");
+    expect(renderPlanLines(g, noHide, 0)).toEqual([]);
+  });
+
+  test("PlanOverlay 通过 widget Component 的 render(width) 使用实时终端宽度", () => {
+    let widget: unknown;
+    const overlay = new PlanOverlay();
+    __setGoalForTest(goal([p(0, "内部", [t(1, "任务")])], {
+      objective: "很长很长很长很长很长很长很长很长的 Task Plan 标题",
+      planType: "task",
+    }));
+    overlay.setUI({
+      setWidget: (_key, value) => { widget = value; },
+      getToolsExpanded: () => false,
+    });
+    try {
+      overlay.update();
+      expect(typeof widget).toBe("function");
+      const component = (widget as (tui: unknown, theme: unknown) => { render(width: number): string[] })({}, {});
+      const lines = component.render(44);
+      expect(lines.every((line) => visibleWidth(line) <= 44)).toBe(true);
+      expect(lines[0]).toContain("0/1 tasks");
+    } finally {
+      overlay.dispose();
+      __resetGoalForTest();
+    }
   });
 });

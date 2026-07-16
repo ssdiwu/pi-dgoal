@@ -79,21 +79,25 @@ describe("Three-Plan public tool surface", () => {
     expect(started.details).toMatchObject({ planType: "task", revision: 0 });
     expect(__getGoalForTest()?.planType).toBe("task");
     expect(__getGoalForTest()?.plan?.phases).toHaveLength(1);
+    expect(__getGoalForTest()?.plan?.phases[0].id).toBe(1);
+    expect(__getGoalForTest()?.plan?.nextId).toBe(4);
 
     let lines = renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false });
     expect(lines[0]).toContain("0/3 tasks");
     expect(lines.some((line) => line.includes("定位"))).toBe(true);
     expect(lines.some((line) => line.includes("修复键盘 · 0/3 tasks"))).toBe(true);
 
-    // task ids start at 2; dependency #1 resolves to task id 2, so the first task is #2.
-    await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" });
+    const initialTasks = __getGoalForTest()?.plan?.phases[0].tasks ?? [];
+    expect(initialTasks.map((task) => task.id)).toEqual([1, 2, 3]);
+    expect(initialTasks[1]?.blockedBy).toEqual([1]);
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
     expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("in_progress");
-    await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "located" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "located" });
     expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("done");
+    await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" });
+    await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "fixed" });
     await execute(planUpdateTool, { target: "task", id: 3, status: "in_progress" });
-    await execute(planUpdateTool, { target: "task", id: 3, status: "done", evidence: "fixed" });
-    await execute(planUpdateTool, { target: "task", id: 4, status: "in_progress" });
-    await execute(planUpdateTool, { target: "task", id: 4, status: "done", evidence: "tests pass" });
+    await execute(planUpdateTool, { target: "task", id: 3, status: "done", evidence: "tests pass" });
     lines = renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false });
     expect(lines[0]).toContain("3/3 tasks");
     __setGoalForTest({ ...__getGoalForTest()!, iteration: 5, pausedTotalMs: 1_000, contextSummary: "旧任务背景" });
@@ -105,11 +109,27 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()).toMatchObject({ iteration: 0, pausedTotalMs: 0 });
     expect(__getGoalForTest()?.contextSummary).toBeUndefined();
     expect(renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false })[0]).toContain("0/1 tasks");
-    await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" });
-    await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "README updated" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
     const finished = await execute(planUpdateTool, { target: "goal", status: "done", summary: "更新文档", verification: "README 可读" });
     expect(finished.details.completed).toBe(true);
     expect(__getGoalForTest()).toBeUndefined();
+  });
+
+  test("pre-change Task Plan IDs remain mutable after reload", async () => {
+    __setGoalForTest({
+      id: "legacy-task-ids", objective: "旧 Task Plan", planType: "task", status: "active",
+      startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: {
+        revision: 0,
+        nextId: 3,
+        phases: [{ id: 1, subject: "旧内部 phase", status: "pending", tasks: [{ id: 2, subject: "旧任务", status: "pending" }] }],
+      },
+    } as never);
+    expect((await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" })).details.status).toBe("in_progress");
+    const created = await execute(planCreateTool, { subject: "后续任务" });
+    expect(created.content[0].text).toContain("task #3");
+    expect(__getGoalForTest()?.plan?.phases[0].tasks.map((task) => task.id)).toEqual([2, 3]);
   });
 
   test("Phase Plan uses explicit proposal confirmation and persists no legacy policy/budget fields", async () => {
@@ -177,7 +197,7 @@ describe("Three-Plan public tool surface", () => {
     const read = await execute(planReadTool, { target: "plan" });
     const parsed = JSON.parse(read.content[0].text);
     expect(parsed.planType).toBe("task");
-    expect(parsed.tasks).toHaveLength(2);
+    expect(parsed.tasks.map((task: { id: number }) => task.id)).toEqual([1, 2]);
     expect(parsed.phases).toBeUndefined();
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");

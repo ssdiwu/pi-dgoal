@@ -2,19 +2,27 @@
 
 [English](./README.md) | 中文
 
-Pi 扩展：用同一套 Task Plan 运行时承载三档计划，让 agent 为普通多步任务自动建计划，也能在用户显式启动 dgoal 后获得独立 phase / goal 审核保障。
+Pi 扩展：让计划保障强度匹配工作本身。**Task Plan** 是 agent 处理日常多步任务的轻量默认；用户显式启动 dgoal 后，可选择带独立审核的 **Phase Plan** 或 **Goal Plan**，为更重要的交付冻结完成契约。
 
-> **下一版本为破坏性升级**（ADR 0038）：公共工具从旧五工具改为八个两词工具；Task Plan 成为日常默认；Phase Plan / Goal Plan 仍需显式 dgoal 激活。旧持久态不迁移。
+> **v0.7.3 是破坏性升级**（ADR 0038）：公共工具从旧五工具改为八个两词工具；Task Plan 成为日常默认；Phase Plan / Goal Plan 仍需显式 dgoal 激活。旧持久态不迁移。
 
-## 三档 Plan
+## 选择合适的 Plan
 
-| Plan | 谁能启动 | 结构 | 独立审核 |
+| Plan | 适用场景 | 谁能启动 | 独立审核 |
 |---|---|---|---|
-| **Task Plan** | agent 可按需主动建立 | 隐藏单 phase + 多 task | 无 |
-| **Phase Plan** | 用户显式 `/dgoal` 或明确要求使用 dgoal | 1..N phase + task + goal 验收契约 | `goal_check` |
-| **Goal Plan** | 同上 | 1..N phase + task + phase/goal 验收契约 | `phase_check` + `goal_check` |
+| **Task Plan** | 明确多步工作需要可见进度，但不值得走完整仪式 | agent 可按需主动建立 | 无 |
+| **Phase Plan** | 目标需要冻结完成契约和一次最终独立核验 | 用户显式 `/dgoal` 或明确要求使用 dgoal | `goal_check` |
+| **Goal Plan** | 每个交付阶段和最终结果都需要独立验证 | 同上 | `phase_check` + `goal_check` |
 
-Task Plan 是明确多步执行任务的默认结构化入口，但不是每条消息的固定仪式：讨论、解释、能力问答和单步回答不建计划。AI 不得自行升级到 Phase Plan / Goal Plan；若需要冻结验收契约或独立审核，只能建议用户启动 `/dgoal`。
+### 先从 Task Plan 开始
+
+Task Plan 是日常结构化执行入口：agent 可以把普通请求转成可见、带证据的 task 列表，并持续推进直到关闭。它跳过提案预审、确认 UI 与 auditor 开销，适合实现、调试、文档、迁移等明确的多步工作。
+
+它不是每条消息都要走的仪式：讨论、解释、能力问答和单步回答不建计划。AI 不得自行升级到 Phase Plan / Goal Plan；若用户需要冻结验收契约或独立审核，只能建议用户启动 `/dgoal`。
+
+### 有意识地升级保障
+
+Phase Plan 为整个目标增加一次最终独立审核；Goal Plan 则在**每个 phase**和最终完成时各做一次独立审核。二者都必须由用户通过 `/dgoal` 显式选择，保障强度不会变成隐藏的流程负担。
 
 ## 安装
 
@@ -89,6 +97,8 @@ goal_plan → [phase_check → plan_update(phase, done)] × N
 
 工具名遵循“两词原则”，不带 `dgoal_` 前缀；`dgoal` 只保留为产品名与用户命令。
 
+phase 与 task 使用独立 ID namespace：二者都从 `1` 开始；task ID 在整个 Plan 内保持唯一，使 `blockedBy` 可引用同 phase 或更早 phase 的 task。类型化工具入口可区分 phase `#1` 与 task `#1`；`nextId` 只分配 task。已有持久 Plan 保留原编号。
+
 ## 完成守卫
 
 - **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；blocked task 不算完成。
@@ -113,7 +123,7 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 ## TUI
 
-- **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 显示聚合进度。
+- **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 保留聚合进度，并按当前终端显示宽度裁切目标标题。
 - **`Ctrl+O`**：展开 Phase/Goal Plan 的未完成 phase task。
 - **`/dgoal s` Modal**：查看完整可见 Plan；Task Plan 不显示内部隐藏 phase。
 - **状态栏**：显示 starting / active / paused / done。
@@ -176,7 +186,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md) 与 [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)。
 
 ## 协议
 

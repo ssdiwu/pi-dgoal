@@ -129,7 +129,9 @@ describe("proposalToPlan 转换 + plan 注入", () => {
     const plan = proposalToPlan(proposal);
     expect(plan.phases).toHaveLength(3);
     expect(plan.phases[0].tasks).toHaveLength(2);
-    expect(plan.nextId).toBe(10); // 3 phase + 6 task = 7（phase 1, task 1,2, phase 2, task 3,4, phase 3, task 5,6, nextId 7）
+    expect(plan.phases.map((phase) => phase.id)).toEqual([1, 2, 3]);
+    expect(plan.phases.flatMap((phase) => phase.tasks.map((task) => task.id))).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(plan.nextId).toBe(7);
 
     // 注入到 goal
     const goal: GoalState = { ...makeActiveGoal(), plan, objective: proposal.objective };

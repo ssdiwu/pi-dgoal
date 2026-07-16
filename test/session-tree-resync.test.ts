@@ -198,7 +198,10 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     };
     try {
       resyncGoalFromSession(ctx as never);
-      expect(widgets.some((item) => item.key === "dgoal-plan" && Array.isArray(item.value) && item.value.length > 0)).toBe(true);
+      const widget = widgets.find((item) => item.key === "dgoal-plan")?.value;
+      expect(typeof widget).toBe("function");
+      const factory = widget as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+      expect(factory({}, {}).render(80).length).toBeGreaterThan(0);
     } finally {
       disposePlanOverlay();
     }

@@ -1,6 +1,6 @@
 # doc 文档导航
 
-> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）。
+> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）。
 
 ## 阅读顺序
 
