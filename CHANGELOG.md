@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.6] - 2026-07-17
+
 ### Changed
 
 - **Task Plan 自动收口与进行中投影**：最后一个带 evidence 的 task 进入 `done` 时，运行时在同一次 `plan_update(target=task)` 中原子关闭 goal，不再依赖模型追加 `plan_update(target=goal,status=done)`；移除冗余的 `activeForm` 字段，持续显示浮层改用任务标题后的循环 `. / .. / ...` 表示进行中。
