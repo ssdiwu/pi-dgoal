@@ -61,10 +61,10 @@ describe("new Plan uses separate phase/task ID namespaces", () => {
     } as GoalState);
     const phaseResult = await execute(planReadTool, { target: "phase", id: 1 });
     const taskResult = await execute(planReadTool, { target: "task", id: 1 });
-    expect(phaseResult.content[0].text).toContain("phase #1 · pending · 阶段一");
-    expect(taskResult.content[0].text).toContain("task #1 · pending · 任务一");
-    expect((phaseResult.details.value as { subject: string }).subject).toBe("阶段一");
-    expect((taskResult.details.value as { subject: string }).subject).toBe("任务一");
+    expect(phaseResult.content[0].text).toContain("phase #1 · ○ 阶段一");
+    expect(taskResult.content[0].text).toContain("task #1 · ○ 任务一");
+    expect(phaseResult.details.value).toBeUndefined();
+    expect(taskResult.details.value).toBeUndefined();
     const created = await execute(planCreateTool, { phaseId: 1, subject: "任务二" });
     expect(created.content[0].text).toContain("task #2");
   });
@@ -123,6 +123,18 @@ describe("phase diagnostics preserve non-contiguous legacy IDs inside dgoal-plan
     const body = String(result.content?.[0]?.text ?? "");
     expect(body).toContain("阶段一");
     expect(body).toContain("phaseId #4");
+  });
+
+  test("plan_read tolerates old phases without a tasks array", async () => {
+    __setGoalForTest({
+      ...nonContiguousGoal(),
+      plan: {
+        ...nonContiguousGoal().plan!,
+        phases: [{ id: 1, subject: "无任务旧 phase", status: "pending" } as never],
+      },
+    });
+    const result = await execute(planReadTool, { target: "phase", id: 1 });
+    expect(result.content[0].text).toContain("无任务旧 phase");
   });
 
   test("phaseId and phaseNumber are mutually exclusive", async () => {

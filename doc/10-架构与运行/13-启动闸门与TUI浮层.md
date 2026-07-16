@@ -73,8 +73,8 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
 
 使用 `setWidget("dgoal-plan", ..., { placement: "aboveEditor" })`：
 
-- 默认只显示 heading、聚合进度、耗时与 `Ctrl+O` 提示，避免日常操作淹没对话；Task Plan 的隐藏 phase 永不显示。
-- `Ctrl+O`：展开当前 Plan 的 phase/task 与建检活性；再次按下收起。goal 完成后的 10 秒快照则完整展示所有 phase/task，不受日常 10 行限制。
+- Task Plan 默认显示平铺 task，隐藏 phase 永不显示；Phase/Goal Plan 默认显示 phase 主干。
+- `Ctrl+O`：仅展开 Phase/Goal Plan 未完成 phase 下的 task 与建检活性；再次按下收起。goal 完成后的 10 秒快照则完整展示所有 phase/task，不受日常 10 行限制。
 - heading 优先保留进度与耗时，objective 按当前终端显示宽度（含中文宽字符）动态裁切，禁止自动换成第二行。
 - 展开中的 active Plan 最多 10 行，过长时显示折叠提示。
 - done 文本使用删除线，状态用 `○ / ◐ / ✓ / ⚠` 字符，层级用固定基色。

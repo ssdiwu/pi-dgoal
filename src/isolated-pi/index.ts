@@ -25,3 +25,25 @@ export function consumeBufferedLines(
   for (const line of lines) onLine(line);
   return nextBuffer;
 }
+
+export {
+  __resetSpawnManagedSubprocessForTest,
+  __setSpawnManagedSubprocessForTest,
+  getPiInvocation,
+  spawnIsolatedPi,
+  SUBPROCESS_FORCE_KILL_TIMEOUT_MS,
+  terminateIsolatedPi,
+  type SpawnManagedSubprocess,
+} from "./process.ts";
+export {
+  bindAbort as __bindIsolatedPiAbortForTest,
+  classifyCheckEvent,
+  fingerprintAuditWorkspace,
+  runIsolatedPiCheck,
+  type IsolatedAuditorErrorInfo,
+  type IsolatedCheckLivenessState,
+  type IsolatedCheckResult,
+  type IsolatedCheckSnapshot,
+  type IsolatedCheckUpdate,
+  type RunIsolatedPiCheckArgs,
+} from "./check.ts";

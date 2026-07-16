@@ -13,11 +13,14 @@ import dgoal, {
   __setPlanOverlayForTest,
   __setProposalSemanticReviewForTest,
   disposePlanOverlay,
+  buildBodyLines,
   goalCheckTool,
+  loadGoal,
   phaseCheckTool,
   phasePlanTool,
   planReadTool,
   resyncGoalFromSession,
+  sendContinuation,
   type GoalState,
   type Phase,
   type Task,
@@ -205,6 +208,73 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     } finally {
       disposePlanOverlay();
     }
+  });
+
+  test("resync 后丢弃同 goal ID/revision 的旧 goal_check 结果", async () => {
+    __resetGoalForTest();
+    let resolveAudit!: (result: { approved: boolean; aborted: boolean; output: string; liveness: "approved" }) => void;
+    const oldGoal = makeGoal({
+      planType: "phase", verification: "bun test", acceptanceCriteria: [{ criterion: "通过", evidence: "bun test" }],
+      plan: { revision: 0, phases: [phase(1, "p1", [{ ...task(1, "a", "done"), evidence: "bun test" }], "done")], nextId: 2 },
+    });
+    __setGoalForTest(oldGoal);
+    __setCompletionAuditorOverrideForTest(() => new Promise((resolve) => { resolveAudit = resolve; }));
+    const pending = goalCheckTool.execute("test", { summary: "完成", verification: "bun test" }, undefined, undefined, makeCtx([dgoalEntry(oldGoal)]) as never);
+    const newBranchGoal = { ...oldGoal, updatedAt: 2, plan: { ...oldGoal.plan!, phases: oldGoal.plan!.phases.map((item) => ({ ...item, subject: "新分支 goal" })) } };
+    resyncGoalFromSession(makeCtx([dgoalEntry(newBranchGoal)]) as never);
+    resolveAudit({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" });
+    const result = await pending;
+    expect(result.details?.stale).toBe(true);
+    expect(__getGoalForTest()?.goalCheck).toBeUndefined();
+    __setCompletionAuditorOverrideForTest(undefined);
+  });
+
+  test("resync 后丢弃同 goal ID/revision 的旧 phase_check 结果", async () => {
+    __resetGoalForTest();
+    let resolveAudit!: (result: { approved: boolean; aborted: boolean; output: string; liveness: "approved" }) => void;
+    const oldGoal = makeGoal({
+      planType: "goal",
+      plan: { revision: 0, phases: [{ ...phase(1, "p1", [{ ...task(1, "a", "done"), evidence: "bun test" }], "in_progress"), acceptanceCriteria: [{ criterion: "通过", evidence: "bun test" }] }], nextId: 2 },
+    });
+    __setGoalForTest(oldGoal);
+    __setPhaseCheckOverrideForTest(() => new Promise((resolve) => { resolveAudit = resolve; }));
+    const pending = phaseCheckTool.execute("test", { phaseId: 1 }, undefined, undefined, makeCtx([dgoalEntry(oldGoal)]) as never);
+    const newBranchGoal = { ...oldGoal, updatedAt: 2, plan: { ...oldGoal.plan!, phases: oldGoal.plan!.phases.map((item) => ({ ...item, subject: "新分支 phase" })) } };
+    resyncGoalFromSession(makeCtx([dgoalEntry(newBranchGoal)]) as never);
+    resolveAudit({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" });
+    const result = await pending;
+    expect(result.details?.stale).toBe(true);
+    expect(__getGoalForTest()?.plan?.phases[0].subject).toBe("新分支 phase");
+    expect(__getGoalForTest()?.plan?.phases[0].check).toBeUndefined();
+    __setPhaseCheckOverrideForTest(undefined);
+  });
+
+  test("resync 取消已发送但尚未派发的旧 continuation", async () => {
+    __resetGoalForTest();
+    const oldGoal = makeGoal();
+    __setGoalForTest(oldGoal);
+    const handlers = captureHandlers();
+    let resolveSend!: () => void;
+    let prompt = "";
+    const pi = { sendUserMessage: (value: string) => { prompt = value; return new Promise<void>((resolve) => { resolveSend = resolve; }); } } as never;
+    const context = { ...makeCtx([dgoalEntry(oldGoal)]), isIdle: () => true } as never;
+    const pending = sendContinuation(pi, context, oldGoal);
+    await Promise.resolve();
+    resyncGoalFromSession(makeCtx([dgoalEntry(makeGoal({ updatedAt: 2 }))]) as never);
+    expect(handlers.input({ source: "extension", text: prompt }, context)).toEqual({ action: "handled" });
+    resolveSend();
+    await pending;
+  });
+
+  test("旧持久 phase 缺 tasks 时 load/resync 规范化并保护 TUI 渲染", () => {
+    __resetGoalForTest();
+    const legacy = makeGoal({ plan: { phases: [{ id: 1, subject: "legacy", status: "in_progress" } as never], nextId: 2 } });
+    const context = makeCtx([dgoalEntry(legacy)]);
+    expect(loadGoal(context as never)?.plan?.phases[0].tasks).toEqual([]);
+    expect(() => resyncGoalFromSession(context as never)).not.toThrow();
+    const restored = __getGoalForTest();
+    expect(restored?.plan?.phases[0].tasks).toEqual([]);
+    expect(() => buildBodyLines(restored)).not.toThrow();
   });
 
   test("UI 抛错不阻断状态重同步（TUI 边界防护）", () => {

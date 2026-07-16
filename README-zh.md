@@ -90,14 +90,14 @@ goal_plan → [phase_check → plan_update(phase, done)] × N
 | `phase_plan` | 显式启动 Phase Plan；冻结 goal 验收契约并进入确认 UI |
 | `goal_plan` | 显式启动 Goal Plan；冻结 phase + goal 验收契约并进入确认 UI |
 | `plan_create` | 只新增 task；不能新增 phase |
-| `plan_read` | 读取 Plan、goal、phase 或 task；纯读，正文只显示紧凑摘要，结构化详情可展开（Task Plan 隐藏 phase） |
+| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：plan/goal 返回全 Plan 的 phase/task 聚合进度摘要，phase/task 返回单项紧凑人类可读结果，不回传原始 Plan payload（Task Plan 隐藏 phase） |
 | `plan_update` | 唯一 agent 执行状态写工具：task / phase / goal 更新、完成与主动暂停 |
 | `phase_check` | Goal Plan 的 phase 独立审核；只写 CheckRecord |
 | `goal_check` | Phase/Goal Plan 的整体独立审核；只写 CheckRecord |
 
 工具名遵循“两词原则”，不带 `dgoal_` 前缀；`dgoal` 只保留为产品名与用户命令。
 
-phase 与 task 使用独立 ID namespace：二者都从 `1` 开始；task ID 在整个 Plan 内保持唯一，使 `blockedBy` 可引用同 phase 或更早 phase 的 task。类型化工具入口可区分 phase `#1` 与 task `#1`；`nextId` 只分配 task。已有持久 Plan 保留原编号。
+phase 与 task 使用独立 ID namespace：二者都从 `1` 开始；task ID 在整个 Plan 内保持唯一，使 `blockedBy` 可引用同 phase 或更早 phase 的 task。类型化工具入口可区分 phase `#1` 与 task `#1`；`nextId` 只分配 task。`plan_read(target=plan|goal)` 会聚合整个 Plan 的 phase/task 进度（done/total），而 `target=phase|task` 只返回对应单项；旧持久态中缺少 `tasks` 的 phase 在 load/resync 时规范化为 `tasks: []`。已有持久 Plan 保留原编号。
 
 ## 完成守卫
 
@@ -123,8 +123,8 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 ## TUI
 
-- **持续显示浮层**：默认只显示目标、聚合进度、耗时与展开提示；heading 按当前终端显示宽度裁切目标标题。
-- **`Ctrl+O`**：展开当前 Plan 详情与建检活性；完成后的十秒快照展示全部 phase/task。
+- **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 按当前终端显示宽度裁切目标标题。
+- **`Ctrl+O`**：展开 Phase/Goal Plan 的 task 与建检活性；完成后的十秒快照展示全部 phase/task。
 - **`/dgoal s` Modal**：查看完整可见 Plan；Task Plan 不显示内部隐藏 phase。
 - **状态栏**：显示 starting / active / paused / done。
 

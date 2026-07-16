@@ -19,6 +19,7 @@ import {
   resetAuditorWorkspaceTracker,
   safeNotify,
   isGoalRunning,
+  resolvePlanType,
   buildSystemPrompt,
   markContinuationDelivered,
   trackFileToolExecutionStart,
@@ -44,6 +45,7 @@ import {
   PHASE_CHECK_TOOL_NAME,
   GOAL_CHECK_TOOL_NAME,
   MAX_ERROR_RETRIES,
+  MODEL_ERROR_WARNING_THRESHOLD,
   MAX_NO_PROGRESS_TURNS,
   type DgoalContext,
 } from "../runtime/index.ts";
@@ -164,6 +166,18 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
+    // Task Plan 是可被最新上下文替换的轻量脚手架。model_error 后出现新 turn，
+    // 说明旧 Plan 不再拥有 session；清除它而非错误地恢复旧上下文。
+    const staleTaskPlan = goalRuntimeState.currentGoal;
+    if (staleTaskPlan?.status === "paused" && staleTaskPlan.pauseReason === "model_error" && resolvePlanType(staleTaskPlan) === "task") {
+      goalRuntimeState.currentGoal = undefined;
+      persistGoal(null);
+      clearContinuation();
+      clearCurrentCheckSnapshot();
+      resetAuditorWorkspaceTracker();
+      safeSetDgoalStatus(ctx, undefined);
+      safeUpdatePlanOverlay();
+    }
     // 只接受 dgoal input handler 观察到的文本；后加载扩展若 transform 了 prompt，精确绑定会 fail-closed。
     if (!goalRuntimeState.currentGoal && goalRuntimeState.naturalLanguageStartAuthorized
       && event.prompt !== goalRuntimeState.naturalLanguageStartInput) {
@@ -205,6 +219,8 @@ export function registerDgoal(pi: ExtensionAPI) {
   pi.on("tool_execution_end", (event) => {
     trackFileToolExecutionEnd(event.toolCallId, event.isError);
     if (event.isError) return;
+    // 成功工具推进证明模型仍在有效工作；不把短暂 fetch 失败跨进展累计。
+    goalRuntimeState.consecutiveErrors = 0;
     const refreshTools = new Set([
       TASK_PLAN_TOOL_NAME,
       PHASE_PLAN_TOOL_NAME,
@@ -252,15 +268,20 @@ export function registerDgoal(pi: ExtensionAPI) {
       goalRuntimeState.consecutiveErrors += 1;
       // 模型错误打断“连续正常空转”序列：不是正常结束，重置无进展计数。
       goalRuntimeState.consecutiveNoProgressTurns = 0;
-      if (goalRuntimeState.consecutiveErrors <= MAX_ERROR_RETRIES) {
-        safeNotify(
-          ctx,
-          t("notify.modelRetry", { count: goalRuntimeState.consecutiveErrors, max: MAX_ERROR_RETRIES, detail: errorDetail }),
-          "warning",
-        );
+      if (goalRuntimeState.consecutiveErrors < MAX_ERROR_RETRIES) {
+        if (goalRuntimeState.consecutiveErrors >= MODEL_ERROR_WARNING_THRESHOLD) {
+          safeNotify(
+            ctx,
+            t("notify.modelRetry", { count: goalRuntimeState.consecutiveErrors, max: MAX_ERROR_RETRIES, detail: errorDetail }),
+            "warning",
+          );
+        }
         await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
         return;
       }
+      // 暂停后该 proposal 已失去当前 agent turn 的上下文，不能随暂停状态一起恢复。
+      goalRuntimeState.pendingProposal = undefined;
+      const retryCount = Math.max(0, goalRuntimeState.consecutiveErrors - 1);
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "model_error" });
       persistGoal(goalRuntimeState.currentGoal);
@@ -269,7 +290,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       safeUpdatePlanOverlay();
       safeNotify(
         ctx,
-        t("notify.modelPaused", { max: MAX_ERROR_RETRIES, detail: errorDetail }),
+        t("notify.modelPaused", { count: retryCount, detail: errorDetail }),
         "warning",
       );
       return;

@@ -41,7 +41,7 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     expect(renderPlanLines(goal([]), noHide)).toEqual([]);
   });
 
-  test("默认只渲染摘要 heading 与 Ctrl+O 提示，heading 含完成计数", () => {
+  test("Phase/Goal Plan 默认渲染 heading + phase，heading 含完成计数", () => {
     const g = goal([
       p(1, "阶段A", [t(1, "a", "done")], "in_progress"),
       p(2, "阶段B", [], "pending"),
@@ -50,9 +50,8 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     expect(lines[0]).toContain("🎯 修好测试 · 0/2 phases"); // 无 done phase
     expect(lines[0]).toContain("1/1 tasks");
     expect(lines[0]).toContain("⏱");
-    expect(lines).toHaveLength(2);
-    expect(lines[1]).toContain("Ctrl+O 展开详情");
-    expect(lines.some((line) => line.includes("阶段A") || line.includes("阶段B"))).toBe(false);
+    expect(lines[1]).toContain("◐ 阶段A");
+    expect(lines[2]).toContain("○ 阶段B");
   });
 
   test("done phase 计入 heading 计数", () => {
@@ -162,8 +161,29 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
       overlay.update();
       const factory = widgets.at(-1) as (tui: unknown, theme: unknown) => { render(width: number): string[] };
       const lines = factory({}, {}).render(100);
-      expect(lines).toHaveLength(2);
-      expect(lines.at(-1)).toContain("Ctrl+O 展开详情");
+      expect(lines.some((line) => line.includes("已完成A"))).toBe(true);
+      expect(lines.some((line) => line.includes("进行中B"))).toBe(true);
+    } finally {
+      overlay.dispose();
+      __resetGoalForTest();
+    }
+  });
+
+  test("清除完成快照后新 goal 不会渲染旧 done 内容", () => {
+    const widgets: unknown[] = [];
+    const overlay = new PlanOverlay();
+    const oldDone = goal([p(1, "旧目标", [], "done")], { status: "done" });
+    const next = goal([p(1, "新目标", [], "in_progress")]);
+    __setGoalForTest(next);
+    overlay.setUI({ setWidget: (_key, value) => widgets.push(value), getToolsExpanded: () => false });
+    try {
+      overlay.showDoneThenHide(oldDone);
+      overlay.clearDoneSnapshot();
+      overlay.update();
+      const factory = widgets.at(-1) as (tui: unknown, theme: unknown) => { render(width: number): string[] };
+      const lines = factory({}, {}).render(100);
+      expect(lines.some((line) => line.includes("旧目标"))).toBe(false);
+      expect(lines.some((line) => line.includes("新目标"))).toBe(true);
     } finally {
       overlay.dispose();
       __resetGoalForTest();

@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { __bindAuditorAbortForTest } from "../index.ts";
+import { __bindIsolatedPiAbortForTest } from "../src/isolated-pi/index.ts";
 
 describe("auditor abort listener", () => {
+  test("runtime test export is the production isolated-child listener", () => {
+    expect(__bindAuditorAbortForTest).toBe(__bindIsolatedPiAbortForTest);
+  });
+
   test("removes the listener after a normally completed audit", () => {
     const controller = new AbortController();
     let abortCalls = 0;

@@ -3,6 +3,7 @@
 // 关键：thinking/toolcall 事件被正确识别为活性，不再被误判为空闲超时
 import { afterEach, describe, expect, test } from "bun:test";
 import { __setI18nForTest, classifyCheckEvent, CHECK_IDLE_TIMEOUT_SECONDS, CHECK_TOOL_IDLE_TIMEOUT_SECONDS, GOAL_AUDIT_TOTAL_TIMEOUT_SECONDS, PHASE_AUDIT_TOTAL_TIMEOUT_SECONDS, formatAuditTotalTimeout, formatCheckLivenessLine, getAuditTotalTimeoutMs, getCheckIdleTimeoutMs, isAuditorError, runCheckWithRetry, summarizeCheckProgress, type AuditorResult } from "../index.ts";
+import { classifyCheckEvent as classifyIsolatedCheckEvent } from "../src/isolated-pi/index.ts";
 
 const msg = (type: string, evt: Record<string, unknown>) =>
   JSON.stringify({ type, assistantMessageEvent: evt });
@@ -15,6 +16,10 @@ afterEach(() => {
 });
 
 describe("v0.5.2 · classifyCheckEvent 事件识别", () => {
+  test("runtime test export is the production isolated-child classifier", () => {
+    expect(classifyCheckEvent).toBe(classifyIsolatedCheckEvent);
+  });
+
   test("thinking_start/delta/end 都识别为 thinking 活性", () => {
     expect(classifyCheckEvent(msg("message_update", { type: "thinking_start" }))?.liveness).toBe("thinking");
     expect(classifyCheckEvent(msg("message_update", { type: "thinking_delta", delta: "..." }))?.liveness).toBe("thinking");

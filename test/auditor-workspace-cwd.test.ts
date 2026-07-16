@@ -6,7 +6,10 @@ import { join } from "node:path";
 
 import {
   __finalizeGoalForTest,
+  __getRuntimeStateForTest,
   __resetAuditorWorkspaceTrackerForTest,
+  __resetGoalForTest,
+  __setCheckSnapshotForTest,
   __setGoalForTest,
   __trackFileToolExecutionEndForTest,
   __trackFileToolExecutionStartForTest,
@@ -53,6 +56,20 @@ function makeActiveGoal(id = "goal-1"): GoalState {
 }
 
 describe("auditor workspace cwd", () => {
+  test("reset isolates pending file executions and check snapshots", () => {
+    const root = makeTempRoot();
+    mkdirSync(join(root, ".git"));
+    const trackedPath = join(root, "changed.ts");
+    writeFileSync(trackedPath, "export {};");
+
+    __trackFileToolExecutionStartForTest("pending", "edit", { path: trackedPath }, root);
+    __setCheckSnapshotForTest({ liveness: "tool_running", currentTool: "edit" });
+    __resetGoalForTest();
+    __trackFileToolExecutionEndForTest("pending", false);
+
+    expect(resolveAuditorWorkspaceCwd({ cwd: root, sessionManager: { getBranch: () => [] } })).toBe(root);
+    expect(__getRuntimeStateForTest().currentCheckSnapshot).toBeUndefined();
+  });
   test("uses current-turn successful edit before session history is persisted", () => {
     const root = makeTempRoot();
     const mainRepo = join(root, "Curio");

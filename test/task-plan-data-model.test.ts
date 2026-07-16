@@ -5,6 +5,9 @@ import { describe, expect, test } from "bun:test";
 import {
   __resetGoalForTest,
   __setApiForTest,
+  __setRuntimeStateForTest,
+  __getPendingProposalForTest,
+  resyncGoalFromSession,
   isGoalState,
   loadGoal,
   persistGoal,
@@ -136,6 +139,23 @@ describe("切片1 · persist/load 往返", () => {
     expect(restored!.plan!.phases[0].tasks[0].subject).toBe("修登录测试");
     expect(restored!.plan!.phases[0].tasks[0].evidence).toBe("npm test auth 全过");
     expect(restored!.plan!.nextId).toBe(2);
+  });
+
+  test("pending proposal 与 pending goal 同 entry 持久化，并在 session 重同步后恢复", () => {
+    const writes: Array<{ goal?: GoalState | null; pendingProposal?: unknown }> = [];
+    const pendingGoal = makeGoalWithPlan({ id: "pending-proposal", status: "pending", planType: "phase" });
+    __setApiForTest({ appendEntry: (_type, data) => { writes.push(data); } });
+    __setRuntimeStateForTest({ pendingProposal: { goalId: pendingGoal.id, proposal: { objective: "修好测试", verification: "全量测试通过", acceptanceCriteria, phases: [] } as any } });
+    persistGoal(pendingGoal);
+    __resetGoalForTest();
+    resyncGoalFromSession({
+      sessionManager: { getBranch: () => [{ type: "custom", customType: "dgoal-plan-v1", data: writes.at(-1) }] },
+      cwd: "/tmp",
+      ui: { setStatus: () => {}, notify: () => {} },
+    } as any);
+    expect(loadGoal({ sessionManager: { getBranch: () => [{ type: "custom", customType: "dgoal-plan-v1", data: writes.at(-1) }] } } as any)?.id).toBe(pendingGoal.id);
+    expect(__getPendingProposalForTest()?.goalId).toBe(pendingGoal.id);
+    __setApiForTest(undefined);
   });
 
   test("persistGoal(null) 写入空 goal，loadGoal 返回 undefined", () => {

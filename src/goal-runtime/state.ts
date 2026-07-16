@@ -4,9 +4,35 @@
 
 import type { GoalState, PlanProposal } from "../runtime/index.ts";
 
+export type CheckLivenessState =
+  | "starting"
+  | "thinking"
+  | "tool_running"
+  | "report_streaming"
+  | "approved"
+  | "rejected"
+  | "auditor_error";
+
+export interface CheckLivenessSnapshot {
+  liveness: CheckLivenessState;
+  currentTool?: string;
+  lastSnippet?: string;
+  idleSecondsLeft?: number;
+  idleSecondsTotal?: number;
+  attempt?: number;
+  attemptTotal?: number;
+}
+
+export interface PendingFileToolExecution {
+  toolName: "read" | "write" | "edit";
+  path: string;
+}
+
 export interface ContinuationState {
   goalId: string;
   marker: string;
+  /** Ephemeral session generation captured when scheduling; never persisted, but encoded into the continuation marker. */
+  sessionGeneration: number;
   sent: boolean;
 }
 
@@ -32,6 +58,10 @@ export interface GoalRuntimeState {
   cancelledMarkers: Set<string>;
   latestSuccessfulModifiedFilePath: string | undefined;
   latestSuccessfulReadFilePath: string | undefined;
+  pendingFileToolExecutions: Map<string, PendingFileToolExecution>;
+  currentCheckSnapshot: CheckLivenessSnapshot | undefined;
+  /** Increments after every successful session/tree resync; guards old async work from writing into a new branch. */
+  sessionGeneration: number;
 }
 
 function createInitialGoalRuntimeState(): GoalRuntimeState {
@@ -50,6 +80,9 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     cancelledMarkers: new Set(),
     latestSuccessfulModifiedFilePath: undefined,
     latestSuccessfulReadFilePath: undefined,
+    pendingFileToolExecutions: new Map(),
+    currentCheckSnapshot: undefined,
+    sessionGeneration: 0,
   };
 }
 

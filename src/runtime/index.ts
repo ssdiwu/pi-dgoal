@@ -1,5 +1,5 @@
-import { createHash, randomUUID } from "node:crypto";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -33,13 +33,15 @@ import {
   summarizeCheckProgress as summarizeAuditProgress,
   type FinalAuditAttribution,
 } from "../audit/index.ts";
+import { type CheckpointState } from "../audit/checkpoint.ts";
 import {
-  applyCheckpointEvent,
-  buildPartialReport,
-  type CheckpointState,
-} from "../audit/checkpoint.ts";
-import { appendAuditUsage, buildAuditUsageRecord } from "../audit/usage.ts";
-import { clearNaturalLanguageStartAuthorization, goalRuntimeState, resetGoalRuntimeState } from "../goal-runtime/state.ts";
+  clearNaturalLanguageStartAuthorization,
+  goalRuntimeState,
+  resetGoalRuntimeState,
+  type CheckLivenessSnapshot,
+  type CheckLivenessState,
+  type PendingProposalState,
+} from "../goal-runtime/state.ts";
 import {
   ansiStrikethrough,
   computeScrollOffset,
@@ -47,9 +49,12 @@ import {
   truncateLine,
 } from "../tui/helpers.ts";
 import {
-  AUDITOR_TOOLS,
-  buildCheckCliArgs,
+  __resetSpawnManagedSubprocessForTest as resetIsolatedSpawnForTest,
+  __setSpawnManagedSubprocessForTest as setIsolatedSpawnForTest,
   consumeBufferedLines,
+  fingerprintAuditWorkspace as fingerprintIsolatedAuditWorkspace,
+  runIsolatedPiCheck,
+  SUBPROCESS_FORCE_KILL_TIMEOUT_MS,
 } from "../isolated-pi/index.ts";
 
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
@@ -81,7 +86,13 @@ export type FinalAuditMode = "diagnostic" | "narrow_confirmation";
 
 export { countDoneTasks, detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
 export { computeScrollOffset } from "../tui/helpers.ts";
-export { buildCheckCliArgs, consumeBufferedLines } from "../isolated-pi/index.ts";
+// Keep observable event parsing and abort binding tied to the isolated child that actually uses them.
+export {
+  __bindIsolatedPiAbortForTest as __bindAuditorAbortForTest,
+  buildCheckCliArgs,
+  classifyCheckEvent,
+  consumeBufferedLines,
+} from "../isolated-pi/index.ts";
 export type { AcceptanceCriterion, CheckRecord, Phase, PlanStatus, PlanType, Task, TaskPlan } from "../plan/index.ts";
 
 export interface DgoalConfig {
@@ -197,6 +208,7 @@ interface FinalAuditHistoryEntry {
 
 interface DgoalStateEntryData {
   goal?: GoalState | null;
+  pendingProposal?: PendingProposalState;
 }
 
 interface SessionBranchEntry {
@@ -347,7 +359,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogHint": "dgoal · 详细查询 Modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.abortedPaused": "dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
-      "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
+      "notify.modelPaused": "模型错误，已重试 {count} 次仍失败，dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
       "notify.noProgressPaused": "连续 {max} 轮无工具调用，dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
       "notify.agentPaused": "Agent 声明遇到需要你决策的死锁，已主动暂停：{detail}。处理后运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
@@ -526,7 +538,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogHint": "dgoal · detailed query modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
       "notify.abortedPaused": "dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
-      "notify.modelPaused": "Model error persisted after {max} retries; dgoal paused{detail}. Run /dgoal resume to continue.",
+      "notify.modelPaused": "Model error persisted after {count} retries; dgoal paused{detail}. Run /dgoal resume to continue.",
       "notify.noProgressPaused": "No tool calls for {max} consecutive turns; dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
       "notify.agentPaused": "Agent reported a deadlock needing your decision; paused: {detail}. Run /dgoal resume after you resolve it.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
@@ -761,7 +773,9 @@ const MAX_PAUSE_REASON_DETAIL_LENGTH = 1_000;
 export const BARE_START_OBJECTIVE = "（承接前文启动，待 phase_plan / goal_plan 确定）";
 const CONTEXT_INPUT_CAP_BYTES = 50 * 1024;
 // 模型错误（非用户中断）的自动重试上限：连续 error 达到此值才真正暂停。
-export const MAX_ERROR_RETRIES = 3;
+// 连续第 5 次模型错误暂停；第 1、2 次静默重试，第 3、4 次才提示。
+export const MAX_ERROR_RETRIES = 5;
+export const MODEL_ERROR_WARNING_THRESHOLD = 3;
 const CONTEXT_SUMMARY_TIMEOUT_MS = 120_000;
 // 语义预审默认 idle timeout（秒）：无任何有效事件时才超时，收到任意流事件重置。
 // 默认 60s（预审是无工具的纯模型流，比隔离建检的 180s 短）。可通过 pi-dgoal.json
@@ -794,12 +808,11 @@ export function formatAuditTotalTimeout(totalTimeoutMs: number): string {
 const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
 // 候选切换前至少保留 1 秒，避免刚启动就因共享总预算耗尽而产生瞬时超时。
 const MIN_AUDIT_CANDIDATE_START_REMAINING_MS = 1_000;
-const SUBPROCESS_FORCE_KILL_TIMEOUT_MS = 5_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
 const CONTINUATION_POLL_INTERVAL_MS = 250;
 
 // goalRuntimeState.currentGoal moved to goalRuntimeState
-// 连续模型错误计数：正常完成一轮后重置；累计到 MAX_ERROR_RETRIES 后暂停并清零。
+// 连续模型错误计数：正常完成或成功工具推进后重置；第 MAX_ERROR_RETRIES 次暂停并清零。
 // goalRuntimeState.consecutiveErrors moved to goalRuntimeState
 // 连续无进展计数：正常结束一轮后若本轮没有任何工具调用，则加一；达到阈值暂停。
 export const MAX_NO_PROGRESS_TURNS = 3;
@@ -833,7 +846,8 @@ export function decideNoProgressPause(state: {
 // goalRuntimeState.pendingContinuation moved to goalRuntimeState
 // goalRuntimeState.continuationDeliveryTimer moved to goalRuntimeState
 // cancelledMarkers moved to goalRuntimeState
-const pendingFileToolExecutions = new Map<string, { toolName: "read" | "write" | "edit"; path: string }>();
+// goalRuntimeState.pendingFileToolExecutions moved to goalRuntimeState
+
 // goalRuntimeState.latestSuccessfulModifiedFilePath moved to goalRuntimeState
 // goalRuntimeState.latestSuccessfulReadFilePath moved to goalRuntimeState
 // Plan reducer 结果格式化；公共 plan_create / plan_update 复用。
@@ -1718,6 +1732,8 @@ const auditedPlanProposalTool = defineTool({
       ...(guardrails ? { guardrails } : {}),
       phases: normalizedPhases,
     };
+    const proposalSessionGeneration = goalRuntimeState.sessionGeneration;
+    const proposalGoalId = goal?.id;
     const rawAgentDir = (ctx as unknown as { agentDir?: unknown }).agentDir;
     const configAgentDir = typeof rawAgentDir === "string" ? rawAgentDir : undefined;
     const loadedConfig = ctx.cwd
@@ -1741,6 +1757,13 @@ const auditedPlanProposalTool = defineTool({
         isError: true,
       };
     }
+    if (goalRuntimeState.sessionGeneration !== proposalSessionGeneration || goalRuntimeState.currentGoal?.id !== proposalGoalId) {
+      return {
+        content: [{ type: "text", text: "Proposal result discarded because the session changed during semantic review." }],
+        details: { error: "session changed during semantic review", stale: true },
+        isError: false,
+      };
+    }
     const reviewed = applyProposalSemanticReview(proposal, outcome.review);
     if (!reviewed.proposal) {
       return {
@@ -1750,10 +1773,12 @@ const auditedPlanProposalTool = defineTool({
       };
     }
     const finalProposal = reviewed.proposal;
+    const nextPendingProposal = { goalId: goal?.id ?? "", proposal: finalProposal };
     if (!goal) {
       const createdGoal = createGoal(finalProposal.objective);
+      nextPendingProposal.goalId = createdGoal.id;
       try {
-        persistGoal(createdGoal);
+        persistGoal(createdGoal, nextPendingProposal);
       } catch (error) {
         return {
           content: [{ type: "text", text: `Failed to persist pending dgoal: ${formatError(error)}` }],
@@ -1768,11 +1793,14 @@ const auditedPlanProposalTool = defineTool({
       goalRuntimeState.turnHadToolExecution = false;
       clearContinuation();
       resetAuditorWorkspaceTracker();
+      planOverlay?.clearDoneSnapshot();
       goalRuntimeState.currentGoal = createdGoal;
       goal = createdGoal;
       clearNaturalLanguageStartAuthorization();
     }
-    goalRuntimeState.pendingProposal = { goalId: goal.id, proposal: finalProposal };
+    nextPendingProposal.goalId = goal.id;
+    goalRuntimeState.pendingProposal = nextPendingProposal;
+    persistGoal(goal);
     return {
       content: [{ type: "text", text: t("tool.propose.submitted", { count: finalProposal.phases.length }) }],
       details: {
@@ -1895,6 +1923,8 @@ export const taskPlanTool = defineTool({
       return { content: [{ type: "text", text: built.error ?? "Task Plan requires a non-empty objective and at least one task." }], details: { error: built.error ?? "invalid task plan" }, isError: true };
     }
     const now = Date.now();
+    // 替换旧 Task Plan 前清除完成闪现，避免新目标短暂渲染旧 done 快照。
+    planOverlay?.clearDoneSnapshot();
     const cleanBase = current && resolvePlanType(current) === "task" ? current : createGoal(objective);
     const revision = current && resolvePlanType(current) === "task" ? (current.plan?.revision ?? 0) + 1 : 0;
     goalRuntimeState.currentGoal = {
@@ -1940,7 +1970,7 @@ export const taskPlanTool = defineTool({
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     ensurePlanOverlay(ctx);
     return {
-      content: [{ type: "text", text: `Task Plan active: ${objective} (0/${built.tasks.length} tasks). Start the first task now and keep plan_update in sync.` }],
+      content: [{ type: "text", text: `Task Plan 已建立：${objective}（0/${built.tasks.length} tasks）` }],
       details: { planType: "task", objective, taskCount: built.tasks.length, revision },
     };
   },
@@ -2093,7 +2123,7 @@ export const planCreateTool = defineTool({
 export const planReadTool = defineTool({
   name: PLAN_READ_TOOL_NAME,
   label: "Plan Read",
-  description: "只读查询当前 Plan，可读取完整 plan、goal、phase 或 task；paused 状态仍可使用。",
+  description: "只读查询当前 Plan，可读取 plan/goal 的全 Plan 聚合摘要，或单个 phase/task；paused 状态仍可使用。",
   promptSnippet: "读取当前 Plan 状态",
   parameters: Type.Object({
     target: Type.Optional(Type.Union([Type.Literal("plan"), Type.Literal("goal"), Type.Literal("phase"), Type.Literal("task")])),
@@ -2106,7 +2136,18 @@ export const planReadTool = defineTool({
     const target = params.target ?? "plan";
     let value: unknown;
     if (target === "goal") {
-      value = { id: goal.id, objective: goal.objective, planType: resolvePlanType(goal), status: goal.status, goalCheck: goal.goalCheck, pauseReason: goal.pauseReason, pauseReasonDetail: goal.pauseReasonDetail };
+      const planType = resolvePlanType(goal);
+      value = planType === "task"
+        ? {
+          id: goal.id, objective: goal.objective, planType, status: goal.status,
+          revision: goal.plan?.revision, tasks: goal.plan?.phases[0]?.tasks ?? [],
+          goalCheck: goal.goalCheck, pauseReason: goal.pauseReason, pauseReasonDetail: goal.pauseReasonDetail,
+        }
+        : {
+          id: goal.id, objective: goal.objective, planType, status: goal.status,
+          revision: goal.plan?.revision, phases: goal.plan?.phases ?? [],
+          goalCheck: goal.goalCheck, pauseReason: goal.pauseReason, pauseReasonDetail: goal.pauseReasonDetail,
+        };
     } else if (target === "phase") {
       if (resolvePlanType(goal) === "task") {
         return { content: [{ type: "text", text: "Task Plan's structural phase is internal and cannot be read." }], details: { error: "hidden phase" }, isError: true };
@@ -2125,24 +2166,35 @@ export const planReadTool = defineTool({
     }
     return {
       content: [{ type: "text", text: formatPlanReadSummary(value, target, resolvePlanType(goal)) }],
-      details: { target, planType: resolvePlanType(goal), readOnly: true, value },
+      details: { target, planType: resolvePlanType(goal), readOnly: true },
     };
   },
 });
 
 function formatPlanReadSummary(value: unknown, target: string, planType: PlanType): string {
   const record = value as Record<string, unknown>;
-  if (target === "task") return `task #${record.id} · ${record.status} · ${record.subject}`;
-  if (target === "phase") return `phase #${record.id} · ${record.status} · ${record.subject}`;
-  if (target === "goal") return `${planType === "task" ? "Task Plan" : `${planType[0].toUpperCase()}${planType.slice(1)} Plan`} · ${record.status}`;
-  const phases = Array.isArray(record.phases) ? record.phases as Array<{ status?: PlanStatus; tasks?: unknown[] }> : [];
-  const tasks = Array.isArray(record.tasks)
-    ? record.tasks
-    : phases.flatMap((phase) => phase.tasks ?? []);
-  const doneTasks = tasks.filter((task) => (task as { status?: PlanStatus }).status === "done").length;
-  if (planType === "task") return `Task Plan · ${doneTasks}/${tasks.length} tasks`;
-  const donePhases = phases.filter((phase) => phase.status === "done").length;
-  return `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${donePhases}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
+  const phases = Array.isArray(record.phases) ? record.phases as Phase[] : [];
+  const tasksOf = (phase: Phase): Task[] => Array.isArray(phase.tasks) ? phase.tasks : [];
+  const tasks = Array.isArray(record.tasks) ? record.tasks as Task[] : phases.flatMap(tasksOf);
+  if (target === "task") {
+    const task = record as unknown as Task;
+    return formatTaskDisplay(task, `task #${task.id} · `);
+  }
+  if (target === "phase") {
+    const phase = record as unknown as Phase;
+    const tasks = tasksOf(phase);
+    return [formatPhaseDisplay({ ...phase, tasks }, `phase #${phase.id} · `), ...tasks.map((task) => formatTaskDisplay(task, `  └─ task #${task.id} · `))].join("\n");
+  }
+  const doneTasks = tasks.filter((task) => task.status === "done").length;
+  const title = planType === "task"
+    ? `Task Plan · ${doneTasks}/${tasks.length} tasks`
+    : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${phases.filter((phase) => phase.status === "done").length}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
+  if (target === "goal") return `${title} · ${record.status}`;
+  if (planType === "task") return [title, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `))].join("\n");
+  return [title, ...phases.flatMap((phase) => {
+    const phaseTasks = tasksOf(phase);
+    return [formatPhaseDisplay({ ...phase, tasks: phaseTasks }, `├─ phase #${phase.id} · `), ...phaseTasks.map((task) => formatTaskDisplay(task, `│    task #${task.id} · `))];
+  })].join("\n");
 }
 
 export const planUpdateTool = defineTool({
@@ -2292,17 +2344,19 @@ export const planUpdateTool = defineTool({
   },
 });
 
-function currentGoalForCheckResult(startedGoal: GoalState, revision: number): GoalState | undefined {
+function currentGoalForCheckResult(startedGoal: GoalState, revision: number, sessionGeneration: number): GoalState | undefined {
   const latest = goalRuntimeState.currentGoal;
-  if (!latest || latest.id !== startedGoal.id || !latest.plan || !isGoalMutable(latest.status)) return undefined;
+  if (goalRuntimeState.sessionGeneration !== sessionGeneration || !latest || latest.id !== startedGoal.id || !latest.plan || !isGoalMutable(latest.status)) return undefined;
   return (latest.plan.revision ?? 0) === revision ? latest : undefined;
 }
 
-function staleCheckResult(scope: AuditorScope, startedGoal: GoalState, revision: number) {
+function staleCheckResult(scope: AuditorScope, startedGoal: GoalState, revision: number, sessionGeneration: number) {
   const latest = goalRuntimeState.currentGoal;
   const currentRevision = latest?.id === startedGoal.id ? latest.plan?.revision : undefined;
-  clearCurrentCheckSnapshot();
-  safeUpdatePlanOverlay();
+  if (goalRuntimeState.sessionGeneration === sessionGeneration) {
+    clearCurrentCheckSnapshot();
+    safeUpdatePlanOverlay();
+  }
   return {
     content: [{ type: "text" as const, text: `${scope}_check result discarded because the Plan changed while the independent audit was running. Run the check again.` }],
     details: { error: "plan changed during check", stale: true, checkedRevision: revision, currentRevision, goalId: startedGoal.id },
@@ -2339,6 +2393,7 @@ export const phaseCheckTool = defineTool({
     if (current && current.id !== phase.id) return { content: [{ type: "text", text: `phase #${current.id} must be checked before phase #${phase.id}.` }], details: { error: "phase order violation" } };
     if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: `phase #${phase.id} tasks are not all done with evidence.` }], details: { error: "tasks not done" } };
     const auditRevision = goal.plan.revision ?? 0;
+    const auditSessionGeneration = goalRuntimeState.sessionGeneration;
     let result: AuditorResult;
     try {
       result = phaseCheckOverrideForTest
@@ -2348,13 +2403,13 @@ export const phaseCheckTool = defineTool({
           goal,
           phase,
           onUpdate: (update) => {
-            if (currentGoalForCheckResult(goal, auditRevision)) emitPublicCheckUpdate(onUpdate as never, update);
+            if (currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration)) emitPublicCheckUpdate(onUpdate as never, update);
             else onUpdate?.(update as never);
           },
         });
     } catch (error) {
-      const latest = currentGoalForCheckResult(goal, auditRevision);
-      if (!latest) return staleCheckResult("phase", goal, auditRevision);
+      const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+      if (!latest) return staleCheckResult("phase", goal, auditRevision, auditSessionGeneration);
       const reason = formatError(error);
       const check: CheckRecord = { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision };
       const phases = latest.plan!.phases.map((item) => item.id === phase.id ? { ...item, check } : item);
@@ -2364,8 +2419,8 @@ export const phaseCheckTool = defineTool({
       pauseOnAuditFailure(ctx, reason, "phase");
       return { content: [{ type: "text", text: `phase_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
     }
-    const latest = currentGoalForCheckResult(goal, auditRevision);
-    if (!latest) return staleCheckResult("phase", goal, auditRevision);
+    const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+    if (!latest) return staleCheckResult("phase", goal, auditRevision, auditSessionGeneration);
     if (result.liveness === "auditor_error" || result.aborted || result.error) {
       const reason = result.error ?? "aborted";
       const check: CheckRecord = { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision };
@@ -2431,6 +2486,7 @@ export const goalCheckTool = defineTool({
     const verificationBundle = normalizeVerificationBundle((params as unknown as Record<string, unknown>).verificationBundle);
     const auditMode: FinalAuditMode = goal.finalFeedback ? "narrow_confirmation" : "diagnostic";
     const auditRevision = goal.plan.revision ?? 0;
+    const auditSessionGeneration = goalRuntimeState.sessionGeneration;
     let result: AuditorResult;
     try {
       result = AUDITOR_DISABLED
@@ -2445,13 +2501,13 @@ export const goalCheckTool = defineTool({
           verificationBundle,
           auditMode,
           onUpdate: (update) => {
-            if (currentGoalForCheckResult(goal, auditRevision)) emitPublicCheckUpdate(onUpdate as never, update);
+            if (currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration)) emitPublicCheckUpdate(onUpdate as never, update);
             else onUpdate?.(update as never);
           },
         });
     } catch (error) {
-      const latest = currentGoalForCheckResult(goal, auditRevision);
-      if (!latest) return staleCheckResult("goal", goal, auditRevision);
+      const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+      if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
       const reason = formatError(error);
       goalRuntimeState.currentGoal = { ...latest, goalCheck: { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() };
       persistGoal(goalRuntimeState.currentGoal);
@@ -2459,8 +2515,8 @@ export const goalCheckTool = defineTool({
       pauseOnAuditFailure(ctx, reason, "goal");
       return { content: [{ type: "text", text: `goal_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
     }
-    const latest = currentGoalForCheckResult(goal, auditRevision);
-    if (!latest) return staleCheckResult("goal", goal, auditRevision);
+    const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+    if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
     if (result.liveness === "auditor_error" || result.aborted || result.error) {
       const reason = result.error ?? "aborted";
       goalRuntimeState.currentGoal = { ...latest, goalCheck: { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() };
@@ -2498,9 +2554,6 @@ export const goalCheckTool = defineTool({
     return { content: [{ type: "text", text: result.approved ? "goal_check approved. Call plan_update(target=goal,status=done) to finish and close the Plan." : `goal_check rejected:\n${report}` }], details: { approved: result.approved, planType, ...buildAuditorResultDetails(result) }, isError: false };
   },
 });
-
-// registerDgoal moved to src/startup/index.ts
-export { registerDgoal } from "../startup/index.ts";
 
 export async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: DgoalContext) {
   const command = parseCommand(args);
@@ -3292,30 +3345,39 @@ function buildContinuePrompt(goal: GoalState, marker: string) {
 }
 
 export async function sendContinuation(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState) {
-  if (goalRuntimeState.pendingContinuation?.goalId === goal.id) return;
-  const marker = `${goal.id}:${goal.iteration}`;
-  goalRuntimeState.pendingContinuation = { goalId: goal.id, marker, sent: false };
-  await deliverContinuationWhenIdle(pi, ctx, goal, marker);
+  const sessionGeneration = goalRuntimeState.sessionGeneration;
+  const pending = goalRuntimeState.pendingContinuation;
+  if (pending?.goalId === goal.id && pending.sessionGeneration === sessionGeneration) return;
+  const marker = `${goal.id}:${goal.iteration}:${sessionGeneration}`;
+  goalRuntimeState.pendingContinuation = { goalId: goal.id, marker, sessionGeneration, sent: false };
+  await deliverContinuationWhenIdle(pi, ctx, goal, marker, sessionGeneration);
 }
 
-async function deliverContinuationWhenIdle(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState, marker: string) {
-  if (!goalRuntimeState.pendingContinuation || goalRuntimeState.pendingContinuation.marker !== marker) return;
+function isCurrentContinuation(marker: string, sessionGeneration: number): boolean {
+  const pending = goalRuntimeState.pendingContinuation;
+  return goalRuntimeState.sessionGeneration === sessionGeneration
+    && pending?.marker === marker
+    && pending.sessionGeneration === sessionGeneration;
+}
+
+async function deliverContinuationWhenIdle(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState, marker: string, sessionGeneration: number) {
+  if (!isCurrentContinuation(marker, sessionGeneration)) return;
   if (!shouldDeliverContinuationNow(ctx)) {
-    scheduleContinuationDelivery(pi, ctx, goal, marker);
+    scheduleContinuationDelivery(pi, ctx, goal, marker, sessionGeneration);
     return;
   }
 
   clearContinuationDeliveryTimer();
-  if (!goalRuntimeState.pendingContinuation || goalRuntimeState.pendingContinuation.marker !== marker) return;
-  goalRuntimeState.pendingContinuation = { ...goalRuntimeState.pendingContinuation, sent: true };
+  if (!isCurrentContinuation(marker, sessionGeneration)) return;
+  goalRuntimeState.pendingContinuation = { ...goalRuntimeState.pendingContinuation!, sent: true };
   const sent = await sendPrompt(pi, ctx, buildContinuePrompt(goal, marker));
-  if (!sent && goalRuntimeState.pendingContinuation?.marker === marker) goalRuntimeState.pendingContinuation = undefined;
+  if (!sent && isCurrentContinuation(marker, sessionGeneration)) goalRuntimeState.pendingContinuation = undefined;
 }
 
-function scheduleContinuationDelivery(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState, marker: string) {
+function scheduleContinuationDelivery(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState, marker: string, sessionGeneration: number) {
   clearContinuationDeliveryTimer();
   goalRuntimeState.continuationDeliveryTimer = setTimeout(() => {
-    void deliverContinuationWhenIdle(pi, ctx, goal, marker);
+    void deliverContinuationWhenIdle(pi, ctx, goal, marker, sessionGeneration);
   }, CONTINUATION_POLL_INTERVAL_MS);
 }
 
@@ -3332,11 +3394,25 @@ async function sendPrompt(pi: ExtensionAPI, ctx: DgoalContext, prompt: string) {
   }
 }
 
-export function persistGoal(goal: GoalState | null) {
-  api?.appendEntry<DgoalStateEntryData>(STATE_ENTRY_TYPE, { goal });
+export function persistGoal(goal: GoalState | null, pendingProposal = goalRuntimeState.pendingProposal) {
+  const persistedProposal = goal && pendingProposal?.goalId === goal.id ? pendingProposal : undefined;
+  api?.appendEntry<DgoalStateEntryData>(STATE_ENTRY_TYPE, { goal, pendingProposal: persistedProposal });
 }
 
-export function loadGoal(ctx: DgoalContext) {
+function normalizeLoadedGoal(goal: GoalState): GoalState {
+  if (!goal.plan?.phases?.some((phase) => !Array.isArray((phase as unknown as Record<string, unknown>).tasks))) return goal;
+  return {
+    ...goal,
+    plan: {
+      ...goal.plan,
+      phases: goal.plan.phases.map((phase) =>
+        Array.isArray((phase as unknown as Record<string, unknown>).tasks) ? phase : { ...phase, tasks: [] },
+      ),
+    },
+  };
+}
+
+function loadPersistedState(ctx: DgoalContext): { goal?: GoalState; pendingProposal?: PendingProposalState } {
   const sessionManager = ctx.sessionManager as
     | {
         getBranch?: () => Array<{ type?: string; customType?: string; data?: unknown }>;
@@ -3344,13 +3420,18 @@ export function loadGoal(ctx: DgoalContext) {
       }
     | undefined;
   const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
-  const entry = entries
-    .filter((item) => item.type === "custom" && item.customType === STATE_ENTRY_TYPE)
-    .pop();
+  const entry = entries.filter((item) => item.type === "custom" && item.customType === STATE_ENTRY_TYPE).pop();
   const data = entry?.data as DgoalStateEntryData | undefined;
-  return isGoalState(data?.goal) && data.goal.status !== "done"
-    ? data.goal
+  const rawGoal = isGoalState(data?.goal) && data.goal.status !== "done" ? data.goal : undefined;
+  const goal = rawGoal ? normalizeLoadedGoal(rawGoal) : undefined;
+  const pendingProposal = goal && goal.status === "pending" && data?.pendingProposal?.goalId === goal.id
+    ? data.pendingProposal
     : undefined;
+  return { goal, pendingProposal };
+}
+
+export function loadGoal(ctx: DgoalContext) {
+  return loadPersistedState(ctx).goal;
 }
 
 function isStaleSessionContextError(error: unknown): boolean {
@@ -3360,9 +3441,12 @@ function isStaleSessionContextError(error: unknown): boolean {
 
 export function restoreGoalIfMissing(ctx: DgoalContext): GoalState | undefined {
   if (goalRuntimeState.currentGoal) return goalRuntimeState.currentGoal;
-  const restored = loadGoal(ctx);
-  if (restored) goalRuntimeState.currentGoal = restored;
-  return restored;
+  const restored = loadPersistedState(ctx);
+  if (restored.goal) {
+    goalRuntimeState.currentGoal = restored.goal;
+    goalRuntimeState.pendingProposal = restored.pendingProposal;
+  }
+  return restored.goal;
 }
 
 // session_start / session_tree / session_compact 共用：从当前 session 重加载 goal 并重同步 status/overlay。
@@ -3370,15 +3454,21 @@ export function restoreGoalIfMissing(ctx: DgoalContext): GoalState | undefined {
 export function resyncGoalFromSession(ctx: DgoalContext) {
   let nextGoal: GoalState | undefined;
   try {
-    nextGoal = loadGoal(ctx);
+    const restored = loadPersistedState(ctx);
+    nextGoal = restored.goal;
+    goalRuntimeState.pendingProposal = restored.pendingProposal;
   } catch (error) {
     if (isStaleSessionContextError(error)) return;
     throw error;
   }
-  clearContinuation();
+  // 已进入发送阶段的旧 continuation 仍可能尚未被宿主派发；保留 marker 让 input handler 丢弃它。
+  cancelPendingContinuation();
   clearCurrentCheckSnapshot();
+  planOverlay?.clearDoneSnapshot();
+  goalRuntimeState.sessionGeneration += 1;
   resetAuditorWorkspaceTracker();
-  // 加载新 goal 前清空无进展计数，避免跨 goal/session 继承旧计数。
+  // 加载新 goal 前清空错误与无进展计数，避免跨 goal/session 继承旧计数。
+  goalRuntimeState.consecutiveErrors = 0;
   goalRuntimeState.consecutiveNoProgressTurns = 0;
   goalRuntimeState.turnHadToolExecution = false;
   goalRuntimeState.currentGoal = nextGoal;
@@ -3411,7 +3501,7 @@ export function resolveAuditorWorkspaceCwd(ctx: Pick<DgoalContext, "cwd" | "sess
 }
 
 export function resetAuditorWorkspaceTracker() {
-  pendingFileToolExecutions.clear();
+  goalRuntimeState.pendingFileToolExecutions.clear();
   goalRuntimeState.latestSuccessfulModifiedFilePath = undefined;
   goalRuntimeState.latestSuccessfulReadFilePath = undefined;
 }
@@ -3422,13 +3512,13 @@ export function trackFileToolExecutionStart(toolCallId: string, toolName: string
   const rawPath = (args as { path?: unknown }).path;
   if (typeof rawPath !== "string" || rawPath.length === 0) return;
   const resolvedPath = path.isAbsolute(rawPath) ? path.normalize(rawPath) : path.resolve(cwd, rawPath);
-  pendingFileToolExecutions.set(toolCallId, { toolName, path: resolvedPath });
+  goalRuntimeState.pendingFileToolExecutions.set(toolCallId, { toolName, path: resolvedPath });
 }
 
 export function trackFileToolExecutionEnd(toolCallId: string, isError: boolean) {
-  const pending = pendingFileToolExecutions.get(toolCallId);
+  const pending = goalRuntimeState.pendingFileToolExecutions.get(toolCallId);
   if (!pending) return;
-  pendingFileToolExecutions.delete(toolCallId);
+  goalRuntimeState.pendingFileToolExecutions.delete(toolCallId);
   if (isError) return;
   if (pending.toolName === "read") {
     goalRuntimeState.latestSuccessfulReadFilePath = pending.path;
@@ -3827,6 +3917,7 @@ function clearActiveGoal(ctx: DgoalContext) {
   goalRuntimeState.consecutiveNoProgressTurns = 0;
   goalRuntimeState.turnHadToolExecution = false;
   resetAuditorWorkspaceTracker();
+  planOverlay?.clearDoneSnapshot();
   goalRuntimeState.currentGoal = undefined;
   persistGoal(null);
   safeSetDgoalStatus(ctx, undefined);
@@ -3921,138 +4012,7 @@ let completionAuditorOverrideForTest: (() => Promise<AuditorResult>) | undefined
 let contextSummarizerOverrideForTest: ((args: { objective: string; priorDiscussion: string }) => Promise<ContextSummaryResult>) | undefined;
 let contextSummarizerOnceOverrideForTest: ((args: { objective: string; priorDiscussion: string; modelId: string }) => Promise<ContextSummaryResult>) | undefined;
 
-const AUDITOR_NETWORK_ERROR_CODES = new Set([
-  "ECONNABORTED",
-  "ECONNREFUSED",
-  "ECONNRESET",
-  "EAI_AGAIN",
-  "EHOSTUNREACH",
-  "ENETUNREACH",
-  "ENOTFOUND",
-  "ETIMEDOUT",
-]);
-
-function structuredHttpStatus(value: unknown): number | undefined {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 100 && value <= 599) return value;
-  if (typeof value === "string" && /^\d{3}$/.test(value)) return Number(value);
-  return undefined;
-}
-
-// Pi 的 AssistantMessage diagnostics 是跨 child 边界仍保留的结构化错误载体；不检查 errorMessage 文本。
-function extractAuditorErrorInfo(diagnostics: unknown): AuditorErrorInfo | undefined {
-  if (!Array.isArray(diagnostics)) return undefined;
-  for (const diagnostic of [...diagnostics].reverse()) {
-    if (!diagnostic || typeof diagnostic !== "object") continue;
-    const { type, error, details } = diagnostic as {
-      type?: unknown;
-      error?: { code?: unknown };
-      details?: Record<string, unknown>;
-    };
-    const status = structuredHttpStatus(error?.code)
-      ?? structuredHttpStatus(details?.status)
-      ?? structuredHttpStatus(details?.statusCode)
-      ?? structuredHttpStatus(details?.httpStatus)
-      ?? structuredHttpStatus(details?.httpStatusCode);
-    if (status !== undefined) return { kind: "http", status };
-    const code = typeof error?.code === "string" ? error.code : undefined;
-    if (typeof type === "string" && type === "provider_transport_failure") return { kind: "network", code };
-    if (code && AUDITOR_NETWORK_ERROR_CODES.has(code)) return { kind: "network", code };
-  }
-  return undefined;
-}
-
-// Pi 的部分 provider 将 HTTP 状态规范化为 `401: {"code":"401",...}` errorMessage。
-// 只接受前缀与 JSON code 一致的严格结构化包；不从任意人读文本（如 `HTTP 429`）猜状态。
-function extractStructuredProviderErrorInfo(errorMessage: unknown): AuditorErrorInfo | undefined {
-  if (typeof errorMessage !== "string") return undefined;
-  const match = /^(\d{3}):\s*(\{.*\})$/s.exec(errorMessage.trim());
-  if (!match) return undefined;
-  try {
-    const payload = JSON.parse(match[2]) as { code?: unknown };
-    const status = structuredHttpStatus(match[1]);
-    return status !== undefined && structuredHttpStatus(payload.code) === status ? { kind: "http", status } : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// v0.5.2 建检活性状态（ADR 0012）：独立建检子进程的运行时状态投影。
-// starting→thinking/tool_running/report_streaming→approved/rejected/auditor_error（收敛态）。
-// 属运行时观察层，不写进 GoalState。
-type CheckLivenessState =
-  | "starting"
-  | "thinking"
-  | "tool_running"
-  | "report_streaming"
-  | "approved"
-  | "rejected"
-  | "auditor_error";
-
-// v0.5.2：事件→活性推导纯函数（ADR 0012）。从一条子进程 stdout 事件推导它代表的建检活性状态。
-// 抽成纯函数便于单测事件识别（thinking/toolcall/text 不再被误判为空闲超时的关键）。
-export function classifyCheckEvent(line: string):
-  | {
-    liveness: CheckLivenessState;
-    toolName?: string;
-    delta?: string;
-    isMessageEnd?: boolean;
-    text?: string;
-    errorMessage?: string;
-    errorInfo?: AuditorErrorInfo;
-    aborted?: boolean;
-  }
-  | null {
-  if (!line.trim()) return null;
-  let event: {
-    type?: string;
-    assistantMessageEvent?: { type?: string; delta?: string; toolName?: string };
-    toolName?: string;
-    message?: {
-      role?: string;
-      content?: Array<{ type: string; text?: string }>;
-      stopReason?: string;
-      errorMessage?: string;
-      diagnostics?: unknown;
-    };
-  };
-  try { event = JSON.parse(line); } catch { return null; }
-  const evtType = event.assistantMessageEvent?.type;
-  if (event.type === "message_update" && (evtType === "thinking_start" || evtType === "thinking_delta" || evtType === "thinking_end")) {
-    return { liveness: "thinking" };
-  }
-  if (event.type === "message_update" && (evtType === "toolcall_start" || evtType === "toolcall_delta" || evtType === "toolcall_end")) {
-    return { liveness: "tool_running", toolName: event.assistantMessageEvent?.toolName };
-  }
-  if (event.type === "message_update" && evtType === "text_delta") {
-    const delta = typeof event.assistantMessageEvent?.delta === "string" ? event.assistantMessageEvent.delta : undefined;
-    return { liveness: "report_streaming", delta };
-  }
-  // Pi 在真正执行内置工具时不再发送 assistantMessageEvent；长 bash 会在这里静默。
-  // 必须识别该事件并扩大工具执行窗口，否则全量验证会被 180 秒模型空闲门误杀。
-  if (event.type === "tool_execution_start" || event.type === "tool_execution_update") {
-    return { liveness: "tool_running", toolName: event.toolName };
-  }
-  if (event.type === "tool_execution_end") {
-    return { liveness: "thinking", toolName: event.toolName };
-  }
-  if (event.type === "message_end" && event.message?.role === "assistant") {
-    const text = (event.message.content ?? [])
-      .filter((part) => part.type === "text" && typeof part.text === "string")
-      .map((part) => part.text!).join("\n\n");
-    const aborted = event.message.stopReason === "aborted";
-    const errorMessage = typeof event.message.errorMessage === "string" ? event.message.errorMessage : undefined;
-    return {
-      // toolUse 的 message_end 后紧接 tool_execution_*；在两者之间也保持工具窗口。
-      liveness: event.message.stopReason === "toolUse" ? "tool_running" : "report_streaming",
-      isMessageEnd: true,
-      text,
-      aborted,
-      errorMessage,
-      errorInfo: extractAuditorErrorInfo(event.message.diagnostics) ?? extractStructuredProviderErrorInfo(errorMessage),
-    };
-  }
-  return null;
-}
+// Event classification is implemented by the isolated audit child and re-exported above.
 
 export function formatCheckLivenessLine(args: {
   liveness: CheckLivenessState;
@@ -4072,19 +4032,7 @@ export function formatCheckLivenessLine(args: {
 }
 
 // v0.5.2：运行时活性快照，随 onUpdate 工具执行流流出（含剩余秒数倒计时，不进 setStatus）。
-interface CheckLivenessSnapshot {
-  liveness: CheckLivenessState;
-  // 当前工具名（tool_running 时）或最近工具名，供 TUI 展示片段
-  currentTool?: string;
-  // 最近的简短描述片段（如 "read index.ts"），供 TUI 展示
-  lastSnippet?: string;
-  // 剩余空闲秒数（idle Ns/total），有事件跳回 total，无事件降到 0
-  idleSecondsLeft?: number;
-  idleSecondsTotal?: number;
-  // 当前候选尝试（每个候选在一次审核中最多调用一次）
-  attempt?: number;
-  attemptTotal?: number;
-}
+// CheckLivenessSnapshot moved to goalRuntimeState.
 
 interface CheckRuntimeOptions {
   idleTimeoutMs?: number;
@@ -4098,7 +4046,7 @@ interface CheckRuntimeOptions {
   onUpdate?: ((update: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> }) => void) | undefined;
 }
 
-let currentCheckSnapshot: CheckLivenessSnapshot | undefined;
+// goalRuntimeState.currentCheckSnapshot moved to goalRuntimeState.
 
 function formatCheckActivityLine(snapshot: CheckLivenessSnapshot | undefined): string | undefined {
   if (!snapshot) return undefined;
@@ -4117,7 +4065,7 @@ function formatCheckActivityLine(snapshot: CheckLivenessSnapshot | undefined): s
 }
 
 function setCurrentCheckSnapshot(snapshot: CheckLivenessSnapshot | undefined): void {
-  currentCheckSnapshot = snapshot;
+  goalRuntimeState.currentCheckSnapshot = snapshot;
 }
 
 function snapshotFromUpdateDetails(details: Record<string, unknown>): CheckLivenessSnapshot | undefined {
@@ -4132,7 +4080,7 @@ function snapshotFromUpdateDetails(details: Record<string, unknown>): CheckLiven
 }
 
 export function clearCurrentCheckSnapshot(): void {
-  currentCheckSnapshot = undefined;
+  goalRuntimeState.currentCheckSnapshot = undefined;
 }
 
 export function getDgoalConfigPaths(cwd: string, agentDir = getAgentDir()) {
@@ -4531,53 +4479,10 @@ export async function resolveAuditorModelId(
   return resolution.modelIds[0];
 }
 
-function bindAuditorAbort(signal: AbortSignal | undefined, onAbort: () => void): () => void {
-  if (!signal) return () => {};
-  if (signal.aborted) {
-    onAbort();
-    return () => {};
-  }
-  const listener = () => onAbort();
-  signal.addEventListener("abort", listener, { once: true });
-  return () => signal.removeEventListener("abort", listener);
-}
-
-// 测试专用：覆盖正常结束后解绑、已中断 signal 不注册两条路径。
-export function __bindAuditorAbortForTest(signal: AbortSignal | undefined, onAbort: () => void): () => void {
-  return bindAuditorAbort(signal, onAbort);
-}
-
 // 工作区 fingerprint 只用于判断上一次独立审核事实能否复用；无法完整读取 git 时返回不可用。
-function fingerprintAuditWorkspace(cwd: string): string | undefined {
-  const runGit = (args: string[]) => {
-    const result = spawnSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, maxBuffer: 1_000_000 });
-    return result.status === 0 && !result.error ? result.stdout : undefined;
-  };
-  const head = runGit(["rev-parse", "HEAD"]);
-  const status = runGit(["status", "--porcelain=v1", "--untracked-files=all"]);
-  const diff = runGit(["diff", "--no-ext-diff", "--binary", "HEAD"]);
-  // ignored 配置/测试输入也会影响审核结果；依赖目录体量大且不属于项目事实，显式排除。
-  const untracked = runGit(["ls-files", "--others", "--exclude-standard", "-z", "--", ":!node_modules/**"]);
-  const ignored = runGit(["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", ":!node_modules/**"]);
-  if (head === undefined || status === undefined || diff === undefined || untracked === undefined || ignored === undefined) return undefined;
-
-  const untrackedFileDigests: string[] = [];
-  for (const relativePath of `${untracked}${ignored}`.split("\0").filter(Boolean)) {
-    try {
-      const content = fs.readFileSync(path.resolve(cwd, relativePath));
-      const digest = createHash("sha256").update(content).digest("hex");
-      untrackedFileDigests.push(`${relativePath}\0${digest}`);
-    } catch {
-      return undefined;
-    }
-  }
-  const untrackedFiles = untrackedFileDigests.join("\0");
-  const material = [cwd, head, status, diff, untrackedFiles].join("\u0000");
-  return createHash("sha256").update(material).digest("hex");
-}
 
 export function __fingerprintAuditWorkspaceForTest(cwd: string): string | undefined {
-  return fingerprintAuditWorkspace(cwd);
+  return fingerprintIsolatedAuditWorkspace(cwd);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -4594,321 +4499,48 @@ async function runIsolatedCheck(args: {
   systemPrompt: string;
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
-  const { ctx, systemPrompt, task, modelId } = args;
-  return await new Promise<AuditorResult>((resolve) => {
-    const auditorCwd = resolveAuditorWorkspaceCwd({
-      cwd: ctx.cwd,
-      sessionManager: (ctx as unknown as DgoalContext).sessionManager,
-    });
-    const workspaceFingerprint = fingerprintAuditWorkspace(auditorCwd) ?? `unavailable:${randomUUID()}`;
-    let checkpoint = args.checkpoint?.workspaceFingerprint === workspaceFingerprint
-      ? args.checkpoint
-      : { workspaceFingerprint, records: [] };
-    const procArgs = buildCheckCliArgs({ modelId, systemPrompt, task: withAuditCheckpoint(task, checkpoint) });
-    const invocation = getPiInvocation(procArgs);
-    const proc = spawnManagedSubprocess(invocation.command, invocation.args, auditorCwd);
-
-    let finalReport = "";
-    let partialReport = "";
-    let stderrText = "";
-    let childError: string | undefined;
-    let childErrorInfo: AuditorErrorInfo | undefined;
-    let childAborted = false;
-    let abortReason: "user" | "idle_timeout" | "total_timeout" | undefined;
-    let buffer = "";
-    let idleTimer: ReturnType<typeof setTimeout> | undefined;
-    let totalTimer: ReturnType<typeof setTimeout> | undefined;
-    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
-    let activeIdleTimeoutMs = args.idleTimeoutMs ?? CHECK_IDLE_TIMEOUT_MS;
-    let lastProgressUpdateAt = 0;
-    let sawChildFeedback = false;
-    // v0.5.2 建检活性状态（运行时观察层，不写 GoalState）
-    let liveness: CheckLivenessState = "starting";
-    let currentTool: string | undefined;
-    let lastSnippet: string | undefined;
-    let childUsage: unknown;
-    const pendingAuditToolArgs = new Map<string, { toolName: string; args: Record<string, unknown> }>();
-    let removeAbortListener = () => {};
-
-    const clearIdleTimer = () => {
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = undefined;
-    };
-
-    const clearTotalTimer = () => {
-      if (totalTimer) clearTimeout(totalTimer);
-      totalTimer = undefined;
-    };
-
-    const armIdleTimer = () => {
-      clearIdleTimer();
-      if (!args.idleTimeoutMs) return;
-      activeIdleTimeoutMs = getCheckIdleTimeoutMs(liveness, args.idleTimeoutMs);
-      idleDeadlineMs = Date.now() + activeIdleTimeoutMs;
-      idleTimer = setTimeout(() => killProc("idle_timeout"), activeIdleTimeoutMs);
-    };
-
-    // v0.5.2：构造活性快照文本，随 onUpdate 工具执行流流出（不进底部状态栏）
-    const buildLivenessLine = (): string => {
-      const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-      const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
-      return formatCheckLivenessLine({ liveness, currentTool, lastSnippet, idleLeft, idleTotal });
-    };
-
-    let idleDeadlineMs = 0;
-    // v0.5.2：1s ticker 独立刷新 onUpdate 倍计时显示（不触发 kill，kill 仍由 idle setTimeout 控制）
-    let countdownTicker: ReturnType<typeof setInterval> | undefined;
-    const startCountdownTicker = () => {
-      if (countdownTicker || !args.onUpdate) return;
-      countdownTicker = setInterval(() => {
-        // 只在运行中状态刷倒计时；收敛态不刷
-        if (liveness === "starting" || liveness === "thinking" || liveness === "tool_running" || liveness === "report_streaming") {
-          emitProgress(true);
-        }
-      }, CHECK_PROGRESS_UPDATE_THROTTLE_MS);
-    };
-    const stopCountdownTicker = () => {
-      if (countdownTicker) clearInterval(countdownTicker);
-      countdownTicker = undefined;
-    };
-
-    const emitProgress = (force = false) => {
-      if (!args.onUpdate) return;
-      const now = Date.now();
-      const throttleMs = args.progressUpdateThrottleMs ?? CHECK_PROGRESS_UPDATE_THROTTLE_MS;
-      if (!force && now - lastProgressUpdateAt < throttleMs) return;
-      lastProgressUpdateAt = now;
-      const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-      const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
-      const snapshot: CheckLivenessSnapshot = {
-        liveness,
-        currentTool,
-        lastSnippet,
-        idleSecondsLeft: idleLeft,
-        idleSecondsTotal: idleTotal,
-      };
-      const line = buildLivenessLine();
-      const reportPart = summarizeCheckProgress(finalReport || partialReport);
-      args.onUpdate({
-        content: [{ type: "text", text: `${line}\n${reportPart}` }],
-        details: { partial: true, snapshot },
-      });
-    };
-
-    // v0.5.2：任何有效事件都重置 idle timer（不止 text_delta），消灭假超时
-    const noteActivity = () => {
-      sawChildFeedback = true;
-      if (args.idleTimeoutMs) idleDeadlineMs = Date.now() + args.idleTimeoutMs;
-      armIdleTimer();
-    };
-
-    const processLine = (line: string) => {
-      if (line.trim()) {
-        try {
-          const raw = JSON.parse(line) as {
-            type?: unknown;
-            toolCallId?: unknown;
-            toolName?: unknown;
-            args?: unknown;
-            isError?: unknown;
-            message?: { role?: unknown; usage?: unknown };
-          };
-          if (raw.type === "message_end" && raw.message?.role === "assistant") childUsage = raw.message.usage;
-          const toolCallId = typeof raw.toolCallId === "string" ? raw.toolCallId : undefined;
-          const toolName = typeof raw.toolName === "string" ? raw.toolName : undefined;
-          const toolArgs = isRecord(raw.args) ? raw.args : undefined;
-          if (raw.type === "tool_execution_start" && toolCallId && toolName && toolArgs) {
-            pendingAuditToolArgs.set(toolCallId, { toolName, args: toolArgs });
-            checkpoint = applyCheckpointEvent(checkpoint, {
-              workspaceFingerprint,
-              toolName,
-              args: toolArgs,
-              phase: "start",
-              status: "running",
-            });
-            args.onCheckpoint?.(checkpoint);
-          }
-          if (raw.type === "tool_execution_end" && toolCallId && toolName) {
-            const pendingTool = pendingAuditToolArgs.get(toolCallId);
-            if (pendingTool && pendingTool.toolName === toolName) {
-              const status = raw.isError === false ? "success" : raw.isError === true ? "failed" : "unknown";
-              checkpoint = applyCheckpointEvent(checkpoint, {
-                workspaceFingerprint,
-                toolName: pendingTool.toolName,
-                args: pendingTool.args,
-                phase: "end",
-                status,
-              });
-              pendingAuditToolArgs.delete(toolCallId);
-              args.onCheckpoint?.(checkpoint);
-            }
-          }
-        } catch {
-          // classifyCheckEvent remains the tolerant parser for malformed child output.
-        }
-      }
-      const classified = classifyCheckEvent(line);
-      if (!classified) return;
-      liveness = classified.liveness;
-      if (classified.toolName) currentTool = classified.toolName;
-      // 先更新活性类型再重置计时，tool_execution_* 才能切到较长的工具窗口。
-      noteActivity();
-      if (classified.liveness === "report_streaming" && classified.delta) {
-        partialReport += classified.delta;
-        emitProgress();
-        return;
-      }
-      if (classified.isMessageEnd) {
-        if (classified.text?.trim()) {
-          finalReport = classified.text;
-          partialReport = classified.text;
-        }
-        if (classified.errorMessage) childError = classified.errorMessage;
-        if (classified.errorInfo) childErrorInfo = classified.errorInfo;
-        if (classified.aborted) childAborted = true;
-        emitProgress(true);
-        return;
-      }
-      emitProgress();
-    };
-
-    const finish = (result: AuditorResult) => {
-      clearIdleTimer();
-      clearTotalTimer();
-      stopCountdownTicker();
-      if (forceKillTimer) clearTimeout(forceKillTimer);
-      removeAbortListener();
-      proc.removeAllListeners();
-      proc.stdout?.removeAllListeners();
-      proc.stderr?.removeAllListeners();
-      // v0.5.2：最终活性状态写入 result.liveness
-      const finalLiveness: CheckLivenessState = result.error ? "auditor_error" : (result.approved ? "approved" : (result.output ? "rejected" : "auditor_error"));
-      const livenessResult = {
-        ...result,
-        ...(childUsage !== undefined ? { usage: childUsage } : {}),
-        liveness: result.liveness ?? finalLiveness,
-      };
-      if (livenessResult.usage && typeof livenessResult.usage === "object") {
-        const sessionManager = (ctx as unknown as DgoalContext).sessionManager as { getSessionId?: () => string } | undefined;
-        const parentSessionId = String(sessionManager?.getSessionId?.() ?? "unknown");
-        const usageRecord = buildAuditUsageRecord({
-          parentSessionId,
-          project: path.resolve(ctx.cwd),
-          scope: args.scope,
-          model: modelId ?? "current-session",
-          attempt: args.attempt ?? 1,
-          usage: livenessResult.usage,
-        });
-        void appendAuditUsage(path.join(getAgentDir(), "audit-usage.jsonl"), usageRecord).catch(() => {
-          // 账本是可观测性旁路，写入失败不能改变审核结论或状态机。
-        });
-      }
-      if (args.onUpdate && (livenessResult.output || partialReport || livenessResult.error)) {
-        const idleLeft = idleDeadlineMs ? Math.max(0, Math.ceil((idleDeadlineMs - Date.now()) / 1000)) : undefined;
-        const idleTotal = args.idleTimeoutMs ? Math.round(activeIdleTimeoutMs / 1000) : undefined;
-        const snapshot: CheckLivenessSnapshot = {
-          liveness: livenessResult.liveness!,
-          currentTool,
-          lastSnippet,
-          idleSecondsLeft: idleLeft,
-          idleSecondsTotal: idleTotal,
-        };
-        args.onUpdate({
-          content: [{ type: "text", text: summarizeCheckProgress(livenessResult.output || partialReport) }],
-          details: { partial: false, approved: livenessResult.approved, aborted: livenessResult.aborted, error: livenessResult.error, snapshot },
-        });
-      }
-      resolve(livenessResult);
-    };
-
-    proc.stdout.on("data", (data) => {
-      buffer = consumeBufferedLines(buffer, data.toString(), processLine, () => {
-        noteActivity();
-      });
-    });
-    proc.stderr.on("data", (data) => {
-      noteActivity();
-      stderrText += data.toString();
-    });
-
-    proc.on("close", (code) => {
-      if (buffer.trim()) processLine(buffer);
-      const output = (finalReport || partialReport).trim();
-      if (abortReason === "user" || childAborted) {
-        finish({
-          approved: false,
-          aborted: true,
-          output,
-          error: output ? undefined : t("runtime.error.auditInterrupted"),
-          errorInfo: { kind: "aborted" },
-        });
-        return;
-      }
-      if (abortReason === "total_timeout") {
-        finish({
-          approved: false,
-          aborted: false,
-          output,
-          error: formatAuditTotalTimeout(args.totalTimeoutMs ?? 0),
-          errorInfo: { kind: "timeout" },
-        });
-        return;
-      }
-      if (abortReason === "idle_timeout") {
-        const timedOutWhileToolRunning = liveness === "tool_running";
-        const timeoutLabel = sawChildFeedback
-          ? (timedOutWhileToolRunning ? "审核工具空闲超时" : "审核空闲超时")
-          : "审核启动超时";
-        const timeoutDetail = sawChildFeedback ? "无新反馈" : "无首个反馈";
-        const toolDetail = timedOutWhileToolRunning && currentTool ? `；工具=${currentTool}` : "";
-        finish({
-          approved: false,
-          aborted: false,
-          output,
-          error: `${timeoutLabel}（${activeIdleTimeoutMs}ms ${timeoutDetail}${toolDetail}）`,
-          errorInfo: { kind: "timeout" },
-        });
-        return;
-      }
-      if (childError) {
-        // Provider 可能在完整审核报告后追加 WebSocket/transport error。只要报告
-        // 已形成唯一明确的业务结论，传输层尾部错误不能覆盖 APPROVED/REJECTED；
-        // 只有没有终止标记时才把 childError 当作 auditor_error。
-        if (hasExplicitAuditorDecision(output)) {
-          finish({ approved: parseAuditorDecision(output), aborted: false, output });
-        } else {
-          finish({ approved: false, aborted: false, output, error: childError, errorInfo: childErrorInfo ?? { kind: "unknown" } });
-        }
-        return;
-      }
-      if (code !== 0 && !output) {
-        finish({
-          approved: false,
-          aborted: false,
-          output: "",
-          error: truncate(stderrText) || t("runtime.error.piExitCode", { code }),
-          errorInfo: { kind: "exit", exitCode: code },
-        });
-        return;
-      }
-      finish({ approved: parseAuditorDecision(output), aborted: false, output });
-    });
-
-    proc.on("error", () => {
-      if (abortReason) return;
-      finish({ approved: false, aborted: false, output: "", error: t("runtime.error.spawnFailed"), errorInfo: { kind: "spawn" } });
-    });
-
-    const killProc = (reason: "user" | "idle_timeout" | "total_timeout") => {
-      if (abortReason) return;
-      abortReason = reason;
-      forceKillTimer = terminateManagedSubprocess(proc);
-    };
-    removeAbortListener = bindAuditorAbort(ctx.signal, () => killProc("user"));
-    if (args.totalTimeoutMs) totalTimer = setTimeout(() => killProc("total_timeout"), args.totalTimeoutMs);
-    armIdleTimer();
-    startCountdownTicker();
+  const { ctx, scope, modelId, systemPrompt, task } = args;
+  const auditorCwd = resolveAuditorWorkspaceCwd({
+    cwd: ctx.cwd,
+    sessionManager: (ctx as unknown as DgoalContext).sessionManager,
   });
+  const sessionManager = (ctx as unknown as DgoalContext).sessionManager as { getSessionId?: () => string } | undefined;
+  const result = await runIsolatedPiCheck({
+    cwd: auditorCwd,
+    signal: ctx.signal,
+    scope,
+    modelId,
+    systemPrompt,
+    task,
+    idleTimeoutMs: args.idleTimeoutMs,
+    totalTimeoutMs: args.totalTimeoutMs,
+    progressUpdateThrottleMs: args.progressUpdateThrottleMs,
+    checkpoint: args.checkpoint,
+    onCheckpoint: args.onCheckpoint,
+    onUpdate: args.onUpdate,
+    getIdleTimeoutMs: (liveness, timeoutMs) => getCheckIdleTimeoutMs(liveness as CheckLivenessState, timeoutMs),
+    formatLivenessLine: (snapshot) => formatCheckLivenessLine({
+      liveness: snapshot.liveness as CheckLivenessState,
+      currentTool: snapshot.currentTool,
+      lastSnippet: snapshot.lastSnippet,
+      idleLeft: snapshot.idleSecondsLeft,
+      idleTotal: snapshot.idleSecondsTotal,
+    }),
+    summarizeProgress: summarizeCheckProgress,
+    messages: {
+      interrupted: t("runtime.error.auditInterrupted"),
+      spawnFailed: t("runtime.error.spawnFailed"),
+      piExitCode: (code) => t("runtime.error.piExitCode", { code }),
+      totalTimeout: formatAuditTotalTimeout,
+    },
+    usageLedger: {
+      path: path.join(getAgentDir(), "audit-usage.jsonl"),
+      parentSessionId: String(sessionManager?.getSessionId?.() ?? "unknown"),
+      project: path.resolve(ctx.cwd),
+      attempt: args.attempt ?? 1,
+    },
+  });
+  return result as AuditorResult;
 }
 
 function auditorCandidateStateFor(goal: GoalState | undefined, scope: AuditorScope): AuditorCandidateState {
@@ -4925,9 +4557,9 @@ function orderAuditorCandidates(goal: GoalState | undefined, scope: AuditorScope
   return available;
 }
 
-function recordAuditorCandidateResult(scope: AuditorScope, result: AuditorResult, goalId: string): void {
+function recordAuditorCandidateResult(scope: AuditorScope, result: AuditorResult, goalId: string, sessionGeneration: number): void {
   const goal = goalRuntimeState.currentGoal;
-  if (!goal || goal.id !== goalId) return;
+  if (goalRuntimeState.sessionGeneration !== sessionGeneration || !goal || goal.id !== goalId) return;
   const previous = auditorCandidateStateFor(goal, scope);
   const failed = new Set(previous.failedModelIds ?? []);
   for (const attempt of result.attempts ?? []) {
@@ -4961,8 +4593,11 @@ async function runAuditorWithCandidates(args: {
   task: string;
 } & CheckRuntimeOptions): Promise<AuditorResult> {
   const { ctx, goalId, revision, scope, systemPrompt, task, ...runtimeOptions } = args;
+  const sessionGeneration = goalRuntimeState.sessionGeneration;
   const resolution = await resolveAuditorModelCandidates(ctx, { scope });
-  const candidateGoal = goalRuntimeState.currentGoal?.id === goalId ? goalRuntimeState.currentGoal : undefined;
+  const candidateGoal = goalRuntimeState.sessionGeneration === sessionGeneration && goalRuntimeState.currentGoal?.id === goalId
+    ? goalRuntimeState.currentGoal
+    : undefined;
   const modelIds = orderAuditorCandidates(candidateGoal, scope, resolution.modelIds);
   if (modelIds.length === 0) {
     const exhausted: AuditorResult = {
@@ -4975,7 +4610,7 @@ async function runAuditorWithCandidates(args: {
       exhausted: true,
       liveness: "auditor_error",
     };
-    recordAuditorCandidateResult(scope, exhausted, goalId);
+    recordAuditorCandidateResult(scope, exhausted, goalId, sessionGeneration);
     return {
       ...exhausted,
       configDegraded: resolution.configDegraded,
@@ -4995,12 +4630,14 @@ async function runAuditorWithCandidates(args: {
       task: withPartialAuditFeedback(task, partialFeedback),
       ...runtimeOptions,
       totalTimeoutMs: Math.max(1, auditDeadlineMs - Date.now()),
-      checkpoint: goalRuntimeState.currentGoal?.id === goalId && (goalRuntimeState.currentGoal.plan?.revision ?? 0) === revision
+      checkpoint: goalRuntimeState.sessionGeneration === sessionGeneration
+        && goalRuntimeState.currentGoal?.id === goalId
+        && (goalRuntimeState.currentGoal.plan?.revision ?? 0) === revision
         ? goalRuntimeState.currentGoal.auditCheckpoints?.[scope]
         : undefined,
       onCheckpoint: (checkpoint) => {
         const goal = goalRuntimeState.currentGoal;
-        if (!goal || goal.id !== goalId || (goal.plan?.revision ?? 0) !== revision) return;
+        if (goalRuntimeState.sessionGeneration !== sessionGeneration || !goal || goal.id !== goalId || (goal.plan?.revision ?? 0) !== revision) return;
         goalRuntimeState.currentGoal = setAuditCheckpoint(goal, scope, checkpoint);
         persistGoal(goalRuntimeState.currentGoal);
       },
@@ -5009,7 +4646,7 @@ async function runAuditorWithCandidates(args: {
     shouldContinue,
     onUpdate: args.onUpdate,
   });
-  recordAuditorCandidateResult(scope, result, goalId);
+  recordAuditorCandidateResult(scope, result, goalId, sessionGeneration);
   return {
     ...result,
     configDegraded: resolution.configDegraded,
@@ -5119,18 +4756,6 @@ export function withPartialAuditFeedback(task: string, partialFeedback?: string)
   ].join("\n");
 }
 
-function withAuditCheckpoint(task: string, checkpoint: CheckpointState): string {
-  const report = buildPartialReport(checkpoint);
-  if (!report) return task;
-  return [
-    task,
-    "",
-    "<audit_checkpoint>",
-    "以下是同一工作区内由独立审核 child 记录的工具执行事实。status=success 的精确命令已经完成，不得重复执行；未完成或 unknown 不能视为通过，应检查其产物后只补跑尚未覆盖的验收条件。",
-    escapeXml(report),
-    "</audit_checkpoint>",
-  ].join("\n");
-}
 
 function formatAuditorFailureKind(errorInfo: AuditorErrorInfo | undefined): string {
   if (!errorInfo) return "unknown";
@@ -5378,10 +5003,12 @@ let spawnManagedSubprocess: SpawnManagedSubprocess = spawnManagedSubprocessImpl;
 // 测试专用：替换隔离子进程 spawn，保持生产行为不变。
 export function __setSpawnManagedSubprocessForTest(spawnImpl: SpawnManagedSubprocess | undefined): void {
   spawnManagedSubprocess = spawnImpl ?? spawnManagedSubprocessImpl;
+  setIsolatedSpawnForTest(spawnImpl);
 }
 
 export function __resetSpawnManagedSubprocessForTest(): void {
   spawnManagedSubprocess = spawnManagedSubprocessImpl;
+  resetIsolatedSpawnForTest();
 }
 
 const AUDITOR_MODEL_REGISTRY_REQUEST_ID = "dgoal-auditor-model-registry";
@@ -5729,7 +5356,7 @@ export function __resetGoalForTest() {
   completionAuditorOverrideForTest = undefined;
   contextSummarizerOverrideForTest = undefined;
   contextSummarizerOnceOverrideForTest = undefined;
-  currentCheckSnapshot = undefined;
+  goalRuntimeState.currentCheckSnapshot = undefined;
   proposalSemanticReviewOverrideForTest = undefined;
   proposalSemanticCompletionOverrideForTest = undefined;
   proposalSemanticStreamOverrideForTest = undefined;
@@ -5783,7 +5410,7 @@ export function __getRuntimeStateForTest() {
     cancelledMarkers: [...goalRuntimeState.cancelledMarkers],
     latestSuccessfulModifiedFilePath: goalRuntimeState.latestSuccessfulModifiedFilePath,
     latestSuccessfulReadFilePath: goalRuntimeState.latestSuccessfulReadFilePath,
-    currentCheckSnapshot: currentCheckSnapshot ? { ...currentCheckSnapshot } : undefined,
+    currentCheckSnapshot: goalRuntimeState.currentCheckSnapshot ? { ...goalRuntimeState.currentCheckSnapshot } : undefined,
   };
 }
 // 测试专用：验证 goalRuntimeState.startGoalInProgress 标志在 startGoal 结束后正确清零
@@ -5793,7 +5420,7 @@ export function __isStartGoalInProgressForTest() {
 }
 
 export function __setCheckSnapshotForTest(snapshot: CheckLivenessSnapshot | undefined) {
-  currentCheckSnapshot = snapshot;
+  goalRuntimeState.currentCheckSnapshot = snapshot;
 }
 
 export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
@@ -5908,7 +5535,7 @@ export function __selectAuditorCandidatesForTest(scope: AuditorScope, modelIds: 
 
 export function __recordAuditorCandidateResultForTest(scope: AuditorScope, result: AuditorResult): void {
   const goalId = goalRuntimeState.currentGoal?.id;
-  if (goalId) recordAuditorCandidateResult(scope, result, goalId);
+  if (goalId) recordAuditorCandidateResult(scope, result, goalId, goalRuntimeState.sessionGeneration);
 }
 
 export function __setPhaseCheckOverrideForTest(override: (() => Promise<AuditorResult>) | undefined) {
@@ -6295,17 +5922,17 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
     ? `${doneTasks}/${totalTasks}`
     : `${donePhases}/${visiblePhases.length}p ${doneTasks}/${totalTasks}t`;
   const heading = buildOverlayHeading(goal, progress, compactProgress, elapsed, compactElapsed, width);
-  const activityLine = formatCheckActivityLine(currentCheckSnapshot);
-  const showDetails = opts.expandTasks || goal.status === "done";
+  const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
+  const showExpandedDetails = opts.expandTasks || goal.status === "done";
 
   const bodyLines: string[] = [];
-  if (showDetails && activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
-  if (showDetails && planType === "task") {
+  if (showExpandedDetails && activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
+  if (planType === "task") {
     for (const task of taskPlanPhase.tasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52));
-  } else if (showDetails) {
+  } else {
     for (const phase of visiblePhases) {
       bodyLines.push(formatPhaseDisplay(phase, "├─ ", 44));
-      if (goal.status === "done" || shouldExpandTasksInPersistentOverlay(phase.status)) {
+      if (showExpandedDetails && (goal.status === "done" || shouldExpandTasksInPersistentOverlay(phase.status))) {
         for (const task of phase.tasks) bodyLines.push(formatTaskDisplay(task, "│    ", 46));
       }
     }
@@ -6313,9 +5940,9 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
 
   const commands = t("overlay.commands");
   if (goal.status === "done") return fitOverlayLines([heading, ...bodyLines], width);
-  const hintLine = showDetails
-    ? t("overlay.hideTasks", { commands })
-    : t("overlay.showTasks", { commands });
+  const hintLine = planType === "task"
+    ? commands
+    : (showExpandedDetails ? t("overlay.hideTasks", { commands }) : t("overlay.showTasks", { commands }));
   const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2; // heading + 底部 hint
   if (bodyLines.length <= maxBodyLines) return fitOverlayLines([heading, ...bodyLines, hintLine], width);
 
@@ -6552,12 +6179,18 @@ export class PlanOverlay {
     }, DONE_HIDE_DELAY_MS);
   }
 
-  // goal 清除/重置时清理闪现状态
-  reset(): void {
+  // 新 goal、session 切换或显式 clear 时丢弃旧 goal 的完成快照，但保留现有 UI 绑定。
+  clearDoneSnapshot(): void {
     if (this.doneHideTimer) {
       clearTimeout(this.doneHideTimer);
       this.doneHideTimer = undefined;
     }
+    this.doneSnapshot = undefined;
+  }
+
+  // goal 清除/重置时清理闪现状态
+  reset(): void {
+    this.clearDoneSnapshot();
     if (this.terminalInputUnsubscribe) {
       try { this.terminalInputUnsubscribe(); } catch { /* UI cleanup is best effort */ }
       this.terminalInputUnsubscribe = undefined;
@@ -6727,7 +6360,7 @@ export class PlanStatusDialog implements Component, Focusable {
     const heading = " " + th.fg("accent", th.bold(buildHeadingLine(this.goal)));
     lines.push(...wrapModalText(heading, width, 1));
 
-    const activityLine = formatCheckActivityLine(currentCheckSnapshot);
+    const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
     if (activityLine) {
       lines.push(...wrapModalText(" " + th.fg("dim", activityLine), width, 1));
     }

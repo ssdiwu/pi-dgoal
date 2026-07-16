@@ -90,14 +90,14 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 | `phase_plan` | Submit an explicitly activated Phase Plan with a frozen goal contract |
 | `goal_plan` | Submit an explicitly activated Goal Plan with frozen phase and goal contracts |
 | `plan_create` | Add a task only; never add a phase |
-| `plan_read` | Read a plan, goal, phase, or task; pure read with a compact visible summary and expandable structured details (Task Plan hides its phase) |
+| `plan_read` | Read a plan, goal, phase, or task; pure read: plan/goal return aggregate phase/task progress for the whole Plan, while phase/task return one compact item; no raw Plan payload (Task Plan hides its phase) |
 | `plan_update` | Sole agent-facing execution-status writer for task/phase/goal progress, completion, and agent pause |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
 
 Tool names follow a two-word rule and do not use a `dgoal_` prefix. `dgoal` remains the product and user-command name.
 
-Phase and task identifiers use separate namespaces: each starts at `1`, while task IDs remain unique across the whole Plan so `blockedBy` can reference tasks in the same or an earlier phase. Typed tool targets disambiguate phase `#1` from task `#1`; `nextId` allocates tasks only. Existing persisted Plans keep their original IDs.
+Phase and task identifiers use separate namespaces: each starts at `1`, while task IDs remain unique across the whole Plan so `blockedBy` can reference tasks in the same or an earlier phase. Typed tool targets disambiguate phase `#1` from task `#1`; `nextId` allocates tasks only. `plan_read(target=plan|goal)` aggregates phase/task progress (done/total) across the whole Plan; `target=phase|task` returns only that item. During load/resync, old persisted phases without `tasks` are normalized to `tasks: []`; existing persisted Plans keep their original IDs.
 
 ## Completion Guards
 
@@ -123,8 +123,8 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 ## TUI
 
-- **Persistent widget:** normally shows only the objective, aggregate progress, elapsed time, and an expand hint; headings truncate the objective to the current terminal width.
-- **`Ctrl+O`:** expands the live Plan details and audit activity; the ten-second completion snapshot shows every phase and task.
+- **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
+- **`Ctrl+O`:** expands tasks and audit activity under Phase/Goal Plan phases; the ten-second completion snapshot shows every phase and task.
 - **`/dgoal s` modal:** shows the full visible plan; Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 

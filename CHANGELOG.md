@@ -7,10 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.4] - 2026-07-16
+
+### Changed
+
+- **Task Plan 展示与模型错误熔断**：常驻浮层默认列 task；成功工具推进会重置模型错误计数，前两次连续错误静默、第 3/4 次告警、第 5 次暂停。
+- **`plan_read` 人类可读诊断**：不再返回原始 Plan payload；`target=plan|goal` 聚合整个 Plan 的 phase/task 进度，`target=phase|task` 返回单项。
+
 ### Fixed
 
-- **`plan_read` 不再默认铺满对话**：正文只显示紧凑摘要，完整结构移入可展开详情。
-- **旧持久态的依赖环可被修复**：`removeBlockedBy` 与 `addBlockedBy` 同次更新按最终依赖集验环，不再把已移除边重新加入检测图。
+- **跨 session 分支异步隔离**：旧分支迟到的审核结果、活性更新或 continuation 不再写入/投递到重同步后的新分支。
+- **Task Plan 替换与完成浮层**：创建或替换 Task Plan 时清除旧完成快照，不再短暂显示上一目标。
+- **旧持久态兼容**：缺少 `tasks` 的 phase 在 load/resync 时规范化为 `tasks: []`；`removeBlockedBy` 与 `addBlockedBy` 同次更新按最终依赖集验环。
+- **独立审核子进程边界**：事件分类与 abort 处理改为复用 isolated runner 的生产实现，避免测试副本漂移。
 
 ## [0.7.3] - 2026-07-16
 
@@ -169,7 +178,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`/tree` 导航后浮层与 goal 状态不重同步**：`/tree`（`navigateTree`）原地切 session 分支，只发 `session_tree` 通知、不发 `session_start`，而 pi-dgoal 此前未监听 `session_tree`，导致 `currentGoal` 停在旧分支、计划浮层显示陈旧状态（阶段明明完成了还显示未完成，计时器也冻住）。现抽取 `resyncGoalFromSession`（清 continuation/check snapshot/auditor tracker + `loadGoal` + setStatus + overlay 重同步），`session_start` 与新增的 `session_tree` 处理共用，保证两个事件路径不分叉；UI 抛错不阻断状态重同步。`/fork` 走 `session_start reason fork`，同步被覆盖。
+- **`/tree` 导航后浮层与 goal 状态不重同步**：`/tree`（`navigateTree`）原地切 session 分支，只发 `session_tree` 通知、不发 `session_start`，而 pi-dgoal 此前未监听 `session_tree`，导致 `currentGoal` 停在旧分支、计划浮层显示陈旧状态（阶段明明完成了还显示未完成，计时器也冻住）。现抽取 `resyncGoalFromSession`（取消旧 continuation、清 check snapshot/auditor tracker + `loadGoal` + setStatus + overlay 重同步），`session_start` 与新增的 `session_tree` 处理共用，保证两个事件路径不分叉；每次成功重同步递增仅内存的 session generation，旧分支异步审核结果不能写回新分支，已发送但尚未派发的旧 continuation 会被 input handler 丢弃；UI 抛错不阻断状态重同步。`/fork` 走 `session_start reason fork`，同步被覆盖。
 
 - **`/dgoal` 启动不暂停当前 LLM 工作**：`startGoal` 此前不 abort 当前 agent turn（`clearGoal` 有 `ctx.abort`，`startGoal` 没有），用户在 LLM 工作时敲 `/dgoal` 要等当前 turn 跑完才进 dgoal。现 `startGoal` 入口在非 idle 时 `ctx.abort`（参照 `shouldAbortCurrentTurnOnClear`）；并用 `startGoalInProgress` 标志包住「创建 pending goal → 投递 propose prompt」整段（try/finally），抑制被中断 turn 的 `agent_end` 触发 `handleStartupGate` 与 startGoal 自己的 propose 投递撞车（双发）。
 

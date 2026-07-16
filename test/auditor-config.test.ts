@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdirSync, mkdtempSync, promises as fsPromises, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,8 @@ import { join } from "node:path";
 import {
   __resetAuditorModelRegistryCacheForTest,
   __resetDgoalConfigNotifiedForTest,
+  __resetSpawnManagedSubprocessForTest,
+  __setSpawnManagedSubprocessForTest,
   getAuditorModelRegistryForPreflight,
   getDgoalConfigPaths,
   loadDgoalConfig,
@@ -38,6 +41,7 @@ afterEach(() => {
   }
   __resetAuditorModelRegistryCacheForTest();
   __resetDgoalConfigNotifiedForTest();
+  __resetSpawnManagedSubprocessForTest();
 });
 
 describe("dgoal auditor config", () => {
@@ -84,6 +88,48 @@ describe("dgoal auditor config", () => {
     })).rejects.toThrow("registry unavailable");
     expect(await getAuditorModelRegistryForPreflight("/repo", loadModels)).toEqual([{ provider: "openai", id: "gpt-5" }]);
     expect(calls).toBe(2);
+  });
+
+  test("queries the isolated model registry over its extension-free RPC child", async () => {
+    const { cwd, agentDir } = makeTempProject();
+    writeFileSync(join(agentDir, "pi-dgoal.json"), JSON.stringify({ phaseAuditorModels: ["openai/gpt-5"] }));
+    const launches: string[][] = [];
+    const requests: unknown[] = [];
+    __setSpawnManagedSubprocessForTest((_command, args) => {
+      launches.push(args);
+      const stdout = new EventEmitter();
+      const proc = new EventEmitter() as any;
+      proc.stdout = stdout;
+      proc.stderr = new EventEmitter();
+      proc.pid = 42;
+      proc.exitCode = null;
+      proc.signalCode = null;
+      proc.kill = () => { proc.exitCode = 0; proc.signalCode = "SIGTERM"; };
+      proc.stdin = {
+        write: (value: string, callback?: (error?: Error | null) => void) => {
+          requests.push(JSON.parse(value));
+          queueMicrotask(() => stdout.emit("data", `${JSON.stringify({
+            type: "response",
+            id: "dgoal-auditor-model-registry",
+            command: "get_available_models",
+            success: true,
+            data: { models: [{ provider: "openai", id: "gpt-5" }] },
+          })}\n`));
+          callback?.();
+        },
+      };
+      return proc;
+    });
+
+    const resolution = await resolveAuditorModelCandidates(
+      { cwd, isProjectTrusted: () => true, model: { provider: "other", id: "model" } as any, ui: { notify: () => {} } as any },
+      { agentDir, scope: "phase" },
+    );
+
+    expect(resolution.modelIds).toEqual(["openai/gpt-5"]);
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.slice(-5)).toEqual(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
+    expect(requests).toEqual([{ id: "dgoal-auditor-model-registry", type: "get_available_models" }]);
   });
 
   test("uses registry-confirmed candidates and falls through when a configured chain is unavailable", async () => {

@@ -8,6 +8,7 @@ import dgoal, {
   __setCheckSnapshotForTest,
   __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
+  __setPlanOverlayForTest,
   __setPhaseCheckOverrideForTest,
   __setProposalSemanticReviewForTest,
   goalCheckTool,
@@ -16,6 +17,8 @@ import dgoal, {
   planCreateTool,
   planReadTool,
   planUpdateTool,
+  PlanOverlay,
+  registerDgoal,
   renderPlanLines,
   taskPlanTool,
 } from "../index.ts";
@@ -47,6 +50,10 @@ beforeEach(() => {
 });
 
 describe("Three-Plan public tool surface", () => {
+  test("exports the registration function by name as well as default", () => {
+    expect(registerDgoal).toBe(dgoal);
+  });
+
   test("registers exactly the eight two-word tools", () => {
     const names: string[] = [];
     dgoal({
@@ -71,12 +78,29 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()).toBeUndefined();
   });
 
+  test("Task Plan replacement clears a stale done snapshot", async () => {
+    const overlay = new PlanOverlay();
+    let cleared = 0;
+    overlay.clearDoneSnapshot = () => { cleared += 1; };
+    __setPlanOverlayForTest(overlay);
+    try {
+      const result = await execute(taskPlanTool, { objective: "新目标", tasks: [{ subject: "任务" }] });
+      expect(result.isError).not.toBe(true);
+      expect(cleared).toBe(1);
+    } finally {
+      __setPlanOverlayForTest(undefined);
+      overlay.dispose();
+    }
+  });
+
   test("Task Plan is direct, task-first, replaceable, and closes without audit", async () => {
     const started = await execute(taskPlanTool, {
       objective: "修复键盘",
       tasks: [{ subject: "定位" }, { subject: "修复", blockedBy: [1] }, { subject: "验证", blockedBy: [2] }],
     });
     expect(started.details).toMatchObject({ planType: "task", revision: 0 });
+    expect(started.content[0].text).toBe("Task Plan 已建立：修复键盘（0/3 tasks）");
+    expect(started.content[0].text).not.toContain("Start the first task");
     expect(__getGoalForTest()?.planType).toBe("task");
     expect(__getGoalForTest()?.plan?.phases).toHaveLength(1);
     expect(__getGoalForTest()?.plan?.phases[0].id).toBe(1);
@@ -84,9 +108,8 @@ describe("Three-Plan public tool surface", () => {
 
     let lines = renderPlanLines(__getGoalForTest(), { expandTasks: false });
     expect(lines[0]).toContain("0/3 tasks");
-    expect(lines.some((line) => line.includes("定位"))).toBe(false);
-    expect(lines.some((line) => line.includes("Ctrl+O 展开详情"))).toBe(true);
-    expect(renderPlanLines(__getGoalForTest(), { expandTasks: true }).some((line) => line.includes("定位"))).toBe(true);
+    expect(lines.some((line) => line.includes("定位"))).toBe(true);
+    expect(lines.some((line) => line.includes("Ctrl+O 展开详情"))).toBe(false);
     expect(lines.some((line) => line.includes("修复键盘 · 0/3 tasks"))).toBe(true);
 
     const initialTasks = __getGoalForTest()?.plan?.phases[0].tasks ?? [];
@@ -198,11 +221,14 @@ describe("Three-Plan public tool surface", () => {
     expect(created.content[0].text).not.toContain("phase");
     const read = await execute(planReadTool, { target: "plan" });
     expect(read.content[0].text).toContain("Task Plan · 0/2 tasks");
+    expect(read.content[0].text).toContain("├─ task #1 · ○ A");
+    expect(read.content[0].text).toContain("├─ task #2 · ○ B");
     expect(read.content[0].text).not.toContain('"tasks"');
-    const value = read.details.value as { planType: string; tasks: Array<{ id: number }> };
-    expect(value.planType).toBe("task");
-    expect(value.tasks.map((task) => task.id)).toEqual([1, 2]);
-    expect((value as { phases?: unknown }).phases).toBeUndefined();
+    expect(read.details).toMatchObject({ target: "plan", planType: "task", readOnly: true });
+
+    const goal = await execute(planReadTool, { target: "goal" });
+    expect(goal.content[0].text).toContain("Task Plan · 0/2 tasks · active");
+    expect(goal.details.value).toBeUndefined();
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");
     expect((await execute(planReadTool, { target: "phase", id: 1 })).details.error).toBe("hidden phase");

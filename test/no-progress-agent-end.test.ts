@@ -9,6 +9,7 @@ import dgoal, {
   __getRuntimeStateForTest,
   __resetGoalForTest,
   __setGoalForTest,
+  __setRuntimeStateForTest,
   __startGoalForTest,
   resyncGoalFromSession,
   type DgoalContext,
@@ -42,6 +43,15 @@ function makeActiveGoal(): GoalState {
 
 function makeEvent(stopReason: string): { messages: unknown[] } {
   return { messages: [{ role: "assistant", stopReason, content: [] }] };
+}
+
+function makePausedTaskPlanAfterModelError(): GoalState {
+  return {
+    ...makeActiveGoal(),
+    planType: "task",
+    status: "paused",
+    pauseReason: "model_error",
+  };
 }
 
 // 捕获 dgoal() 注册的事件回调，供测试手动触发。
@@ -144,15 +154,50 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.pauseReason).toBe("user_abort");
   });
 
-  test("模型错误仍走 model_error 语义", async () => {
-    __setGoalForTest(makeActiveGoal());
-    const ctx = mockCtx();
+  test("第 5 次连续模型错误才暂停，且暂停清理 pendingProposal、通知只报告实际 4 次 retry", async () => {
+    const notifications: string[] = [];
+    const ctx = {
+      ...mockCtx(),
+      ui: { ...mockCtx().ui, notify: (message: string) => { notifications.push(message); } },
+    } as DgoalContext;
+    const goal = makeActiveGoal();
+    __setGoalForTest(goal);
+    __setRuntimeStateForTest({ pendingProposal: { goalId: goal.id, proposal: { objective: "stale" } as never } });
 
-    for (let i = 0; i < 4; i += 1) {
-      await runTurn(handlers, ctx, { stopReason: "error" });
-    }
+    for (let i = 0; i < 4; i += 1) await runTurn(handlers, ctx, { stopReason: "error" });
+    expect(__getGoalForTest()?.status).toBe("active");
+    await runTurn(handlers, ctx, { stopReason: "error" });
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("model_error");
+    expect(__getRuntimeStateForTest().pendingProposal).toBeUndefined();
+    expect(notifications.at(-1)).toContain("已重试 4 次");
+  });
+
+  test("成功工具推进重置连续模型错误，下一次错误从 1/5 重新计数", async () => {
+    __setGoalForTest(makeActiveGoal());
+    const ctx = mockCtx();
+    await runTurn(handlers, ctx, { stopReason: "error" });
+    await runTurn(handlers, ctx, { stopReason: "error" });
+    expect(__getRuntimeStateForTest().consecutiveErrors).toBe(2);
+    handlers["tool_execution_end"]({ toolCallId: "progress", toolName: "bash", args: {}, isError: false });
+    expect(__getRuntimeStateForTest().consecutiveErrors).toBe(0);
+    await runTurn(handlers, ctx, { stopReason: "error" });
+    expect(__getRuntimeStateForTest().consecutiveErrors).toBe(1);
+    expect(__getGoalForTest()?.status).toBe("active");
+  });
+
+  test("新的 agent turn 会清除 model_error 后过期的 Task Plan，并恢复轻量默认指引", async () => {
+    __setGoalForTest(makePausedTaskPlanAfterModelError());
+    const guided = await handlers["before_agent_start"]({ prompt: "处理另一件事", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(guided.systemPrompt).toContain("<task_plan_default>");
+    expect(guided.systemPrompt).not.toContain("<dgoal_goal>");
+  });
+
+  test("model_error 后的显式 Phase/Goal Plan 保持 paused，不会被新 turn 静默清除", async () => {
+    __setGoalForTest({ ...makePausedTaskPlanAfterModelError(), planType: "goal" });
+    await handlers["before_agent_start"]({ prompt: "处理另一件事", systemPrompt: "base" }, mockCtx());
+    expect(__getGoalForTest()).toMatchObject({ status: "paused", pauseReason: "model_error", planType: "goal" });
   });
 
   test("UI 抛错时无进展暂停仍正确落盘状态", async () => {
@@ -198,8 +243,9 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect((lastWrite?.goal as GoalState | undefined)?.pauseReason).toBe("no_progress");
   });
 
-  test("resyncGoalFromSession 清零无进展计数，新 goal 不继承旧计数", async () => {
+  test("resyncGoalFromSession 清零错误与无进展计数，新 goal 不继承旧计数", async () => {
     __setGoalForTest(makeActiveGoal());
+    __setRuntimeStateForTest({ consecutiveErrors: 4 });
     const ctx = mockCtx();
     // 累计 2 轮无进展
     await runTurn(handlers, ctx);
@@ -210,6 +256,7 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     const emptyCtx = { sessionManager: { getBranch: () => [] }, cwd: "/tmp", ui: { setStatus: () => {}, notify: () => {} } } as unknown as DgoalContext;
     resyncGoalFromSession(emptyCtx);
     expect(__getGoalForTest()).toBeUndefined();
+    expect(__getRuntimeStateForTest().consecutiveErrors).toBe(0);
 
     // 设置新 goal，模拟新 session 的首轮——不应因旧计数被立即暂停。
     __setGoalForTest(makeActiveGoal());
