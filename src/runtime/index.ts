@@ -1808,6 +1808,7 @@ const auditedPlanProposalTool = defineTool({
         planType,
         semanticReview: outcome.review.decision,
         startMode: "explicit_confirmation",
+        display: formatProposalForConfirm(goal, finalProposal, { showTasks: true }),
       },
     };
   },
@@ -1825,10 +1826,33 @@ export const PLAN_UPDATE_TOOL_NAME = "plan_update";
 export const PHASE_CHECK_TOOL_NAME = "phase_check";
 export const GOAL_CHECK_TOOL_NAME = "goal_check";
 
-function renderPublicToolResult(result: { content?: Array<{ type?: string; text?: string }> }, options: { expanded: boolean; isPartial: boolean }, theme: { fg: (color: string, text: string) => string }, context: { isError?: boolean }): Text {
-  if (options.isPartial) return new Text(theme.fg("warning", "Working…"), 0, 0);
-  const text = result.content?.filter((item) => item.type === "text" && typeof item.text === "string").map((item) => item.text!).join("\n") ?? "";
-  if (options.expanded) return new Text(theme.fg(context.isError ? "error" : "toolOutput", text), 0, 0);
+type PublicToolRenderResult = {
+  content?: Array<{ type?: string; text?: string }>;
+  details?: unknown;
+};
+
+function readPublicToolText(result: PublicToolRenderResult): string {
+  return result.content?.filter((item) => item.type === "text" && typeof item.text === "string").map((item) => item.text!).join("\n") ?? "";
+}
+
+function readPublicToolDisplay(result: PublicToolRenderResult): string {
+  const details = result.details;
+  if (typeof details !== "object" || details === null) return "";
+  const display = (details as Record<string, unknown>).display;
+  return typeof display === "string" ? display.trim() : "";
+}
+
+function renderPublicToolResult(result: PublicToolRenderResult, options: { expanded: boolean; isPartial: boolean }, theme: { fg: (color: string, text: string) => string }, context: { isError?: boolean }): Text {
+  const text = readPublicToolText(result);
+  if (options.isPartial) {
+    const partial = options.expanded ? text || "Working…" : "Working…";
+    return new Text(theme.fg("warning", partial), 0, 0);
+  }
+  if (options.expanded) {
+    const display = readPublicToolDisplay(result);
+    const expanded = display && !text.includes(display) ? [text, display].filter(Boolean).join("\n\n") : text;
+    return new Text(theme.fg(context.isError ? "error" : "toolOutput", expanded), 0, 0);
+  }
   const summary = text.split("\n").find(Boolean) ?? "Completed";
   return new Text(theme.fg(context.isError ? "error" : "success", `${summary} (Ctrl+O to expand)`), 0, 0);
 }
@@ -1983,7 +2007,18 @@ export const taskPlanTool = definePublicTool({
     ensurePlanOverlay(ctx);
     return {
       content: [{ type: "text", text: `Task Plan 已建立：${objective}（0/${built.tasks.length} tasks）` }],
-      details: { planType: "task", objective, taskCount: built.tasks.length, revision },
+      details: {
+        planType: "task",
+        objective,
+        taskCount: built.tasks.length,
+        revision,
+        display: [
+          `目标：${objective}`,
+          `任务（${built.tasks.length}）：`,
+          ...built.tasks.map((task) => formatTaskDisplay(task, `- task #${task.id} · `)),
+          `计划修订：${revision}`,
+        ].join("\n"),
+      },
     };
   },
 });
@@ -2120,6 +2155,7 @@ export const planCreateTool = definePublicTool({
     persistGoal(goalRuntimeState.currentGoal);
     safeUpdatePlanOverlay();
     const taskPlan = resolvePlanType(goal) === "task";
+    const createdTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === result.op.taskId);
     return {
       content: [{ type: "text", text: taskPlan ? `Created task #${result.op.taskId}.` : formatPlanResult(result.op) }],
       details: {
@@ -2127,6 +2163,9 @@ export const planCreateTool = definePublicTool({
         op: "create",
         ...(!taskPlan ? { phaseId: phase.id } : {}),
         revision: goalRuntimeState.currentGoal.plan?.revision,
+        display: createdTask
+          ? [formatTaskDisplay(createdTask, `task #${createdTask.id} · `), `计划修订：${goalRuntimeState.currentGoal.plan?.revision ?? 0}`].join("\n")
+          : undefined,
       },
     };
   },
@@ -2268,7 +2307,19 @@ export const planUpdateTool = definePublicTool({
       clearCurrentCheckSnapshot();
       persistGoal(goalRuntimeState.currentGoal);
       safeUpdatePlanOverlay();
-      return { content: [{ type: "text", text: formatPlanResult(result.op) }], details: { target: "task", taskId, status: params.status, revision: goalRuntimeState.currentGoal.plan?.revision } };
+      const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
+      return {
+        content: [{ type: "text", text: formatPlanResult(result.op) }],
+        details: {
+          target: "task",
+          taskId,
+          status: params.status,
+          revision: goalRuntimeState.currentGoal.plan?.revision,
+          display: updatedTask
+            ? [formatTaskDisplay(updatedTask, `task #${updatedTask.id} · `), `计划修订：${goalRuntimeState.currentGoal.plan?.revision ?? 0}`].join("\n")
+            : undefined,
+        },
+      };
     }
 
     if (params.target === "phase") {
@@ -2315,7 +2366,19 @@ export const planUpdateTool = definePublicTool({
       clearCurrentCheckSnapshot();
       persistGoal(goalRuntimeState.currentGoal);
       safeUpdatePlanOverlay();
-      return { content: [{ type: "text", text: `Updated phase #${phase.id}: ${phase.status} → ${nextStatus}.` }], details: { target: "phase", phaseId: phase.id, status: nextStatus, revision: goalRuntimeState.currentGoal.plan.revision } };
+      const updatedPhase = goalRuntimeState.currentGoal.plan.phases.find((item) => item.id === phase.id);
+      return {
+        content: [{ type: "text", text: `Updated phase #${phase.id}: ${phase.status} → ${nextStatus}.` }],
+        details: {
+          target: "phase",
+          phaseId: phase.id,
+          status: nextStatus,
+          revision: goalRuntimeState.currentGoal.plan.revision,
+          display: updatedPhase
+            ? [formatPhaseDisplay(updatedPhase, `phase #${updatedPhase.id} · `), `计划修订：${goalRuntimeState.currentGoal.plan.revision}`].join("\n")
+            : undefined,
+        },
+      };
     }
 
     const requestedStatus = params.status;
@@ -2345,13 +2408,27 @@ export const planUpdateTool = definePublicTool({
     const summary = String(params.summary ?? "").trim();
     const verification = String(params.verification ?? "").trim();
     if (!summary || !verification) return { content: [{ type: "text", text: "Finishing a Plan requires summary and verification." }], details: { error: "missing completion details" } };
-    const whatChanged = normalizeStringList((params as unknown as Record<string, unknown>).whatChanged);
+    const whatChanged = normalizeStringList((params as unknown as Record<string, unknown>).whatChanged) ?? [];
     const userReview = trimOptionalText((params as unknown as Record<string, unknown>).userReview);
     const completionGoal = goal;
     finalizeGoal(ctx);
     return {
       content: [{ type: "text", text: buildCompletionReplySignal({ goal: completionGoal, summary, verification, whatChanged, userReview, audited: planType !== "task", auditorModel: completionGoal.goalCheck?.modelId }) }],
-      details: { target: "goal", status: "done", completed: true, planType, summary, verification, audited: planType !== "task" },
+      details: {
+        target: "goal",
+        status: "done",
+        completed: true,
+        planType,
+        summary,
+        verification,
+        audited: planType !== "task",
+        display: [
+          `完成总结：${summary}`,
+          `验证：${verification}`,
+          ...(whatChanged.length ? ["变更：", ...whatChanged.map((item) => `- ${item}`)] : []),
+          ...(userReview ? [`用户复核：${userReview}`] : []),
+        ].join("\n"),
+      },
     };
   },
 });
@@ -2459,7 +2536,16 @@ export const phaseCheckTool = definePublicTool({
     persistGoal(goalRuntimeState.currentGoal);
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
-    return { content: [{ type: "text", text: result.approved ? `phase_check approved phase #${phase.id}. Call plan_update to mark it done.` : `phase_check rejected phase #${phase.id}:\n${report}` }], details: { phaseId: phase.id, approved: result.approved, ...buildAuditorResultDetails(result) }, isError: false };
+    return {
+      content: [{ type: "text", text: result.approved ? `phase_check approved phase #${phase.id}. Call plan_update to mark it done.` : `phase_check rejected phase #${phase.id}:\n${report}` }],
+      details: {
+        phaseId: phase.id,
+        approved: result.approved,
+        ...buildAuditorResultDetails(result),
+        display: report || undefined,
+      },
+      isError: false,
+    };
   },
 });
 
@@ -2563,7 +2649,16 @@ export const goalCheckTool = definePublicTool({
     persistGoal(goalRuntimeState.currentGoal);
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
-    return { content: [{ type: "text", text: result.approved ? "goal_check approved. Call plan_update(target=goal,status=done) to finish and close the Plan." : `goal_check rejected:\n${report}` }], details: { approved: result.approved, planType, ...buildAuditorResultDetails(result) }, isError: false };
+    return {
+      content: [{ type: "text", text: result.approved ? "goal_check approved. Call plan_update(target=goal,status=done) to finish and close the Plan." : `goal_check rejected:\n${report}` }],
+      details: {
+        approved: result.approved,
+        planType,
+        ...buildAuditorResultDetails(result),
+        display: report || undefined,
+      },
+      isError: false,
+    };
   },
 });
 

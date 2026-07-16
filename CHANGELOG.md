@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **工具结果人类可读投影**：八个公开工具默认显示紧凑摘要，展开时只显示文字结果，不再将结构化 `details` 直接交给宿主渲染。
+- **工具结果人类可读投影**：八个公开工具默认显示紧凑摘要；展开时显示完整文字结果与工具白名单化的详情投影，进行中的建检也显示活性文本，但不将原始结构化 `details` 直接交给宿主渲染。
 - **Task Plan 用户中断恢复**：中断当前响应不再把 Task Plan 写成 `paused(user_abort)`；它保留 active 状态并清理旧 continuation，下一条用户输入可直接继续，无需 `/dgoal resume`。显式 Phase/Goal Plan 仍保留用户中断后的暂停语义。
 
 ## [0.7.4] - 2026-07-16
