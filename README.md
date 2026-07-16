@@ -90,7 +90,7 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 | `phase_plan` | Submit an explicitly activated Phase Plan with a frozen goal contract |
 | `goal_plan` | Submit an explicitly activated Goal Plan with frozen phase and goal contracts |
 | `plan_create` | Add a task only; never add a phase |
-| `plan_read` | Read a plan, goal, phase, or task; pure read (Task Plan hides its phase) |
+| `plan_read` | Read a plan, goal, phase, or task; pure read with a compact visible summary and expandable structured details (Task Plan hides its phase) |
 | `plan_update` | Sole agent-facing execution-status writer for task/phase/goal progress, completion, and agent pause |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
@@ -123,8 +123,8 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 ## TUI
 
-- **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
-- **`Ctrl+O`:** expands tasks under unfinished Phase/Goal Plan phases.
+- **Persistent widget:** normally shows only the objective, aggregate progress, elapsed time, and an expand hint; headings truncate the objective to the current terminal width.
+- **`Ctrl+O`:** expands the live Plan details and audit activity; the ten-second completion snapshot shows every phase and task.
 - **`/dgoal s` modal:** shows the full visible plan; Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 

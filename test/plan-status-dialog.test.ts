@@ -68,7 +68,7 @@ describe("PlanStatusDialog.render", () => {
     // 期望：上边框(1) + heading(1) + body(1) + hint(1) + 下边框(1) = 5 行
     expect(lines.length).toBe(5);
     // 第一行 = 上边框 + 标题（mockTheme 包装为 <border>...<accent>...<bold>title</bold>...</accent>...</border>）
-    expect(lines[0]).toContain("Dgoal 详细查询 Modal");
+    expect(lines[0]).toContain("dgoal 详细查询 Modal");
     expect(lines[0]).toContain("╭─"); // 上边框起手
     expect(lines[0]).toContain("─╮"); // 上边框收尾
     // 第二行 = heading（钉顶，含 🎯）

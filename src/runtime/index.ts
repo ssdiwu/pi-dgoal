@@ -287,8 +287,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
       "overlay.commands": "/dgoal s查询 | p停止 | r继续 | c清理",
-      "overlay.showTasks": "⌨ Ctrl+O 展开任务 · {commands}",
-      "overlay.hideTasks": "⌨ Ctrl+O 收起显示 · {commands}",
+      "overlay.showTasks": "⌨ Ctrl+O 展开详情 · {commands}",
+      "overlay.hideTasks": "⌨ Ctrl+O 收起详情 · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 完成",
       "status.paused": "🔁 暂停",
@@ -343,12 +343,12 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogNoGoal": "当前没有进行中的 dgoal",
       "status.dialogStartCommand": "开始一个新目标：/dgoal <goal>",
       "status.dialogCloseHint": "ESC/Ctrl+C 关闭",
-      "status.dialogTitle": "Dgoal 详细查询 Modal",
+      "status.dialogTitle": "dgoal 详细查询 Modal",
       "status.dialogHint": "dgoal · 详细查询 Modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
-      "notify.abortedPaused": "Dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
+      "notify.abortedPaused": "dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
-      "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，Dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
-      "notify.noProgressPaused": "连续 {max} 轮无工具调用，Dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
+      "notify.modelPaused": "模型错误，已重试 {max} 次仍失败，dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
+      "notify.noProgressPaused": "连续 {max} 轮无工具调用，dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
       "notify.agentPaused": "Agent 声明遇到需要你决策的死锁，已主动暂停：{detail}。处理后运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
       "notify.noPriorDiscussionForBareStart": "无前文共识可承接。请用 /dgoal <objective> 提供目标，或先对齐后再裸 /dgoal。",
@@ -357,7 +357,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.startInterrupted": "启动被中断，已放弃本次 dgoal。",
       "notify.contextAborted": "背景固化被中断，已放弃本次 dgoal。",
       "notify.contextFailed": "背景总结全部失败，已中止启动（未进入目标）：{error}",
-      "notify.cleared": "Dgoal 已清除；若当前仍在执行，会同步触发一次中断。",
+      "notify.cleared": "dgoal 已清除；若当前仍在执行，会同步触发一次中断。",
       "notify.proposalRejected": "已拒绝计划，目标放弃。",
       "notify.proposalUiFailed": "启动确认 UI 出错，计划仍保持待确认，可重试：{error}",
       "notify.proposalConfirmed": "计划已确认，开始执行 dgoal。",
@@ -365,8 +365,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.emptyFeedback": "未提供反馈，目标放弃。",
       "notify.proposalRetry": "未收到计划提案，降级引导重试（{count}/{max}）",
       "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
-      "notify.continuationFailed": "Dgoal 续跑失败：{error}",
-      "notify.auditFailurePaused": "Dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
+      "notify.continuationFailed": "dgoal 续跑失败：{error}",
+      "notify.auditFailurePaused": "dgoal 已暂停（{reason}）。运行 /dgoal resume 继续。",
       "notify.auditorModelHint": "独立审核器默认用当前会话模型。如需分别配置候选链，可在 {globalPath} 填写 phaseAuditorModels / goalAuditorModels（每项为 provider/model[:thinking]）；保持 null 则继承当前会话模型。",
       "notify.dgoalConfigTemplateWriteFailed": "无法创建审核器配置模板 {path}：{error}；已继续使用当前会话模型。",
       "notify.dgoalConfigUnreadable": "无法读取 {path}：{error}",
@@ -466,8 +466,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
       "overlay.commands": "/dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
-      "overlay.showTasks": "⌨ Ctrl+O expand tasks · {commands}",
-      "overlay.hideTasks": "⌨ Ctrl+O collapse expanded live widget · {commands}",
+      "overlay.showTasks": "⌨ Ctrl+O expand details · {commands}",
+      "overlay.hideTasks": "⌨ Ctrl+O collapse details · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 done",
       "status.paused": "🔁 paused",
@@ -522,12 +522,12 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogNoGoal": "No active dgoal",
       "status.dialogStartCommand": "Start a new goal: /dgoal <goal>",
       "status.dialogCloseHint": "ESC/Ctrl+C close",
-      "status.dialogTitle": "Dgoal Detailed Query Modal",
+      "status.dialogTitle": "dgoal Detailed Query Modal",
       "status.dialogHint": "dgoal · detailed query modal · lines {shown} · ↓/j · ↑/k · PgDn/PgUp · End/G · Home/g · ESC",
-      "notify.abortedPaused": "Dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
+      "notify.abortedPaused": "dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
-      "notify.modelPaused": "Model error persisted after {max} retries; Dgoal paused{detail}. Run /dgoal resume to continue.",
-      "notify.noProgressPaused": "No tool calls for {max} consecutive turns; Dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
+      "notify.modelPaused": "Model error persisted after {max} retries; dgoal paused{detail}. Run /dgoal resume to continue.",
+      "notify.noProgressPaused": "No tool calls for {max} consecutive turns; dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
       "notify.agentPaused": "Agent reported a deadlock needing your decision; paused: {detail}. Run /dgoal resume after you resolve it.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
       "notify.noPriorDiscussionForBareStart": "There is no prior aligned discussion to carry. Use /dgoal <objective>, or align first and then run bare /dgoal.",
@@ -536,7 +536,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.startInterrupted": "Startup was interrupted; this dgoal was abandoned.",
       "notify.contextAborted": "Startup context persistence was interrupted; this dgoal was abandoned.",
       "notify.contextFailed": "All context summarizer candidates failed; startup aborted (goal not activated): {error}",
-      "notify.cleared": "Dgoal cleared; if a turn is still running, it will also be interrupted once.",
+      "notify.cleared": "dgoal cleared; if a turn is still running, it will also be interrupted once.",
       "notify.proposalRejected": "Plan rejected; goal abandoned.",
       "notify.proposalUiFailed": "Startup confirmation UI failed; the proposal remains pending and can be retried: {error}",
       "notify.proposalConfirmed": "Plan confirmed; starting dgoal.",
@@ -544,8 +544,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.emptyFeedback": "No feedback provided; goal abandoned.",
       "notify.proposalRetry": "No plan proposal received; retrying startup guidance ({count}/{max}).",
       "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
-      "notify.continuationFailed": "Dgoal continuation failed: {error}",
-      "notify.auditFailurePaused": "Dgoal paused ({reason}). Run /dgoal resume to continue.",
+      "notify.continuationFailed": "dgoal continuation failed: {error}",
+      "notify.auditFailurePaused": "dgoal paused ({reason}). Run /dgoal resume to continue.",
       "notify.auditorModelHint": "Auditors use the current session model by default. To configure ordered candidates separately, set phaseAuditorModels / goalAuditorModels in {globalPath} with provider/model[:thinking] entries; keep null to inherit the current session model.",
       "notify.dgoalConfigTemplateWriteFailed": "Cannot create auditor config template {path}: {error}; continuing with the current session model.",
       "notify.dgoalConfigUnreadable": "Cannot read {path}: {error}",
@@ -2123,9 +2123,27 @@ export const planReadTool = defineTool({
     } else {
       value = { objective: goal.objective, planType: resolvePlanType(goal), status: goal.status, revision: goal.plan?.revision, phases: goal.plan?.phases ?? [], goalCheck: goal.goalCheck };
     }
-    return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }], details: { target, planType: resolvePlanType(goal), readOnly: true } };
+    return {
+      content: [{ type: "text", text: formatPlanReadSummary(value, target, resolvePlanType(goal)) }],
+      details: { target, planType: resolvePlanType(goal), readOnly: true, value },
+    };
   },
 });
+
+function formatPlanReadSummary(value: unknown, target: string, planType: PlanType): string {
+  const record = value as Record<string, unknown>;
+  if (target === "task") return `task #${record.id} · ${record.status} · ${record.subject}`;
+  if (target === "phase") return `phase #${record.id} · ${record.status} · ${record.subject}`;
+  if (target === "goal") return `${planType === "task" ? "Task Plan" : `${planType[0].toUpperCase()}${planType.slice(1)} Plan`} · ${record.status}`;
+  const phases = Array.isArray(record.phases) ? record.phases as Array<{ status?: PlanStatus; tasks?: unknown[] }> : [];
+  const tasks = Array.isArray(record.tasks)
+    ? record.tasks
+    : phases.flatMap((phase) => phase.tasks ?? []);
+  const doneTasks = tasks.filter((task) => (task as { status?: PlanStatus }).status === "done").length;
+  if (planType === "task") return `Task Plan · ${doneTasks}/${tasks.length} tasks`;
+  const donePhases = phases.filter((phase) => phase.status === "done").length;
+  return `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${donePhases}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
+}
 
 export const planUpdateTool = defineTool({
   name: PLAN_UPDATE_TOOL_NAME,
@@ -2859,34 +2877,6 @@ function phaseNumberToId(goal: GoalState, phaseNumber: number): number | undefin
   return goal.plan?.phases[phaseNumber - 1]?.id;
 }
 
-// 解析工具参数中的 phaseId / phaseNumber。若都未传或无效，返回错误结果。
-function resolvePhaseIdentifier(
-  goal: GoalState,
-  rawPhaseId: unknown,
-  rawPhaseNumber: unknown,
-): { id: number } | { error: true; result: { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } } {
-  const hasPhaseId = rawPhaseId !== undefined && rawPhaseId !== null;
-  const hasPhaseNumber = rawPhaseNumber !== undefined && rawPhaseNumber !== null;
-  if (!hasPhaseId && !hasPhaseNumber) {
-    return {
-      error: true,
-      result: {
-        content: [{ type: "text", text: t("tool.check.missingPhaseIdentifier") }],
-        details: { error: "missing phase identifier" },
-      },
-    };
-  }
-  if (hasPhaseNumber) {
-    const phaseNumber = Number(rawPhaseNumber);
-    const id = phaseNumberToId(goal, phaseNumber);
-    if (id === undefined) {
-      return { error: true, result: formatPhaseNotFoundResult(goal, phaseNumber) };
-    }
-    return { id };
-  }
-  return { id: Number(rawPhaseId) };
-}
-
 function isPhaseNotFoundMessage(message: string): boolean {
   return /phase\s+#?\d+.*(?:不存在|does not exist)/i.test(message);
 }
@@ -3610,7 +3600,7 @@ export function buildCompletionReplySignal(args: CompletionReplySignalArgs) {
     ? [``, "仍需你核对：", `  ${args.userReview.trim()}`, "  （以上仅为非阻塞人工复核建议，不代表人工体验已经验证。）"]
     : [];
   return [
-    "Dgoal 完成信号：目标已关闭，自动续跑已停止。",
+    "dgoal 完成信号：目标已关闭，自动续跑已停止。",
     "请基于以上核对信息直接回复用户，不要再次调用 plan_update 收口。",
     "回复应帮助用户核对结果与理解变更，而不只是宣布“已完成”。",
     "",
@@ -6189,7 +6179,7 @@ export function applyPlanMutation(
 // 切片 3：aboveEditor 计划浮层（借鉴 rpiv-todo todo-overlay.ts）。
 // 渲染纯函数（可测）+ PlanOverlay 类（用 setWidget 接入 TUI）。
 // 见 doc/10-架构与运行/13-启动闸门与TUI浮层.md。
-// 用户可见性：phase 默认显示，task 默认隐藏（跟随 Pi 的 app.tools.expand，默认 Ctrl+O 展开）。
+// 用户可见性：默认仅显示摘要；Ctrl+O 展开详情。goal 完成后的短暂快照展示完整内容。
 // ============================================================================
 
 const PLAN_WIDGET_KEY = "dgoal-plan";
@@ -6203,16 +6193,38 @@ const PHASE_ICON: Record<PlanStatus, string> = {
   blocked: "⚠",
 };
 
-// 渲染选项。hiddenPhaseIds 保留给旧测试/调用点兼容；phase 完成后仍持久显示，不再使用它隐藏。
+// 渲染选项：持续显示展开态跟随 Pi 的 app.tools.expand（默认 Ctrl+O）。
 interface RenderPlanOptions {
-  hiddenPhaseIds: Set<number>;
-  expandTasks: boolean; // 持续显示展开态：跟随 Pi 的 app.tools.expand（默认 Ctrl+O）展开待办/进行中的 phase task
+  expandTasks: boolean;
 }
 
 // 渲染计划浮层为字符串行数组。纯函数：不读模块状态，不调 setWidget。
 // 返回空数组表示应隐藏浮层（无 plan / pending / 已 clear）；paused goal 仍展示冻结 plan。
 function shouldExpandTasksInPersistentOverlay(status: Phase["status"]): boolean {
   return status === "pending" || status === "in_progress";
+}
+
+function formatTaskDisplay(task: Task, prefix: string, subjectMax?: number): string {
+  const icon = PHASE_ICON[task.status] ?? "○";
+  const subject = subjectMax === undefined ? task.subject : truncateLine(task.subject, subjectMax);
+  const rendered = isDonePlanStatus(task.status) ? ansiStrikethrough(subject) : subject;
+  const active = task.status === "in_progress" && task.activeForm
+    ? ` (${subjectMax === undefined ? task.activeForm : truncateLine(task.activeForm, 30)})`
+    : "";
+  const blocked = task.status === "blocked" && task.blockedReason
+    ? ` [${subjectMax === undefined ? task.blockedReason : truncateLine(task.blockedReason, 24)}]`
+    : "";
+  return `${prefix}${icon} ${rendered}${active}${blocked}`;
+}
+
+function formatPhaseDisplay(phase: Phase, prefix: string, subjectMax?: number): string {
+  const icon = PHASE_ICON[phase.status] ?? "○";
+  const subject = subjectMax === undefined ? phase.subject : truncateLine(phase.subject, subjectMax);
+  const rendered = isDonePlanStatus(phase.status) ? ansiStrikethrough(subject) : subject;
+  const blocked = phase.status === "blocked" && phase.blockedReason
+    ? ` [${subjectMax === undefined ? phase.blockedReason : truncateLine(phase.blockedReason, 24)}]`
+    : "";
+  return `${prefix}${icon} ${rendered} · ${countDoneTasks(phase)}/${phase.tasks.length} tasks${blocked}`;
 }
 
 function fitOverlayLines(lines: string[], width: number | undefined): string[] {
@@ -6284,44 +6296,26 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
     : `${donePhases}/${visiblePhases.length}p ${doneTasks}/${totalTasks}t`;
   const heading = buildOverlayHeading(goal, progress, compactProgress, elapsed, compactElapsed, width);
   const activityLine = formatCheckActivityLine(currentCheckSnapshot);
+  const showDetails = opts.expandTasks || goal.status === "done";
 
   const bodyLines: string[] = [];
-  if (activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
-  if (planType === "task") {
-    for (const task of taskPlanPhase.tasks) {
-      const icon = PHASE_ICON[task.status] ?? "○";
-      const subject = truncateLine(task.subject, 52);
-      const rendered = isDonePlanStatus(task.status) ? ansiStrikethrough(subject) : subject;
-      const active = task.status === "in_progress" && task.activeForm ? ` (${truncateLine(task.activeForm, 30)})` : "";
-      const blocked = task.status === "blocked" && task.blockedReason ? ` [${truncateLine(task.blockedReason, 24)}]` : "";
-      bodyLines.push(`├─ ${icon} ${rendered}${active}${blocked}`);
-    }
-  } else {
+  if (showDetails && activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
+  if (showDetails && planType === "task") {
+    for (const task of taskPlanPhase.tasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52));
+  } else if (showDetails) {
     for (const phase of visiblePhases) {
-      const icon = PHASE_ICON[phase.status] ?? "○";
-      const phaseSubject = truncateLine(phase.subject, 44);
-      const renderedPhase = phaseDone(phase) ? ansiStrikethrough(phaseSubject) : phaseSubject;
-      const blocked = phase.status === "blocked" && phase.blockedReason ? ` [${truncateLine(phase.blockedReason, 24)}]` : "";
-      bodyLines.push(`├─ ${icon} ${renderedPhase} · ${countDoneTasks(phase)}/${phase.tasks.length} tasks${blocked}`);
-      if (opts.expandTasks && shouldExpandTasksInPersistentOverlay(phase.status)) {
-        for (const task of phase.tasks) {
-          const taskIcon = PHASE_ICON[task.status] ?? "○";
-          const subject = truncateLine(task.subject, 46);
-          const renderedTask = isDonePlanStatus(task.status) ? ansiStrikethrough(subject) : subject;
-          const active = task.status === "in_progress" && task.activeForm ? ` (${truncateLine(task.activeForm, 30)})` : "";
-          const blockedTask = task.status === "blocked" && task.blockedReason ? ` [${truncateLine(task.blockedReason, 24)}]` : "";
-          bodyLines.push(`│    ${taskIcon} ${renderedTask}${active}${blockedTask}`);
-        }
+      bodyLines.push(formatPhaseDisplay(phase, "├─ ", 44));
+      if (goal.status === "done" || shouldExpandTasksInPersistentOverlay(phase.status)) {
+        for (const task of phase.tasks) bodyLines.push(formatTaskDisplay(task, "│    ", 46));
       }
     }
   }
 
   const commands = t("overlay.commands");
-  const hintLine = planType === "task"
-    ? commands
-    : opts.expandTasks
-      ? t("overlay.hideTasks", { commands })
-      : t("overlay.showTasks", { commands });
+  if (goal.status === "done") return fitOverlayLines([heading, ...bodyLines], width);
+  const hintLine = showDetails
+    ? t("overlay.hideTasks", { commands })
+    : t("overlay.showTasks", { commands });
   const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2; // heading + 底部 hint
   if (bodyLines.length <= maxBodyLines) return fitOverlayLines([heading, ...bodyLines, hintLine], width);
 
@@ -6366,24 +6360,13 @@ export function buildBodyLines(goal: GoalState | undefined): RenderLine[] {
   const planType = resolvePlanType(goal);
   if (planType === "task") {
     for (const task of goal.plan.phases[0].tasks) {
-      const glyph = STATUS_GLYPH[task.status] ?? "○";
-      const renderedSubject = isDonePlanStatus(task.status) ? ansiStrikethrough(task.subject) : task.subject;
-      const active = task.status === "in_progress" && task.activeForm ? ` (${task.activeForm})` : "";
-      const blocked = task.status === "blocked" && task.blockedReason ? ` [${task.blockedReason}]` : "";
-      lines.push({ type: "task", status: task.status, text: `├─ ${glyph} ${renderedSubject}${active}${blocked}` });
+      lines.push({ type: "task", status: task.status, text: formatTaskDisplay(task, "├─ ") });
     }
   } else {
     for (const phase of goal.plan.phases) {
-      const glyph = STATUS_GLYPH[phase.status] ?? "○";
-      const renderedSubject = isDonePlanStatus(phase.status) ? ansiStrikethrough(phase.subject) : phase.subject;
-      const blocked = phase.status === "blocked" && phase.blockedReason ? ` [${phase.blockedReason}]` : "";
-      lines.push({ type: "phase", status: phase.status, text: `├─ ${glyph} ${renderedSubject} · ${countDoneTasks(phase)}/${phase.tasks.length} tasks${blocked}` });
+      lines.push({ type: "phase", status: phase.status, text: formatPhaseDisplay(phase, "├─ ") });
       for (const task of phase.tasks) {
-        const taskGlyph = STATUS_GLYPH[task.status] ?? "○";
-        const renderedTask = isDonePlanStatus(task.status) ? ansiStrikethrough(task.subject) : task.subject;
-        const active = task.status === "in_progress" && task.activeForm ? ` (${task.activeForm})` : "";
-        const blockedTask = task.status === "blocked" && task.blockedReason ? ` [${task.blockedReason}]` : "";
-        lines.push({ type: "task", status: task.status, text: `│    ${taskGlyph} ${renderedTask}${active}${blockedTask}` });
+        lines.push({ type: "task", status: task.status, text: formatTaskDisplay(task, "│    ") });
       }
     }
   }
@@ -6542,10 +6525,7 @@ export class PlanOverlay {
       const goal = this.doneSnapshot ?? goalRuntimeState.currentGoal;
       if (goal && isGoalRunning(goal.status)) this.startTick();
       else this.stopTick();
-      const renderOptions = {
-        hiddenPhaseIds: new Set<number>(),
-        expandTasks: this.expandTasks,
-      };
+      const renderOptions = { expandTasks: this.expandTasks };
       const preview = renderPlanLines(goal, renderOptions);
       if (preview.length === 0) {
         this.ui.setWidget(PLAN_WIDGET_KEY, undefined);

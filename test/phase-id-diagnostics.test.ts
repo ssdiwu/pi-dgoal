@@ -61,8 +61,10 @@ describe("new Plan uses separate phase/task ID namespaces", () => {
     } as GoalState);
     const phaseResult = await execute(planReadTool, { target: "phase", id: 1 });
     const taskResult = await execute(planReadTool, { target: "task", id: 1 });
-    expect(JSON.parse(phaseResult.content[0].text).subject).toBe("阶段一");
-    expect(JSON.parse(taskResult.content[0].text).subject).toBe("任务一");
+    expect(phaseResult.content[0].text).toContain("phase #1 · pending · 阶段一");
+    expect(taskResult.content[0].text).toContain("task #1 · pending · 任务一");
+    expect((phaseResult.details.value as { subject: string }).subject).toBe("阶段一");
+    expect((taskResult.details.value as { subject: string }).subject).toBe("任务一");
     const created = await execute(planCreateTool, { phaseId: 1, subject: "任务二" });
     expect(created.content[0].text).toContain("task #2");
   });

@@ -25,7 +25,7 @@ function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
   };
 }
 
-const noHide = { hiddenPhaseIds: new Set<number>(), expandTasks: false };
+const noHide = { expandTasks: false };
 
 describe("切片3 · renderPlanLines 基本渲染", () => {
   test("无 plan 返回空（隐藏浮层）", () => {
@@ -41,7 +41,7 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     expect(renderPlanLines(goal([]), noHide)).toEqual([]);
   });
 
-  test("正常渲染 heading + phase 行，heading 含完成计数", () => {
+  test("默认只渲染摘要 heading 与 Ctrl+O 提示，heading 含完成计数", () => {
     const g = goal([
       p(1, "阶段A", [t(1, "a", "done")], "in_progress"),
       p(2, "阶段B", [], "pending"),
@@ -50,9 +50,9 @@ describe("切片3 · renderPlanLines 基本渲染", () => {
     expect(lines[0]).toContain("🎯 修好测试 · 0/2 phases"); // 无 done phase
     expect(lines[0]).toContain("1/1 tasks");
     expect(lines[0]).toContain("⏱");
-    expect(lines[1]).toContain("◐ 阶段A"); // in_progress 符号
-    expect(lines[1]).toContain("├─");
-    expect(lines[2]).toContain("○ 阶段B"); // pending 符号
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toContain("Ctrl+O 展开详情");
+    expect(lines.some((line) => line.includes("阶段A") || line.includes("阶段B"))).toBe(false);
   });
 
   test("done phase 计入 heading 计数", () => {
@@ -95,7 +95,7 @@ describe("切片3 · 状态符号", () => {
       p(3, "p3", [], "done"),
       p(4, "p4", [], "blocked", { blockedReason: "卡住" }),
     ]);
-    const lines = renderPlanLines(g, noHide);
+    const lines = renderPlanLines(g, { expandTasks: true });
     expect(lines[1]).toContain("○ p1");
     expect(lines[2]).toContain("◐ p2");
     expect(lines[3]).toContain("✓"); // done 状态字符（p3 被删除线包裹，不再与 ✓ 连续）
@@ -106,7 +106,7 @@ describe("切片3 · 状态符号", () => {
 
   test("done phase 标题文本带删除线，状态字符和树形符号不带（ADR 0009）", () => {
     const g = goal([p(1, "phaseDone", [], "done")]);
-    const lines = renderPlanLines(g, noHide);
+    const lines = renderPlanLines(g, { expandTasks: true });
     const phaseLine = lines[1];
     // 标题文本被删除线 ANSI 包裹
     expect(phaseLine).toContain("\u001b[9mphaseDone\u001b[29m");
@@ -115,7 +115,7 @@ describe("切片3 · 状态符号", () => {
     expect(phaseLine).not.toContain("\u001b[9m✓");
     // blocked 的 blockedReason 后缀也不参与删除线
     const g2 = goal([p(1, "blk", [], "blocked", { blockedReason: "原因" })]);
-    const blkLine = renderPlanLines(g2, noHide)[1];
+    const blkLine = renderPlanLines(g2, { expandTasks: true })[1];
     expect(blkLine).toContain("[原因]");
     expect(blkLine).not.toContain("\u001b[9m");
   });
@@ -127,14 +127,14 @@ describe("切片3 · done phase 持久显示", () => {
       p(1, "已完成A", [], "done"),
       p(2, "进行中B", [], "in_progress"),
     ]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set([1]), expandTasks: false });
+    const lines = renderPlanLines(g, { expandTasks: true });
     expect(lines.some((l) => l.includes("已完成A"))).toBe(true);
     expect(lines.some((l) => l.includes("进行中B"))).toBe(true);
   });
 
   test("全 done 也保持完整显示", () => {
     const g = goal([p(1, "A", [], "done"), p(2, "B", [], "done")]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set([1, 2]), expandTasks: false });
+    const lines = renderPlanLines({ ...g, status: "done" }, noHide);
     // done 标题被删除线包裹，✓ 和 A/B 不再连续，分开断言
     expect(lines.some((l) => l.includes("✓") && l.includes("A"))).toBe(true);
     expect(lines.some((l) => l.includes("✓") && l.includes("B"))).toBe(true);
@@ -162,8 +162,8 @@ describe("切片3 · PlanOverlay reload 恢复", () => {
       overlay.update();
       const factory = widgets.at(-1) as (tui: unknown, theme: unknown) => { render(width: number): string[] };
       const lines = factory({}, {}).render(100);
-      expect(lines.some((line) => line.includes("已完成A"))).toBe(true);
-      expect(lines.some((line) => line.includes("进行中B"))).toBe(true);
+      expect(lines).toHaveLength(2);
+      expect(lines.at(-1)).toContain("Ctrl+O 展开详情");
     } finally {
       overlay.dispose();
       __resetGoalForTest();
@@ -212,7 +212,7 @@ describe("切片3 · 建检活性片段", () => {
     });
     try {
       const g = goal([p(1, "阶段A", [], "in_progress")]);
-      const lines = renderPlanLines(g, noHide);
+      const lines = renderPlanLines(g, { expandTasks: true });
       expect(lines.some((l) => l.includes("建检活性"))).toBe(true);
       expect(lines.some((l) => l.includes("read"))).toBe(true);
       expect(lines.some((l) => l.includes("第 2/3 次"))).toBe(true);
@@ -229,27 +229,27 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
     const lines = renderPlanLines(g, noHide);
     expect(lines.some((l) => l.includes("task1"))).toBe(false);
-    expect(lines.at(-1)).toContain("Ctrl+O 展开任务");
+    expect(lines.at(-1)).toContain("Ctrl+O 展开详情");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
   test("expandTasks=true 显示未完成 phase 的 task（缩进 + 符号）", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress", { activeForm: "正在做" })], "in_progress")]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    const lines = renderPlanLines(g, { expandTasks: true });
     expect(lines.some((l) => l.includes("task1"))).toBe(true);
     const taskLine = lines.find((l) => l.includes("task1"))!;
     expect(taskLine).toContain("│");
     expect(taskLine).toContain("◐");
     expect(taskLine).toContain("(正在做)");
-    expect(lines.at(-1)).toContain("Ctrl+O 收起显示");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起详情");
     expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
   });
 
   test("进行中 phase 内的 done task 在展开态仍显示删除线", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "done")], "in_progress")]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    const lines = renderPlanLines(g, { expandTasks: true });
     const taskLine = lines.find((l) => l.includes("task1"))!;
     expect(taskLine).toContain("\u001b[9m");
     expect(taskLine).toContain("task1");
@@ -262,7 +262,7 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
       p(1, "已完成阶段", [t(1, "done-task", "done")], "done"),
       p(2, "当前阶段", [t(2, "active-task", "in_progress")], "in_progress"),
     ]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    const lines = renderPlanLines(g, { expandTasks: true });
     expect(lines.some((l) => l.includes("已完成阶段"))).toBe(true);
     expect(lines.some((l) => l.includes("当前阶段"))).toBe(true);
     expect(lines.some((l) => l.includes("done-task"))).toBe(false);
@@ -274,8 +274,8 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
       t(fullKey, params) {
         const messages: Record<string, string> = {
           "dgoal.overlay.commands": "/dgoal status | pause | resume | clear",
-          "dgoal.overlay.showTasks": "⌨ Ctrl+O expand live overlay · {commands}",
-          "dgoal.overlay.hideTasks": "⌨ Ctrl+O collapse expanded live overlay · {commands}",
+          "dgoal.overlay.showTasks": "⌨ Ctrl+O expand details · {commands}",
+          "dgoal.overlay.hideTasks": "⌨ Ctrl+O collapse details · {commands}",
           "dgoal.overlay.more": "└─ +{count} more",
         };
         return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
@@ -283,8 +283,8 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
     });
     try {
       const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
-      const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: false });
-      expect(lines.at(-1)).toContain("Ctrl+O expand live overlay");
+      const lines = renderPlanLines(g, { expandTasks: false });
+      expect(lines.at(-1)).toContain("Ctrl+O expand details");
       expect(lines.at(-1)).toContain("/dgoal status | pause | resume | clear");
     } finally {
       __setI18nForTest(undefined);
@@ -298,9 +298,9 @@ describe("切片3 · expandTasks（Ctrl+O 展开 task）", () => {
       p(2, "阶段B", [t(4, "task4"), t(5, "task5"), t(6, "task6")], "pending"),
       p(3, "阶段C", [t(7, "task7"), t(8, "task8"), t(9, "task9")], "pending"),
     ]);
-    const lines = renderPlanLines(g, { hiddenPhaseIds: new Set(), expandTasks: true });
+    const lines = renderPlanLines(g, { expandTasks: true });
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines.at(-1)).toContain("Ctrl+O 收起显示");
+    expect(lines.at(-1)).toContain("Ctrl+O 收起详情");
     expect(lines.at(-2)).toContain("more");
   });
 });
@@ -309,7 +309,7 @@ describe("切片3 · 10 行折叠", () => {
   test("phase 超过上限截断（不超 10 行）", () => {
     const phases = Array.from({ length: 20 }, (_, i) => p(i + 1, `阶段${i}`, [], "pending"));
     const g = goal(phases);
-    const lines = renderPlanLines(g, noHide);
+    const lines = renderPlanLines(g, { expandTasks: true });
     // heading + body + more + hint，不超过 10 行，避免触发 Pi core 的 widget truncated。
     expect(lines.length).toBeLessThanOrEqual(10);
   });

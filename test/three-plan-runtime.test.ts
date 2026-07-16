@@ -82,9 +82,11 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.plan?.phases[0].id).toBe(1);
     expect(__getGoalForTest()?.plan?.nextId).toBe(4);
 
-    let lines = renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false });
+    let lines = renderPlanLines(__getGoalForTest(), { expandTasks: false });
     expect(lines[0]).toContain("0/3 tasks");
-    expect(lines.some((line) => line.includes("定位"))).toBe(true);
+    expect(lines.some((line) => line.includes("定位"))).toBe(false);
+    expect(lines.some((line) => line.includes("Ctrl+O 展开详情"))).toBe(true);
+    expect(renderPlanLines(__getGoalForTest(), { expandTasks: true }).some((line) => line.includes("定位"))).toBe(true);
     expect(lines.some((line) => line.includes("修复键盘 · 0/3 tasks"))).toBe(true);
 
     const initialTasks = __getGoalForTest()?.plan?.phases[0].tasks ?? [];
@@ -98,7 +100,7 @@ describe("Three-Plan public tool surface", () => {
     await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "fixed" });
     await execute(planUpdateTool, { target: "task", id: 3, status: "in_progress" });
     await execute(planUpdateTool, { target: "task", id: 3, status: "done", evidence: "tests pass" });
-    lines = renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false });
+    lines = renderPlanLines(__getGoalForTest(), { expandTasks: false });
     expect(lines[0]).toContain("3/3 tasks");
     __setGoalForTest({ ...__getGoalForTest()!, iteration: 5, pausedTotalMs: 1_000, contextSummary: "旧任务背景" });
 
@@ -108,7 +110,7 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.plan?.phases[0].tasks).toHaveLength(1);
     expect(__getGoalForTest()).toMatchObject({ iteration: 0, pausedTotalMs: 0 });
     expect(__getGoalForTest()?.contextSummary).toBeUndefined();
-    expect(renderPlanLines(__getGoalForTest(), { hiddenPhaseIds: new Set(), expandTasks: false })[0]).toContain("0/1 tasks");
+    expect(renderPlanLines(__getGoalForTest(), { expandTasks: false })[0]).toContain("0/1 tasks");
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
     await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
     const finished = await execute(planUpdateTool, { target: "goal", status: "done", summary: "更新文档", verification: "README 可读" });
@@ -195,10 +197,12 @@ describe("Three-Plan public tool surface", () => {
     expect(created.details.phaseId).toBeUndefined();
     expect(created.content[0].text).not.toContain("phase");
     const read = await execute(planReadTool, { target: "plan" });
-    const parsed = JSON.parse(read.content[0].text);
-    expect(parsed.planType).toBe("task");
-    expect(parsed.tasks.map((task: { id: number }) => task.id)).toEqual([1, 2]);
-    expect(parsed.phases).toBeUndefined();
+    expect(read.content[0].text).toContain("Task Plan · 0/2 tasks");
+    expect(read.content[0].text).not.toContain('"tasks"');
+    const value = read.details.value as { planType: string; tasks: Array<{ id: number }> };
+    expect(value.planType).toBe("task");
+    expect(value.tasks.map((task) => task.id)).toEqual([1, 2]);
+    expect((value as { phases?: unknown }).phases).toBeUndefined();
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");
     expect((await execute(planReadTool, { target: "phase", id: 1 })).details.error).toBe("hidden phase");

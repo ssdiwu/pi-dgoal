@@ -69,8 +69,9 @@ export function findPhaseByTask(plan: TaskPlan | undefined, taskId: number): num
 export function detectPlanCycle(allTasks: readonly Task[], taskId: number, newBlockedBy: readonly number[]): boolean {
   const edges = new Map<number, number[]>();
   for (const task of allTasks) {
+    // Callers provide the target task's final dependency set after applying any removals/additions.
     edges.set(task.id, task.id === taskId
-      ? [...new Set([...(task.blockedBy ?? []), ...newBlockedBy])]
+      ? [...new Set(newBlockedBy)]
       : [...(task.blockedBy ?? [])]);
   }
   const visiting = new Set<number>();

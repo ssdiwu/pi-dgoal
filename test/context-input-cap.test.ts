@@ -449,7 +449,7 @@ describe("buildCompletionReplySignal", () => {
       audited: true,
     });
 
-    expect(signal).toContain("Dgoal 完成信号");
+    expect(signal).toContain("dgoal 完成信号");
     expect(signal).toContain("回复应帮助用户核对");
     expect(signal).toContain("不要再次调用 plan_update 收口");
     expect(signal).toContain("只保留 /dgoal");

@@ -236,6 +236,17 @@ describe("切片2 · blockedBy 增量合并", () => {
     expect(r.op.kind).toBe("update");
     expect(r.goal.plan!.phases[0].tasks[1].blockedBy ?? []).toEqual([]);
   });
+
+  test("remove + add 使用最终依赖集，允许修复旧持久态的环", () => {
+    const goal = makeGoal([phase(1, "p1", [
+      task(1, "a", "pending", { blockedBy: [2] }),
+      task(2, "b", "pending", { blockedBy: [1] }),
+      task(3, "c"),
+    ])]);
+    const r = run(goal, "update", { id: 1, removeBlockedBy: [2], addBlockedBy: [3] });
+    expect(r.op.kind).toBe("update");
+    expect(r.goal.plan!.phases[0].tasks[0].blockedBy).toEqual([3]);
+  });
 });
 
 describe("切片2 · phase 顺序守卫", () => {

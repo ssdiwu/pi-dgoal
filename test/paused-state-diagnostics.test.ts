@@ -40,7 +40,8 @@ describe("paused Plan diagnostics", () => {
   test("plan_read remains available", async () => {
     __setGoalForTest(goal("paused", "user_abort"));
     const result = await execute(planReadTool, { target: "plan" });
-    expect(text(result)).toContain("待办");
+    expect(text(result)).toContain("Goal Plan · 0/1 phases · 0/1 tasks");
+    expect((result.details.value as { phases: Array<{ tasks: Array<{ subject: string }> }> }).phases[0].tasks[0].subject).toBe("待办");
     expect(result.details.readOnly).toBe(true);
   });
 
@@ -93,6 +94,7 @@ describe("command pause and non-active boundaries", () => {
     expect(missing.details.error).toBe("no plan");
     __setGoalForTest(goal("active"));
     const active = await execute(planReadTool);
-    expect(text(active)).toContain("待办");
+    expect(text(active)).toContain("Goal Plan · 0/1 phases · 0/1 tasks");
+    expect((active.details.value as { phases: Array<{ tasks: Array<{ subject: string }> }> }).phases[0].tasks[0].subject).toBe("待办");
   });
 });

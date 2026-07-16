@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`plan_read` 不再默认铺满对话**：正文只显示紧凑摘要，完整结构移入可展开详情。
+- **旧持久态的依赖环可被修复**：`removeBlockedBy` 与 `addBlockedBy` 同次更新按最终依赖集验环，不再把已移除边重新加入检测图。
+
 ## [0.7.3] - 2026-07-16
 
 ### Breaking
