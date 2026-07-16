@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.5] - 2026-07-16
+
 ### Fixed
 
 - **工具结果人类可读投影**：八个公开工具默认显示紧凑摘要；展开时显示完整文字结果与工具白名单化的详情投影，进行中的建检也显示活性文本，但不将原始结构化 `details` 直接交给宿主渲染。
