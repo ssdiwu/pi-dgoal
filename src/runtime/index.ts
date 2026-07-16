@@ -6,7 +6,7 @@ import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Component, Focusable } from "@earendil-works/pi-tui";
-import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import { matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { streamSimple } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
@@ -1825,6 +1825,18 @@ export const PLAN_UPDATE_TOOL_NAME = "plan_update";
 export const PHASE_CHECK_TOOL_NAME = "phase_check";
 export const GOAL_CHECK_TOOL_NAME = "goal_check";
 
+function renderPublicToolResult(result: { content?: Array<{ type?: string; text?: string }> }, options: { expanded: boolean; isPartial: boolean }, theme: { fg: (color: string, text: string) => string }, context: { isError?: boolean }): Text {
+  if (options.isPartial) return new Text(theme.fg("warning", "Working…"), 0, 0);
+  const text = result.content?.filter((item) => item.type === "text" && typeof item.text === "string").map((item) => item.text!).join("\n") ?? "";
+  if (options.expanded) return new Text(theme.fg(context.isError ? "error" : "toolOutput", text), 0, 0);
+  const summary = text.split("\n").find(Boolean) ?? "Completed";
+  return new Text(theme.fg(context.isError ? "error" : "success", `${summary} (Ctrl+O to expand)`), 0, 0);
+}
+
+function definePublicTool(definition: any): any {
+  return defineTool({ ...definition, renderResult: renderPublicToolResult });
+}
+
 const entryTaskSchema = Type.Object({
   subject: Type.String({ minLength: 1, description: "task 简述" }),
   description: Type.Optional(Type.String({ description: "task 说明" })),
@@ -1892,7 +1904,7 @@ function makeInitialTasks(rawTasks: Array<{ subject: string; description?: strin
   return { tasks };
 }
 
-export const taskPlanTool = defineTool({
+export const taskPlanTool = definePublicTool({
   name: TASK_PLAN_TOOL_NAME,
   label: "Task Plan",
   description: "为普通、明确的多步执行任务直接建立最轻量 Task Plan。无需 /dgoal、启动确认或独立审核；已有 Task Plan 时会原子替换 objective 与全部 task。纯讨论、解释、问答或单步回答不要调用。",
@@ -2011,7 +2023,7 @@ async function executeAuditedPlanEntry(
   return (auditedPlanProposalTool.execute as unknown as Function)(toolCallId, mapped, signal, onUpdate, ctx);
 }
 
-export const phasePlanTool = defineTool({
+export const phasePlanTool = definePublicTool({
   name: PHASE_PLAN_TOOL_NAME,
   label: "Phase Plan",
   description: "提交显式 /dgoal 的 Phase Plan：多个 phase 组织进度，只在 goal 层独立终审。必须由用户显式启动 /dgoal 或明确授权，随后经过语义预审与确认 UI。",
@@ -2031,7 +2043,7 @@ export const phasePlanTool = defineTool({
   },
 });
 
-export const goalPlanTool = defineTool({
+export const goalPlanTool = definePublicTool({
   name: GOAL_PLAN_TOOL_NAME,
   label: "Goal Plan",
   description: "提交显式 /dgoal 的 Goal Plan：每个 phase 先经 phase_check，全部完成后再经 goal_check。必须由用户显式启动 /dgoal 或明确授权，随后经过语义预审与确认 UI。",
@@ -2072,7 +2084,7 @@ function resolveToolPhase(goal: GoalState, phaseId: unknown, phaseNumber: unknow
   return phase ? { phase } : { error: formatPhaseNotFoundResult(goal, id) };
 }
 
-export const planCreateTool = defineTool({
+export const planCreateTool = definePublicTool({
   name: PLAN_CREATE_TOOL_NAME,
   label: "Plan Create",
   description: "向 Task Plan 的 task 列表或 Phase/Goal Plan 的现有 phase 动态新增 task。运行中不能新增 goal 或 phase。",
@@ -2120,7 +2132,7 @@ export const planCreateTool = defineTool({
   },
 });
 
-export const planReadTool = defineTool({
+export const planReadTool = definePublicTool({
   name: PLAN_READ_TOOL_NAME,
   label: "Plan Read",
   description: "只读查询当前 Plan，可读取 plan/goal 的全 Plan 聚合摘要，或单个 phase/task；paused 状态仍可使用。",
@@ -2197,7 +2209,7 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
   })].join("\n");
 }
 
-export const planUpdateTool = defineTool({
+export const planUpdateTool = definePublicTool({
   name: PLAN_UPDATE_TOOL_NAME,
   label: "Plan Update",
   description: "更新当前 Plan 的 task、phase 或 goal 状态。check 只写审核结果；所有完成划线、暂停与最终收口都由本工具执行。",
@@ -2373,7 +2385,7 @@ function emitPublicCheckUpdate(onUpdate: ((update: unknown) => void) | undefined
   onUpdate?.(update);
 }
 
-export const phaseCheckTool = defineTool({
+export const phaseCheckTool = definePublicTool({
   name: PHASE_CHECK_TOOL_NAME,
   label: "Phase Check",
   description: "独立审核 Goal Plan 的当前 phase。审核只记录 approved/rejected/audit_error；通过后仍需 plan_update(target=phase,status=done) 才改变完成显示。",
@@ -2451,7 +2463,7 @@ export const phaseCheckTool = defineTool({
   },
 });
 
-export const goalCheckTool = defineTool({
+export const goalCheckTool = definePublicTool({
   name: GOAL_CHECK_TOOL_NAME,
   label: "Goal Check",
   description: "独立审核 Phase Plan 或 Goal Plan 的完整 goal。审核只记录 approved/rejected/audit_error；通过后仍需 plan_update(target=goal,status=done) 才最终收口。",
