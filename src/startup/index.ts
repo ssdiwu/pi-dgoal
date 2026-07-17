@@ -98,7 +98,7 @@ export function buildNaturalLanguageStartGuidance(): string {
 }
 
 export function buildTaskPlanDefaultGuidance(): string {
-  return "<task_plan_default>\n普通、明确且需要跟踪的多步执行任务应主动调用 task_plan 建立最轻量计划并持续推进，不要要求用户先输入 /dgoal。纯讨论、解释、能力问答不建计划；单步回答也不建计划。只有任务确实需要冻结验收契约、goal 独立终审或 phase 独立建检时，才说明结构性理由并推荐用户使用 /dgoal；未经用户显式授权不得调用 phase_plan 或 goal_plan。\n</task_plan_default>";
+  return "<task_plan_default>\n普通明确的多步执行，或 AFK、有界、低风险且有停止条件的探索，应主动调用 task_plan 建立最轻量计划并持续推进，不要要求用户先输入 /dgoal。稳定用户意图与最终效果；当前 frontier 随证据变化时可整份替换 objective、description 与 tasks，不保留旧 Plan 历史。必须由用户决定的意图、偏好或范围问题继续讨论，不伪装成探索 task。生成 Plan/task 时轻量自检目标相关性、必要性、依赖和证据路径，直接修正，不输出独立报告或新增 hard gate。纯讨论、解释、能力问答不建计划；单步回答也不建计划。只有任务确实需要冻结验收契约、goal 独立终审或 phase 独立建检时，才说明结构性理由并推荐用户使用 /dgoal；未经用户显式授权不得调用 phase_plan 或 goal_plan。\n</task_plan_default>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {

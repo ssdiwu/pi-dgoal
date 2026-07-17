@@ -37,7 +37,45 @@ const ctx = {
   isIdle: () => true,
 } as never;
 
-async function execute(tool: { execute: Function }, params: Record<string, unknown>) {
+function withDescriptions(tool: { name?: string }, params: Record<string, unknown>): Record<string, unknown> {
+  if (tool.name === "task_plan") {
+    const objective = String(params.objective ?? "目标");
+    return {
+      ...params,
+      description: params.description ?? `推进 ${objective}，保持方法与用户目标一致。`,
+      tasks: Array.isArray(params.tasks) ? params.tasks.map((task, index) => ({
+        ...(task as Record<string, unknown>),
+        description: (task as Record<string, unknown>).description ?? `完成第 ${index + 1} 项以推进 ${objective}。`,
+      })) : params.tasks,
+    };
+  }
+  if (tool.name === "phase_plan" || tool.name === "goal_plan") {
+    const objective = String(params.objective ?? "目标");
+    return {
+      ...params,
+      description: params.description ?? `推进 ${objective}，保持确认的方法边界。`,
+      phases: Array.isArray(params.phases) ? params.phases.map((phase, phaseIndex) => {
+        const item = phase as Record<string, unknown>;
+        return {
+          ...item,
+          description: item.description ?? `第 ${phaseIndex + 1} 阶段服务于 ${objective}。`,
+          tasks: Array.isArray(item.tasks) ? item.tasks.map((task, taskIndex) => ({
+            ...(task as Record<string, unknown>),
+            description: (task as Record<string, unknown>).description ?? `第 ${taskIndex + 1} 个任务推进当前阶段。`,
+          })) : item.tasks,
+        };
+      }) : params.phases,
+    };
+  }
+  if (tool.name === "plan_create") return { description: "新增此任务以推进当前目标。", ...params };
+  return params;
+}
+
+async function execute(tool: { name?: string; execute: Function }, params: Record<string, unknown>) {
+  return tool.execute("call", withDescriptions(tool, params), undefined, undefined, ctx);
+}
+
+async function executeRaw(tool: { execute: Function }, params: Record<string, unknown>) {
   return tool.execute("call", params, undefined, undefined, ctx);
 }
 
@@ -71,13 +109,20 @@ describe("Three-Plan public tool surface", () => {
     expect(names.every((name) => name.split("_").length === 2)).toBe(true);
   });
 
-  test("public Plan schemas do not expose the redundant activeForm field", () => {
-    const taskEntry = (taskPlanTool.parameters as any).properties.tasks.items.properties;
+  test("public Plan schemas require descriptions and do not expose activeForm/contextSummary", () => {
+    const taskPlanProperties = (taskPlanTool.parameters as any).properties;
+    const taskEntry = taskPlanProperties.tasks.items.properties;
     const phaseTaskEntry = (phasePlanTool.parameters as any).properties.phases.items.properties.tasks.items.properties;
     expect(taskEntry.activeForm).toBeUndefined();
     expect(phaseTaskEntry.activeForm).toBeUndefined();
     expect((planCreateTool.parameters as any).properties.activeForm).toBeUndefined();
     expect((planUpdateTool.parameters as any).properties.activeForm).toBeUndefined();
+    expect(taskPlanProperties.description).toBeDefined();
+    expect(taskEntry.description).toBeDefined();
+    expect((phasePlanTool.parameters as any).properties.description).toBeDefined();
+    expect((phasePlanTool.parameters as any).properties.contextSummary).toBeUndefined();
+    expect((phasePlanTool.parameters as any).properties.phases.items.properties.description).toBeDefined();
+    expect((planCreateTool.parameters as any).properties.description).toBeDefined();
   });
 
   test("an explicit natural-language /dgoal request cannot silently downgrade to Task Plan", async () => {
@@ -177,14 +222,13 @@ describe("Three-Plan public tool surface", () => {
     await execute(planUpdateTool, { target: "task", id: 2, status: "done", evidence: "fixed" });
     lines = renderPlanLines(__getGoalForTest(), { expandTasks: false });
     expect(lines[0]).toContain("2/3 tasks");
-    __setGoalForTest({ ...__getGoalForTest()!, iteration: 5, pausedTotalMs: 1_000, contextSummary: "旧任务背景" });
+    __setGoalForTest({ ...__getGoalForTest()!, iteration: 5, pausedTotalMs: 1_000 });
 
-    const replaced = await execute(taskPlanTool, { objective: "改为修文档", tasks: [{ subject: "更新 README" }] });
+    const replaced = await execute(taskPlanTool, { objective: "改为修文档", description: "改为维护文档，不继续键盘实现。", tasks: [{ subject: "更新 README", description: "同步用户可见说明。" }] });
     expect(replaced.details.revision).toBeGreaterThan(0);
     expect(__getGoalForTest()?.objective).toBe("改为修文档");
     expect(__getGoalForTest()?.plan?.phases[0].tasks).toHaveLength(1);
-    expect(__getGoalForTest()).toMatchObject({ iteration: 0, pausedTotalMs: 0 });
-    expect(__getGoalForTest()?.contextSummary).toBeUndefined();
+    expect(__getGoalForTest()).toMatchObject({ iteration: 0, pausedTotalMs: 0, description: "改为维护文档，不继续键盘实现。" });
     expect(renderPlanLines(__getGoalForTest(), { expandTasks: false })[0]).toContain("0/1 tasks");
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
     const finished = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
@@ -192,14 +236,23 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()).toBeUndefined();
   });
 
+  test("missing descriptions are rejected across creation paths", async () => {
+    expect((await executeRaw(taskPlanTool, { objective: "目标", tasks: [{ subject: "任务", description: "作用" }] })).details.error).toBe("no description");
+    expect((await executeRaw(taskPlanTool, { objective: "目标", description: "方法", tasks: [{ subject: "任务" }] })).details.error).toContain("description is required");
+
+    await execute(taskPlanTool, { objective: "目标", tasks: [{ subject: "已有任务" }] });
+    expect((await executeRaw(planCreateTool, { subject: "新增任务" })).details.error).toBe("no description");
+    expect((await executeRaw(planUpdateTool, { target: "task", id: 1, description: "" })).details.error).toBe("description cannot be blank");
+  });
+
   test("pre-change Task Plan IDs remain mutable after reload", async () => {
     __setGoalForTest({
-      id: "legacy-task-ids", objective: "旧 Task Plan", planType: "task", status: "active",
+      id: "legacy-task-ids", objective: "旧 Task Plan", description: "保留现有 task ID 并继续推进。", planType: "task", status: "active",
       startedAt: 1, updatedAt: 1, iteration: 0,
       plan: {
         revision: 0,
         nextId: 3,
-        phases: [{ id: 1, subject: "旧内部 phase", status: "pending", tasks: [{ id: 2, subject: "旧任务", status: "pending" }] }],
+        phases: [{ id: 1, subject: "旧内部 phase", status: "pending", tasks: [{ id: 2, subject: "旧任务", description: "验证现有 ID 可继续更新。", status: "pending" }] }],
       },
     } as never);
     expect((await execute(planUpdateTool, { target: "task", id: 2, status: "in_progress" })).details.status).toBe("in_progress");
@@ -283,6 +336,27 @@ describe("Three-Plan public tool surface", () => {
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");
     expect((await execute(planReadTool, { target: "phase", id: 1 })).details.error).toBe("hidden phase");
+  });
+
+  test("phase/task descriptions can be revised with trace while goal description stays frozen", async () => {
+    __setGoalForTest({
+      id: "description-updates", objective: "交付", description: "按确认方法交付。", planType: "phase", status: "active",
+      startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { revision: 0, nextId: 2, phases: [{
+        id: 1, subject: "实现", description: "按既定阶段推进。", status: "in_progress",
+        tasks: [{ id: 1, subject: "编码", description: "完成最小实现。", status: "in_progress" }],
+      }] },
+    });
+
+    const taskUpdated = await execute(planUpdateTool, { target: "task", id: 1, description: "先完成最小实现，再验证公开契约。" });
+    expect(taskUpdated.details.display).toContain("先完成最小实现，再验证公开契约。");
+    expect(__getGoalForTest()?.plan?.revision).toBe(1);
+
+    const phaseUpdated = await execute(planUpdateTool, { target: "phase", id: 1, description: "保持当前阶段边界，不顺手重构。" });
+    expect(phaseUpdated.details.display).toContain("保持当前阶段边界，不顺手重构。");
+    expect(__getGoalForTest()?.plan?.revision).toBe(2);
+    expect((await executeRaw(planUpdateTool, { target: "phase", id: 1, description: "" })).details.error).toBe("description cannot be blank");
+    expect((await executeRaw(planUpdateTool, { target: "goal", description: "偷偷改方法" })).details.error).toBe("goal description frozen");
   });
 
   test("Plan mutations invalidate stale phase approvals", async () => {

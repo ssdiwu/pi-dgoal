@@ -6,6 +6,11 @@ describe("Three-Plan activation boundary", () => {
   test("cold guidance makes Task Plan the default and keeps /dgoal explicit", () => {
     const task = buildTaskPlanDefaultGuidance();
     expect(task).toContain("主动调用 task_plan");
+    expect(task).toContain("AFK、有界、低风险且有停止条件的探索");
+    expect(task).toContain("当前 frontier 随证据变化时可整份替换 objective、description 与 tasks");
+    expect(task).toContain("意图、偏好或范围问题继续讨论，不伪装成探索 task");
+    expect(task).toContain("轻量自检目标相关性、必要性、依赖和证据路径");
+    expect(task).toContain("不输出独立报告或新增 hard gate");
     expect(task).toContain("纯讨论、解释、能力问答不建计划");
     expect(task).toContain("推荐用户使用 /dgoal");
     expect(task).toContain("不得调用 phase_plan 或 goal_plan");

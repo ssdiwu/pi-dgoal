@@ -17,12 +17,12 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 
 | 文件 | 验证内容 |
 |---|---|
-| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；Task Plan 隐藏 phase/整份替换及最后 task 自动收口；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
+| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；三层 Description 必填/冻结/显式修订；Task Plan 隐藏 phase/整份替换及最后 task 自动收口；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
 | `activation-boundary.test.ts` | Task Plan 默认 guidance、Phase/Goal Plan 显式激活边界、自然语言显式授权反例、入口 schema 不再暴露 implicit / runtime budget |
-| `task-plan-data-model.test.ts` | Plan 数据与 `dgoal-plan-v1` 持久化往返、旧 entry 隔离、check feedback helper |
+| `task-plan-data-model.test.ts` | Description 新契约、Plan 数据与 `dgoal-plan-v2` 持久化往返、v1/旧 entry 隔离、check feedback helper |
 | `state-machine-and-prompt.test.ts` | 三档 Plan system prompt、Plan context 注入、软遗忘、暂停/恢复 helper |
 | `plan-overlay-render.test.ts` | 常驻浮层按终端显示宽度裁切 heading、phase/task 展开、reload、完成闪现与 UI 容错 |
-| `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | `/dgoal s` Modal 投影、换行、滚动、缓存和组件契约 |
+| `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | `/dgoal s` 两层 Modal 的逻辑项选择、列表/详情导航、description/运行字段投影、返回保位、换行、滚动、缓存和组件契约 |
 | `startup-gate.test.ts` | Phase/Goal proposal 结构校验、语义预审、Plan 类型切换反馈、确认 UI 与技术/语义失败分流 |
 | `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令路由、裸命令承接、启动中断与投递去重 |
 
@@ -43,7 +43,7 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 
 `dgoal-plan-reducer.test.ts`、`tool-execute-integration.test.ts`、`prepare-arguments-schema.test.ts`、`phase-id-diagnostics.test.ts` 覆盖共用 reducer、proposal coercion、revision 单调性、phase/task 双 ID namespace、类型化同号消歧与旧 Plan phase 定位。公共工具状态机的权威测试是 `three-plan-runtime.test.ts`，真实宿主注册由 `test-extension-rpc.py` + `rpc-tool-probe.ts` 核验。
 
-`context-summarizer-*` 仅保留 ADR 0033 之前 helper 的兼容回归；生产启动不运行独立背景摘要子进程。`phase-plan-proposal-path.test.ts` 覆盖 Phase Plan 不带 phase criteria 的语义预审边界。
+`context-input-cap.test.ts` 现在覆盖 ADR 0042 的冻结 goal description 启动 prompt；旧 `context-summarizer-*` 测试随 `contextSummary` 生产链删除。`phase-plan-proposal-path.test.ts` 覆盖 Phase Plan 不带 phase criteria 的语义预审边界。
 
 ## Python smoke
 

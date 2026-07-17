@@ -46,6 +46,16 @@ overlay 配置：`anchor: "top-center"`, `width: "100%"`, `maxHeight: "85%"`, `m
 
 overlay 配置改为 `anchor: "center"`（其余 `width: "100%"` / `maxHeight: "85%"` / `margin: 1` 不变）。不推翻本 ADR 的形态选型，是激活原备选 Variant C。
 
+## 追加决策：列表/详情两层状态机（ADR 0042）
+
+ADR 0042 在保留 center overlay 形态的基础上，把原单页滚动 body 升级为两层状态机：
+
+- 列表页展示完整 goal description，并按逻辑 phase/task 选择；`↑/↓`、`j/k` 与 `g/G` 改变选择，窗口跟随。
+- `PgDn/PgUp`、`Ctrl+D/Ctrl+U` 与 `Home/End` 只滚动物理行，不改变选择，使长 description 可完整浏览。
+- `Enter` 进入所选项详情；详情独立滚动，`Esc` 返回并保留列表选择，`Ctrl+C` 直接关闭。
+
+本追加决策覆盖下文“单页 body + offset hint”的交互细节；原型取舍和 `computeScrollOffset` 的纯函数约束保留为历史依据。
+
 ## 实施要点
 
 1. **数据结构 `RenderLine[]`**：`{ type: "heading" | "spacer" | "phase" | "task", status?: PlanStatus, text: string }`。让 render 阶段根据 type + status 染色。
@@ -68,9 +78,9 @@ overlay 配置改为 `anchor: "center"`（其余 `width: "100%"` / `maxHeight: "
 
 ## 验证
 
-- **行为**：走 `/dgoal s` 应弹 top-center overlay，j/k/↑↓/PgDn/PgUp/End/Home/ESC 工作正常
-- **边界**：goal 30+ 行时 scroll 流畅；task 0 个的 phase 显示 phase 行无 task 子行；blocked phase 显示 `[blockedReason]` 后缀
-- **性能**：每 Component 实例 ≤ 100 行；render 有缓存（`cachedWidth/cachedLines/cachedScrollOffset`）
+- **行为**：走 `/dgoal s` 应弹 center overlay；列表逻辑选择、物理行翻页、Enter 详情、Esc 返回/关闭与 Ctrl+C 关闭均正常。
+- **边界**：超长 goal description 可从头浏览到尾；task 0 个的 phase 仍可查看；blocked phase/task 的详情展示 blocked reason；极窄宽度不输出超宽行。
+- **性能**：render 按 width、elapsed second 与审核活性快照缓存；列表/详情换行结果按当前 width 复用。
 
 ## 后续
 

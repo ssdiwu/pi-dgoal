@@ -14,7 +14,7 @@ function passes(tool: ToolDef, args: Record<string, unknown>): boolean {
 
 describe("Eight-tool prepareArguments schema seam", () => {
   test("task_plan coerces stringified initial blockedBy", () => {
-    const args = { objective: "o", tasks: [{ subject: "A" }, { subject: "B", blockedBy: "[1]" }] };
+    const args = { objective: "o", description: "goal desc", tasks: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }] };
     expect(passes(taskPlanTool, args)).toBe(true);
     expect(((prepare(taskPlanTool, args).tasks as any[])[1].blockedBy)).toEqual([1]);
   });
@@ -22,12 +22,14 @@ describe("Eight-tool prepareArguments schema seam", () => {
   test("goal_plan coerces nested task blockedBy", () => {
     const args = {
       objective: "o",
+      description: "goal desc",
       verification: "bun test",
       acceptanceCriteria: [{ criterion: "ok", evidence: "bun test" }],
       phases: [{
         subject: "p",
+        description: "phase desc",
         acceptanceCriteria: [{ criterion: "phase ok", evidence: "bun test" }],
-        tasks: [{ subject: "A" }, { subject: "B", blockedBy: "[1]" }],
+        tasks: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }],
       }],
     };
     expect(passes(goalPlanTool, args)).toBe(true);
@@ -35,7 +37,7 @@ describe("Eight-tool prepareArguments schema seam", () => {
   });
 
   test("plan_create coerces root blockedBy", () => {
-    const args = { subject: "B", blockedBy: "[2]" };
+    const args = { subject: "B", description: "B desc", blockedBy: "[2]" };
     expect(passes(planCreateTool, args)).toBe(true);
     expect(prepare(planCreateTool, args).blockedBy).toEqual([2]);
   });
@@ -48,7 +50,7 @@ describe("Eight-tool prepareArguments schema seam", () => {
   });
 
   test("real arrays are left valid", () => {
-    expect(passes(planCreateTool, { subject: "B", blockedBy: [2] })).toBe(true);
+    expect(passes(planCreateTool, { subject: "B", description: "B desc", blockedBy: [2] })).toBe(true);
     expect(passes(planUpdateTool, { target: "task", id: 3, addBlockedBy: [2] })).toBe(true);
   });
 });

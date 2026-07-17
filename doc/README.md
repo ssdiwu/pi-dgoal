@@ -1,6 +1,6 @@
 # doc 文档导航
 
-> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）。
+> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）。
 
 ## 阅读顺序
 
@@ -10,7 +10,7 @@
 2. `10-架构与运行/10-建检循环与三层结构.md` — 核心原理、三层内容、双可见性轴、建检不可绕过性
 3. `10-架构与运行/11-状态机.md` — goal/phase/task 状态机、正交 CheckRecord 与固定技术暂停出口
 4. `10-架构与运行/12-工具命令与数据模型.md` — 八个两词工具、/dgoal 命令、数据模型、持久化
-5. `10-架构与运行/13-启动闸门与TUI浮层.md` — /dgoal 启动流程、确认 UI、计划浮层
+5. `10-架构与运行/13-启动闸门与TUI浮层.md` — /dgoal 启动流程、确认 UI、持续浮层与两层状态 Modal
 6. `10-架构与运行/14-TUI边界与状态机容错.md` — TUI 渲染异常不能阻断状态机和 goal 闭环
 7. `30-路线图/30-项目路线图.md` — 实现切片排期、待拷问项（已全部完成）、暂不做/不做边界
 8. `40-版本实施方案/` — 版本级实施方案与验收记录；当前三档 Plan 破坏性升级见 ADR 0038，历史版本见 `CHANGELOG.md`
@@ -30,6 +30,7 @@
 19. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
 20. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
 21. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
+22. `20-能力参考/30-CriticalThinking-Wayfinder与SpecSelfReview参考.md` — 从路由、探索、减法与建检四维判断，并记录已落地的 Task Plan frontier guidance 与 Plan/task 软性自检提示
 
 历史材料：
 
@@ -52,7 +53,7 @@
 
 1. **建检循环是基本盘**：dgoal = 定义 goal + 完成后 check，不过继续干，过则结束。一切设计服从这个第一性原理。
 2. **心智模型不建模**：建检循环是心智模型，不是显式数据结构（ADR 0006）。
-3. **三层内容 + 按 Plan 投影**：goal/phase/task 共享持久结构；Task Plan 隐藏内部 phase 并直接展示 task，Phase/Goal Plan 展示 phase 主干。
+3. **三层内容 + 按 Plan 投影**：goal/phase/task 共享持久结构并使用必填 Description；Task Plan 隐藏内部 phase 并直接展示 task，Phase/Goal Plan 展示 phase 主干；Description 进入执行上下文和两层状态 Modal，但不进入持续浮层或独立审核完成门（ADR 0042）。
 4. **check / update 不可混用**：`phase_check` / `goal_check` 只记录独立审核；只有 `plan_update` 能写完成，并必须验证当前 revision 的批准记录（ADR 0038）。
 5. **惰性创建**：目录和文件按需建立，不预建空结构。
 6. **外部参考只借轻动作**：借 UI/reducer/状态边界/理论依据，不照搬完整平台。

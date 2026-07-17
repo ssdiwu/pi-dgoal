@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **三层 Description 合同与持久化 v2**（ADR 0042）：goal、用户可见 phase 与 task 的 Description 改为必填；Phase/Goal Plan 的 goal description 随确认冻结，phase/task 可显式修订。删除 `contextSummary` 的工具参数、状态、持久化、prompt 与预览链路；持久化键升级为 `dgoal-plan-v2`，不迁移 `dgoal-plan-v1` 活动状态。
+
+### Changed
+
+- **Task Plan 探路与轻自检 guidance**：普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，可用 Task Plan 承载当前 frontier；Plan/task 生成前只做相关性、必要性、依赖和证据路径的软自检，不增加阶段、硬门或伪装 HITL。
+- **`/dgoal s` 两层 Modal**：列表页展示完整 goal description 与可选择的 phase/task；详情页展示完整 description、状态、依赖、evidence 与 blocked reason。支持逻辑项选择、窗口跟随、Enter 进入、Esc 返回保位与详情独立滚动；持续浮层仍不显示 Description。
+- **Description 执行/审核边界**：主 agent 的运行上下文注入 goal 与当前/未来 phase/task Description；done phase 继续软遗忘。独立审核器可据此理解执行方法，但不能把自由文本 Description 升级为独立完成门。
+
+### Fixed
+
+- **v2 恢复边界**：`dgoal-plan-v2` 重载时按 Plan 类型严格复验 goal/plan 的 Description、冻结验收契约、ID、状态、依赖图、check 结构与 `pendingProposal`；脏 entry 整体失效，不能在 session 恢复后越过启动校验。
+- **`/dgoal s` 长内容与渲染边界**：列表翻页只滚动物理行，超长 goal description 可完整浏览；审核活性变化会使同秒缓存失效，非正或极窄终端宽度安全降级。
+
 ## [0.7.6] - 2026-07-17
 
 ### Changed

@@ -38,11 +38,11 @@ pi-dgoal/
 
 - **会话内单目标**：只支持当前会话内单目标，不做多目标池。
 - **Plan 必选**：显式 `/dgoal` 必须提交 Phase Plan 或 Goal Plan，并至少包含一个 phase；task 可在提案中预置，也可在执行中按需新增，不允许空 phase 列表越过启动闸门。详见 ADR 0038。
-- **三档 Plan + 三层内容**：Task / Phase / Goal Plan 共享 goal（全局）/phase（task 聚合）/task（按需分解）数据结构。Task Plan 隐藏内部单 phase、无独立审核；Phase Plan 只做 goal check；Goal Plan 做 phase + goal 两级 check。详见 ADR 0038 与 `doc/10-架构与运行/`。
+- **三档 Plan + 三层内容**：Task / Phase / Goal Plan 共享 goal（全局）/phase（task 聚合）/task（按需分解）数据结构。goal、用户可见 phase/task 的 Description 必填；Phase/Goal Plan 的 goal description 随确认冻结，phase/task 可显式修订，Description 指导执行但不是独立审核门。Task Plan 隐藏内部单 phase、无独立审核；Phase Plan 只做 goal check；Goal Plan 做 phase + goal 两级 check。详见 ADR 0038、0042 与 `doc/10-架构与运行/`。
 - **八工具职责分离**：建立用 `task_plan` / `phase_plan` / `goal_plan`，管理用 `plan_create` / `plan_read` / `plan_update`，独立审核用 `phase_check` / `goal_check`。check 只写 `CheckRecord`，只有 `plan_update` 能写 phase/goal done 与暂停状态；公共工具不带 `dgoal_` 前缀。
 - **不碰 Git**：不自动执行 Git 提交、回滚或删除。
 - **不替代测试**：不替代项目自身测试命令；agent 仍需按项目现状选择并运行验证。
-- **背景固化是补充**：当前生产启动不再运行独立背景摘要子进程；主 agent 可在 proposal 中提供可选 `contextSummary`，它仍是补充信息，不替代把关键约束写进 objective 或文档。
+- **不保留背景摘要字段**：`contextSummary` 已从工具、状态、持久化与 prompt 删除，不迁移旧值；当前持久化键为 `dgoal-plan-v2`。长期事实按需重读权威文档，方法理由写入 Description，硬边界写入 `nonGoals` / `guardrails` / `acceptanceCriteria`。
 - **审核员默认复用主模型**：默认继承当前会话模型；可通过 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json` 的 `phaseAuditorModels` / `goalAuditorModels`，以最多 3 个 `provider/model[:thinking]` 有序候选分别配置阶段建检与目标终审。项目候选链整体优先于全局链、不混合；同一来源内复数字段 > 对应单值字段 > 旧 `auditorModel`。复数字段 `null` 显式继承当次会话模型并阻断继续降级，旧单值字段保持兼容；项目级配置受 `ctx.isProjectTrusted()` 信任边界保护。候选先由与审核 child 同隔离边界的 Pi 结构化模型注册表预检，查询失败保留候选；一次审核中每候选最多调用一次，技术/协议异常或缺终止标记的部分输出按候选切换，业务 `REJECTED`、用户中断不换模型；健康 fallback 在当前 goal/审核范围复用，耗尽后必须 `audit_error` 暂停。
 - 不硬编码密钥、token、私有路径。
 

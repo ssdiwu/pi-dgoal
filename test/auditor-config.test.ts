@@ -17,7 +17,6 @@ import {
   PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS,
   resolveAuditorModelCandidates,
   resolveAuditorModelId,
-  resolveContextSummarizerModelCandidates,
   resolveProposalSemanticReviewIdleTimeoutSeconds,
 } from "../index.ts";
 
@@ -45,10 +44,6 @@ afterEach(() => {
 });
 
 describe("dgoal auditor config", () => {
-  test("背景摘要候选链已移除，只保留兼容的当前模型返回", async () => {
-    const candidates = await resolveContextSummarizerModelCandidates({ model: { provider: "openai", id: "gpt-5" } });
-    expect(candidates).toEqual(["openai/gpt-5"]);
-  });
   test("matches candidates against structured Pi model entries, including custom IDs and thinking suffixes", () => {
     const result = preflightAuditorModelCandidates(
       [

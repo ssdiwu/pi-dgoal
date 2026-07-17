@@ -17,6 +17,7 @@ function makeGoal(phases: Phase[], nextId?: number): GoalState {
   return {
     id: "g1",
     objective: "测目标",
+    description: "验证 reducer 行为。",
     status: "active",
     startedAt: 1,
     updatedAt: 1,
@@ -26,15 +27,18 @@ function makeGoal(phases: Phase[], nextId?: number): GoalState {
 }
 
 function task(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, status, ...extra };
+  return { id, subject, description: `${subject} 的测试说明。`, status, ...extra };
 }
 
 function phase(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase {
-  return { id, subject, tasks, status };
+  return { id, subject, description: `${subject} 的阶段说明。`, tasks, status };
 }
 
 function run(goal: GoalState, action: PlanAction, params: Record<string, unknown>) {
-  return applyPlanMutation(goal, action, params);
+  const normalized = action === "create" && params.subject !== undefined && params.description === undefined
+    ? { ...params, description: `${params.subject} 的任务说明。` }
+    : params;
+  return applyPlanMutation(goal, action, normalized);
 }
 
 describe("切片2 · detectPlanCycle 环检测", () => {
@@ -73,10 +77,10 @@ describe("切片2 · create task", () => {
     expect(r.goal.plan!.phases[0].tasks[1].status).toBe("pending");
   });
 
-  test("缺 subject 报错", () => {
+  test("缺 subject 或 description 报错", () => {
     const goal = makeGoal([phase(1, "p1", [])]);
-    const r = run(goal, "create", { phaseId: 1 });
-    expect(r.op.kind).toBe("error");
+    expect(run(goal, "create", { phaseId: 1 }).op.kind).toBe("error");
+    expect(applyPlanMutation(goal, "create", { phaseId: 1, subject: "x" }).op.kind).toBe("error");
   });
 
   test("phase 不存在报错", () => {

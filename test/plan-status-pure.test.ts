@@ -6,8 +6,12 @@ import {
   buildBodyLines,
   buildBodyLinesNoHeading,
   buildHeadingLine,
+  buildPlanStatusDetailLines,
+  buildPlanStatusListLines,
   colorize,
+  computePlanStatusSelection,
   computeScrollOffset,
+  getPlanStatusTargets,
   type GoalState,
   type Phase,
   type PlanStatus,
@@ -28,16 +32,17 @@ function mockTheme(): any {
 
 // ---- goal/phase/task 工厂（与 plan-overlay-render.test.ts 保持一致） ----
 function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, status, ...extra };
+  return { id, subject, description: `${subject} 任务说明`, status, ...extra };
 }
 function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending", extra: Partial<Phase> = {}): Phase {
-  return { id, subject, tasks, status, ...extra };
+  return { id, subject, description: `${subject} 阶段说明`, tasks, status, ...extra };
 }
 function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
   const now = Date.now();
   return {
     id: "g1",
     objective: "实施 v0.4.2",
+    description: "完成两层状态查询。",
     status: "active",
     startedAt: now - 5 * 60 * 1000, // 5m ago — elapsed 走 < 1h 分支
     updatedAt: now - 5 * 60 * 1000,
@@ -239,6 +244,43 @@ describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
 // =============================================================================
 // colorize：层级基色映射（ADR 0009，状态不再靠颜色或粗体表达）
 // =============================================================================
+
+describe("两层 `/dgoal s` 纯函数", () => {
+  test("列表页包含 goal description，并给 phase/task 提供稳定 target", () => {
+    const g = goal([p(1, "实现", [t(3, "写测试")], "in_progress")]);
+    const lines = buildPlanStatusListLines(g);
+    expect(lines[0]).toMatchObject({ type: "description", text: "说明：完成两层状态查询。" });
+    expect(getPlanStatusTargets(g)).toEqual([
+      { kind: "phase", id: 1 },
+      { kind: "task", id: 3 },
+    ]);
+  });
+
+  test("Task Plan 不暴露内部 phase target", () => {
+    const g = goal([p(1, "隐藏 phase", [t(1, "执行")])], { planType: "task" });
+    expect(getPlanStatusTargets(g)).toEqual([{ kind: "task", id: 1 }]);
+  });
+
+  test("phase/task 详情按字段投影并对缺失运行字段显示无", () => {
+    const g = goal([p(1, "实现", [t(2, "写代码", "done", { blockedBy: [1], evidence: "bun test" })], "in_progress")]);
+    expect(buildPlanStatusDetailLines(g, { kind: "phase", id: 1 }).join("\n"))
+      .toContain("实现 阶段说明");
+    const taskDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 2 }).join("\n");
+    expect(taskDetail).toContain("所在 phase：#1 实现");
+    expect(taskDetail).toContain("依赖：#1");
+    expect(taskDetail).toContain("证据：bun test");
+    expect(taskDetail).toContain("阻塞原因：无");
+  });
+
+  test("选中索引支持上下与 vim 首尾；翻页键留给列表物理滚动", () => {
+    expect(computePlanStatusSelection("j", 0, 25)).toBe(1);
+    expect(computePlanStatusSelection("k", 0, 25)).toBe(0);
+    expect(computePlanStatusSelection("\u001b[6~", 1, 25)).toBeNull();
+    expect(computePlanStatusSelection("G", 1, 25)).toBe(24);
+    expect(computePlanStatusSelection("g", 24, 25)).toBe(0);
+    expect(computePlanStatusSelection("?", 2, 25)).toBeNull();
+  });
+});
 
 describe("切片 1 · colorize 按 line.type 分配层级基色", () => {
   const th = mockTheme();

@@ -4,7 +4,7 @@ English | [中文](./README-zh.md)
 
 A Pi extension that matches planning assurance to the work: **Task Plan** gives agents a lightweight default for ordinary multi-step execution, while explicit dgoal runs can add independently audited **Phase Plans** or **Goal Plans** when the outcome needs a stronger completion contract.
 
-> **v0.7.3 is a breaking release** (ADR 0038): the old five-tool surface becomes eight two-word tools; Task Plan becomes the everyday default; Phase Plan and Goal Plan still require explicit dgoal activation. Old persisted state is not migrated.
+> **The next release is breaking** (ADR 0042): goal, visible phase, and task descriptions are required; `contextSummary` is removed; persistence moves to `dgoal-plan-v2`. `dgoal-plan-v1` activity is not migrated.
 
 ## Choose the Right Plan
 
@@ -24,6 +24,12 @@ It is not a ritual for every reply: discussions, explanations, capability questi
 
 Phase Plan adds a final independent review for the whole goal. Goal Plan adds a separate independent review at every phase **and** at final completion. Both are explicit user choices through `/dgoal`, so higher assurance never appears as hidden process overhead.
 
+### Compose with dteam
+
+Plan type determines progress structure and independent-audit density; [`dteam`](https://github.com/ssdiwu/pi-dteam) is an optional model-tier routing and fresh-context execution layer. It can be used on its own or inside a Task, Phase, or Goal Plan. For non-trivial repository work that still needs facts, the main agent can first dispatch bounded, complementary, read-only T3 probes, then synthesize their sourced reports and decide whether to close, implement, verify, or escalate.
+
+dteam does not own or update Plan state, resolve user-only decisions, replace explicit `/dgoal` authorization and confirmation, run `phase_check` / `goal_check`, or perform the final `plan_update` closure. The Plan remains the progress and audit authority; dteam only executes the current bounded slice.
+
 ## Install
 
 ```bash
@@ -40,7 +46,7 @@ pi -e ./index.ts
 
 ### Ordinary work: Task Plan
 
-Ask for a concrete multi-step task normally. When tracking adds value, the agent calls `task_plan`, then advances it through `plan_create` and `plan_update`. Calling `task_plan` again atomically replaces the objective and all tasks.
+Ask for a concrete multi-step task normally. When tracking adds value, the agent calls `task_plan`, then advances it through `plan_create` and `plan_update`. Calling `task_plan` again atomically replaces the objective, goal description, and all tasks. AFK, bounded, low-risk exploration with a clear stopping condition can use the same lightweight path.
 
 ```text
 task_plan
@@ -86,18 +92,20 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 
 | Tool | Responsibility |
 |---|---|
-| `task_plan` | Create or fully replace a Task Plan |
-| `phase_plan` | Submit an explicitly activated Phase Plan with a frozen goal contract |
-| `goal_plan` | Submit an explicitly activated Goal Plan with frozen phase and goal contracts |
-| `plan_create` | Add a task only; never add a phase |
+| `task_plan` | Create or fully replace a Task Plan, including goal/task descriptions |
+| `phase_plan` | Submit an explicitly activated Phase Plan with required goal/phase descriptions and a frozen goal contract |
+| `goal_plan` | Submit an explicitly activated Goal Plan with required descriptions and frozen phase/goal contracts |
+| `plan_create` | Add a task with a required description; never add a phase |
 | `plan_read` | Read a plan, goal, phase, or task; pure read: plan/goal return aggregate phase/task progress for the whole Plan, while phase/task return one compact item; no raw Plan payload (Task Plan hides its phase) |
-| `plan_update` | Sole agent-facing execution-status writer for task/phase/goal progress, completion, and agent pause |
+| `plan_update` | Sole agent-facing writer for task/phase/goal progress, phase/task description revisions, completion, and agent pause |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
 
 Tool names follow a two-word rule and do not use a `dgoal_` prefix. `dgoal` remains the product and user-command name.
 
-Phase and task identifiers use separate namespaces: each starts at `1`, while task IDs remain unique across the whole Plan so `blockedBy` can reference tasks in the same or an earlier phase. Typed tool targets disambiguate phase `#1` from task `#1`; `nextId` allocates tasks only. `plan_read(target=plan|goal)` aggregates phase/task progress (done/total) across the whole Plan; `target=phase|task` returns only that item. During load/resync, old persisted phases without `tasks` are normalized to `tasks: []`; existing persisted Plans keep their original IDs.
+Phase and task identifiers use separate namespaces: each starts at `1`, while task IDs remain unique across the whole Plan so `blockedBy` can reference tasks in the same or an earlier phase. Typed tool targets disambiguate phase `#1` from task `#1`; `nextId` allocates tasks only. `plan_read(target=plan|goal)` aggregates phase/task progress (done/total) across the whole Plan; `target=phase|task` returns only that item.
+
+Every goal, visible phase, and task carries a required **Description**: why it exists, how it serves its parent, why the current method was chosen, and which method drift to avoid. It is authoritative execution guidance, not a parallel audit gate. Phase/Goal Plan goal descriptions freeze at confirmation; phase/task descriptions may be explicitly revised through `plan_update`, which invalidates stale approvals. Hard method constraints belong in `guardrails` or `acceptanceCriteria`.
 
 ## Completion Guards
 
@@ -125,7 +133,7 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 - **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
 - **`Ctrl+O`:** expands tasks and audit activity under Phase/Goal Plan phases; the ten-second completion snapshot shows every phase and task.
-- **`/dgoal s` modal:** shows the full visible plan; Task Plan never exposes its hidden phase.
+- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description and selectable phase/tasks; Enter opens full item details (description, status, dependencies, evidence, blocked reason), and Esc returns without losing the selection. Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 
 State and persistence never depend on successful rendering. Widget, modal, status, or notification errors may degrade presentation but cannot block completion or recovery.
@@ -148,7 +156,7 @@ Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and `auditorMod
 
 ## Persistence
 
-Current plans use the `dgoal-plan-v1` custom entry. Old `dgoal-state` and `dgoal-goal-vnext` entries are intentionally ignored and not migrated. A Pi session owns at most one current plan.
+Current plans use the `dgoal-plan-v2` custom entry. Old `dgoal-state`, `dgoal-goal-vnext`, and `dgoal-plan-v1` entries are intentionally ignored and not migrated. Reload strictly revalidates required descriptions, the Plan-specific frozen acceptance contract, IDs, statuses, dependencies, removed fields, and any pending proposal; one invalid part rejects the whole entry. A Pi session owns at most one current plan.
 
 ## Design Boundaries
 
@@ -179,14 +187,15 @@ pi-dgoal/
 │   ├── plan/          # Data model and pure helpers
 │   ├── runtime/       # Three-Plan runtime, startup gate, tools, lifecycle
 │   ├── startup/       # Extension event wiring and default guidance
+│   ├── goal-runtime/  # Mutable session goal, proposal, continuation, and audit liveness state
 │   ├── audit/         # Independent audit protocol and checkpoints
 │   ├── isolated-pi/   # Isolated Pi subprocess
-│   └── tui/           # Status modal and rendering projections
+│   └── tui/           # Stateless scrolling, width, elapsed-time, and text-style helpers
 ├── test/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), and [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), and [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md).
 
 ## License
 

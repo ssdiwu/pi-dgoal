@@ -34,12 +34,15 @@ describe("public tool result projection", () => {
   test("Task Plan create, create-task, and update supply concrete expanded details", async () => {
     const created = await taskPlanTool.execute("create-plan", {
       objective: "展示展开投影",
+      description: "验证建立与修订时的人类可读说明。",
       tasks: [{ subject: "读源码", description: "定位渲染入口" }],
     }, undefined, undefined, ctx);
     expect(expandedText(taskPlanTool, created)).toContain("读源码");
+    expect(expandedText(taskPlanTool, created)).toContain("验证建立与修订时的人类可读说明");
 
-    const added = await planCreateTool.execute("create-task", { subject: "验证投影" }, undefined, undefined, ctx);
+    const added = await planCreateTool.execute("create-task", { subject: "验证投影", description: "确认新增 task 说明可见。" }, undefined, undefined, ctx);
     expect(expandedText(planCreateTool, added)).toContain("验证投影");
+    expect(expandedText(planCreateTool, added)).toContain("确认新增 task 说明可见");
 
     const updated = await planUpdateTool.execute("update-task", { target: "task", id: 1, status: "in_progress" }, undefined, undefined, ctx);
     const expanded = expandedText(planUpdateTool, updated);

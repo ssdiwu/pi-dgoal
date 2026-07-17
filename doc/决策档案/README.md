@@ -1,6 +1,6 @@
 # 决策档案索引
 
-> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨（写「定了什么」不写「为什么」，深读点文件）。0006 保留建检循环基本原则；当前运行机制以 0038 为主，ID 语义由 0039 补充。
+> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨（写「定了什么」不写「为什么」，深读点文件）。0006 保留建检循环基本原则；当前运行机制以 0038 为主，ID 语义由 0039 补充，三层 Description 与 `contextSummary` 去留由 0042 规定。
 
 | 编号 | 标题 | 一句话主旨 |
 |---|---|---|
@@ -10,8 +10,8 @@
 | [0004](./0004-状态机扩展rejected与两种paused.md) | 状态机扩展 rejected 与两种 paused | 已被 ADR 0038 覆盖；业务拒绝改为正交 CheckRecord |
 | [0005](./0005-step-blocked状态.md) | step blocked 状态 | 保留 blocked + 原因；blocked 完成放行语义已被 ADR 0038 覆盖 |
 | [0006](./0006-建检循环心智模型与三层结构.md) | 建检循环心智模型 + 三层结构 | 保留建检循环与三层原则；完成机制与工具边界以 ADR 0038 为准 |
-| [0007](./0007-contextSummary与verification分字段.md) | contextSummary 与 verification 分字段 | 两者职责不同保持双字段，verification 可默认继承 contextSummary 的验收部分 |
-| [0008](./0008-dgoal-s-modal-形态选型.md) | `/dgoal s` 命令弹窗形态选型 | `/dgoal s` 采用 top-center overlay modal 形态 |
+| [0007](./0007-contextSummary与verification分字段.md) | contextSummary 与 verification 分字段 | 已被 ADR 0042 覆盖；`contextSummary` 从新数据模型移除 |
+| [0008](./0008-dgoal-s-modal-形态选型.md) | `/dgoal s` 命令弹窗形态选型 | `/dgoal s` 采用居中 overlay modal；ADR 0042 扩展为列表/详情两层 |
 | [0009](./0009-TUI视觉编码改为层级靠颜色状态靠字符.md) | TUI 视觉编码改为层级靠颜色状态靠字符 | goal/phase/task 用层级基色区分，状态统一用前缀字符；覆盖 0008 视觉编码部分 |
 | [0010](./0010-done-phase软遗忘注入只留标题行.md) | done phase 软遗忘，注入只留标题行 | 投影继续保留；done 的可信依据改由 ADR 0038 的分型 update 守卫提供 |
 | [0011](./0011-建检反馈持久化到LoopGoal.md) | 建检反馈持久化到 LoopGoal | 失败报告持久化仍保留；旧 Goal rejected 生命周期被 ADR 0038 覆盖 |
@@ -29,14 +29,14 @@
 | [0023](./0023-终审修复作为展示阶段.md) | 终审修复作为展示阶段 | 已被 ADR 0038 覆盖；check rejected 不再建立专用展示阶段 |
 | [0024](./0024-src模块地图与入口组装.md) | src 模块地图与入口组装 | index 仅组装；plan/audit/isolated-pi/tui/goal-runtime/startup 按真实职责拆分 |
 | [0025](./0025-goal-runtime独占会话状态.md) | Goal Runtime 独占会话状态 | 可变 session 状态集中于 `src/goal-runtime/state.ts`，runtime/startup 只编排与投影 |
-| [0026](./0026-新版本不兼容旧goal持久态.md) | 新版本不兼容旧 goal 持久态 | ADR 0038 使用 `dgoal-plan-v1`，忽略两代旧键，升级后须新建 Plan |
+| [0026](./0026-新版本不兼容旧goal持久态.md) | 新版本不兼容旧 goal 持久态 | 不迁移旧活动 Plan；当前由 ADR 0042 升级为 `dgoal-plan-v2` 并忽略 v1 |
 | [0027](./0027-背景总结模型候选链与启动失败语义.md) | 背景总结模型候选链与启动失败语义 | 已被 ADR 0033 覆盖；生产启动不再运行独立背景总结候选链 |
 | [0028](./0028-审核候选单次故障切换与范围内粘性.md) | 审核候选单次故障切换与范围内粘性 | 候选故障各尝试一次并范围内复用；固定次数业务拒绝暂停已被 ADR 0038 覆盖 |
 | [0029](./0029-语义预审可观测idle-timeout与技术语义分离.md) | 语义预审可观测 idle timeout 与技术/语义分离 | 预审从 30s 总时长超时改为 60s idle timeout，技术失败与语义打回分离，过程可观测 |
 | [0030](./0030-审核检查点复用独立工具事实.md) | 审核检查点复用独立工具事实 | 同工作区复用 child 已完成工具事实，不引入主会话历史；阶段/目标审核有共享总预算 |
 | [0031](./0031-dgoal-pause-agent主动暂停出口.md) | dgoal_pause agent 主动暂停出口 | 暂停语义保留，独立工具已被 ADR 0038 的 `plan_update` 入口覆盖 |
 | [0032](./0032-提案阶段确认验收与预算策略.md) | 提案阶段确认验收与预算策略 | 已被 ADR 0038 覆盖；策略与预算组合改由三档 Plan 表达 |
-| [0033](./0033-proposal主导背景固化与直接建计划.md) | proposal 主导背景固化与直接建计划 | 主 LLM 直接提交 plan 与可选背景，取消启动前独立摘要及其失败阻断 |
+| [0033](./0033-proposal主导背景固化与直接建计划.md) | proposal 主导背景固化与直接建计划 | 保留主 LLM 直接建 Plan 与取消独立摘要；`contextSummary` 部分由 ADR 0042 覆盖 |
 | [0034](./0034-配置授权隐式轻量启动.md) | 配置授权隐式轻量启动 | 已被 ADR 0038 覆盖；隐式 proposal 配置已删除 |
 | [0035](./0035-隐式启动允许本地执行并守住高风险边界.md) | 隐式启动允许本地执行并守住高风险边界 | 已被 ADR 0038 覆盖；Task Plan 不扩大宿主权限 |
 | [0036](./0036-自然语言显式启动复用启动闸门.md) | 自然语言显式启动复用启动闸门 | 用户明确说“使用/启动 dgoal”即可建立一次性显式 pending goal，复杂计划仍经确认 UI |
@@ -45,3 +45,4 @@
 | [0039](./0039-Phase与Task使用独立ID命名空间.md) | Phase 与 Task 使用独立 ID 命名空间 | phase 与 plan-global task 各自从 1 编号，类型化工具消除同号歧义，旧 Plan 原样兼容 |
 | [0040](./0040-工具结果人类可读投影.md) | 工具结果人类可读投影 | 公开工具以摘要与文字展开投影展示，details 不直出 |
 | [0041](./0041-TaskPlan末任务自动收口.md) | Task Plan 末任务自动收口 | 最后一个带证据 task 的完成更新原子关闭 Task Plan；进行中仅用动态省略点投影 |
+| [0042](./0042-三层Description必填并移除contextSummary.md) | 三层 Description 必填并移除 contextSummary | goal/可见 phase/task 必须说明理由与方法边界；删除背景摘要字段，状态 Modal 改为列表/详情两层 |

@@ -25,7 +25,8 @@ export interface AcceptanceCriterion {
 export interface Task {
   id: number;
   subject: string;
-  description?: string;
+  /** Why this task exists, how it serves the goal, and the chosen approach boundary. */
+  description: string;
   status: PlanStatus;
   blockedBy?: number[];
   evidence?: string;
@@ -35,7 +36,8 @@ export interface Task {
 export interface Phase {
   id: number;
   subject: string;
-  description?: string;
+  /** Why this phase exists, how it advances the goal, and the chosen approach boundary. */
+  description: string;
   acceptanceCriteria?: AcceptanceCriterion[];
   /** Goal Plan only: latest independent phase_check result. */
   check?: CheckRecord;

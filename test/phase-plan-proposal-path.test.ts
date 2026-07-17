@@ -1,10 +1,25 @@
 import { describe, expect, test } from "bun:test";
-import { __executePlanProposalForTest, __getPendingProposalForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, type GoalState } from "../index.ts";
+import { __executePlanProposalForTest as executeRawPlanProposalForTest, __getPendingProposalForTest, __resetGoalForTest, __setGoalForTest, __setProposalSemanticReviewForTest, type GoalState } from "../index.ts";
 
 const criterion = { criterion: "测试退出码 0", evidence: "npm test" };
 
 function pendingGoal(): GoalState {
-  return { id: "g", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 } as GoalState;
+  return { id: "g", objective: "o", description: "等待提案说明。", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 } as GoalState;
+}
+
+function executeProposal(params: Record<string, any>) {
+  return executeRawPlanProposalForTest({
+    ...params,
+    description: params.description ?? "保持 Phase Plan 轻量，只冻结 goal 契约。",
+    phases: params.phases.map((phase: Record<string, any>, phaseIndex: number) => ({
+      ...phase,
+      description: phase.description ?? `阶段 ${phaseIndex + 1} 组织进度。`,
+      tasks: phase.tasks?.map((task: Record<string, any>, taskIndex: number) => ({
+        ...task,
+        description: task.description ?? `任务 ${taskIndex + 1} 推进当前阶段。`,
+      })),
+    })),
+  });
 }
 
 describe("Phase Plan proposal semantic path", () => {
@@ -12,7 +27,7 @@ describe("Phase Plan proposal semantic path", () => {
     __resetGoalForTest();
     __setGoalForTest(pendingGoal());
     __setProposalSemanticReviewForTest(() => ({ decision: "approve", phaseAcceptanceCriteria: [] }));
-    const result = await __executePlanProposalForTest({
+    const result = await executeProposal({
       planType: "phase",
       objective: "轻量任务",
       verification: "npm test 退出码 0",
@@ -34,7 +49,7 @@ describe("Phase Plan proposal semantic path", () => {
       phaseAcceptanceCriteria: [],
       migratedUserReviewItems: [{ sourceCriterion: criterion.criterion, userReviewItem: "人工复核 TUI" }],
     }));
-    const result = await __executePlanProposalForTest({
+    const result = await executeProposal({
       planType: "phase",
       objective: "o",
       verification: "bun test",
@@ -60,7 +75,7 @@ describe("Phase Plan proposal semantic path", () => {
       phaseAcceptanceCriteria: [[], []],
       migratedUserReviewItems: [{ sourceCriterion: criterion.criterion, userReviewItem: "人工复核 TUI" }],
     }));
-    const result = await __executePlanProposalForTest({
+    const result = await executeProposal({
       planType: "phase",
       objective: "o",
       verification: "bun test",

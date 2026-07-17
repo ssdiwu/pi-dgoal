@@ -35,7 +35,7 @@ describe("Plan reducer 与持久化组合路径", () => {
     let goal: GoalState = makeActiveGoal();
 
     // create task
-    const r1 = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t1" });
+    const r1 = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t1", description: "创建 t1 以验证 reducer。" });
     expect(r1.op.kind).toBe("create");
     if (r1.op.kind !== "create") return;
     goal = r1.goal;
@@ -93,7 +93,7 @@ describe("Plan reducer 与持久化组合路径", () => {
     const { api, writes } = makeApi();
     __setApiForTest(api);
     let goal: GoalState = makeActiveGoal();
-    const c = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t" });
+    const c = applyPlanMutation(goal, "create", { phaseId: 1, subject: "t", description: "创建 t 以验证不可逆状态。" });
     if (c.op.kind !== "create") throw new Error("setup");
     goal = c.goal; api.appendEntry(STATE_ENTRY_TYPE, { goal });
     const cid = c.op.taskId;
@@ -119,10 +119,11 @@ describe("proposalToPlan 转换 + plan 注入", () => {
     // 模拟 phase_plan / goal_plan 内部: proposalToPlan
     const proposal: PlanProposal = {
       objective: "大型任务",
+      description: "按调研、实现、验证顺序推进。",
       phases: [
-        { subject: "调研", tasks: [{ subject: "读代码" }, { subject: "看文档" }] },
-        { subject: "实现", tasks: [{ subject: "写主逻辑" }, { subject: "写测试" }] },
-        { subject: "验证", tasks: [{ subject: "跑测试" }, { subject: "做回归" }] },
+        { subject: "调研", description: "先确认现状。", tasks: [{ subject: "读代码", description: "定位实现。" }, { subject: "看文档", description: "确认契约。" }] },
+        { subject: "实现", description: "按契约完成改动。", tasks: [{ subject: "写主逻辑", description: "实现行为。" }, { subject: "写测试", description: "覆盖行为。" }] },
+        { subject: "验证", description: "复验完整交付。", tasks: [{ subject: "跑测试", description: "获得测试证据。" }, { subject: "做回归", description: "确认无回归。" }] },
       ],
     };
     // proposalToPlan 是 phase_plan / goal_plan 工具 execute 调用的真实函数
@@ -147,7 +148,7 @@ describe("reducer 涌现分解：长链 blockedBy", () => {
 
     // 建 5 个 task（id 1-5）
     for (let i = 0; i < 5; i += 1) {
-      const r = applyPlanMutation(goal, "create", { phaseId: 1, subject: `t${i + 1}` });
+      const r = applyPlanMutation(goal, "create", { phaseId: 1, subject: `t${i + 1}`, description: `创建 t${i + 1} 以验证长依赖链。` });
       if (r.op.kind !== "create") throw new Error("setup");
       goal = r.goal;
     }
@@ -178,15 +179,16 @@ describe("reducer 涌现分解：长链 blockedBy", () => {
 describe("工具 execute · proposal 语义预审状态边界", () => {
   beforeEach(() => {
     __resetGoalForTest();
-    __setGoalForTest({ id: "tool-proposal-1", objective: "proposal 测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setGoalForTest({ id: "tool-proposal-1", objective: "proposal 测试", description: "等待 proposal。", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
   });
 
   test("rejected/error 不激活 goal，合法重提才写入 pendingProposal", async () => {
     const params = {
       objective: "proposal 测试",
+      description: "验证 proposal 状态边界。",
       verification: "bun test",
       acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
-      phases: [{ subject: "阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
+      phases: [{ subject: "阶段", description: "完成 proposal 验证。", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
     };
 
     __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "human-only condition" }));
@@ -258,12 +260,13 @@ function makeActiveGoal(): GoalState {
   return {
     id: "tool-1",
     objective: "工具测试",
+    description: "验证 reducer 与持久化组合。",
     status: "active",
     startedAt: 1,
     updatedAt: 1,
     iteration: 0,
     plan: {
-      phases: [{ id: 1, subject: "p1", status: "pending", tasks: [] }],
+      phases: [{ id: 1, subject: "p1", description: "测试阶段。", status: "pending", tasks: [] }],
       nextId: 2,
     },
   };

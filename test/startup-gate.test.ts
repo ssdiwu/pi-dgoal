@@ -2,7 +2,7 @@
 // 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
 import { describe, expect, test } from "bun:test";
 
-import { __executePlanProposalForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
+import { __executePlanProposalForTest as executeRawPlanProposalForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
 
 // proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
 
@@ -10,7 +10,27 @@ const criteria: AcceptanceCriterion[] = [{ criterion: "测试通过", evidence: 
 const approvedReview = { decision: "approve" as const, acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] };
 
 function goal(): GoalState {
-  return { id: "g1", objective: "修测试", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+  return { id: "g1", objective: "修测试", description: "修复测试并保持既有行为。", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
+}
+
+function describeProposal(params: Record<string, any>): Record<string, any> {
+  const objective = String(params.objective ?? "目标");
+  return {
+    ...params,
+    description: params.description ?? `推进 ${objective} 并保持方法边界。`,
+    phases: Array.isArray(params.phases) ? params.phases.map((phase: Record<string, any>, phaseIndex: number) => ({
+      ...phase,
+      description: phase.description ?? `第 ${phaseIndex + 1} 阶段服务于 ${objective}。`,
+      tasks: Array.isArray(phase.tasks) ? phase.tasks.map((task: Record<string, any>, taskIndex: number) => ({
+        ...task,
+        description: task.description ?? `第 ${taskIndex + 1} 个任务推进当前阶段。`,
+      })) : phase.tasks,
+    })) : params.phases,
+  };
+}
+
+function __executePlanProposalForTest(params: Record<string, any>, ctx?: Record<string, any>, onUpdate?: (update: any) => void) {
+  return executeRawPlanProposalForTest(describeProposal(params), ctx, onUpdate);
 }
 
 describe("切片4 · validateProposalInput（verification 必填，ADR 0007）", () => {
@@ -26,8 +46,12 @@ describe("切片4 · validateProposalInput（verification 必填，ADR 0007）",
     expect(validateProposalInput({ objective: "o", verification: "", acceptanceCriteria: criteria, phaseCount: 1, phaseAcceptanceCriteria: [criteria] })).not.toBeNull();
   });
 
-  test("有明确 verification 通过", () => {
-    expect(validateProposalInput({ objective: "o", verification: "npm test 全过且 RPC 测试确认命令注册", acceptanceCriteria: criteria, phaseCount: 2, phaseAcceptanceCriteria: [criteria, criteria] })).toBeNull();
+  test("有明确 verification 与 description 通过", () => {
+    expect(validateProposalInput({ objective: "o", description: "保持既有行为并补齐验证。", verification: "npm test 全过且 RPC 测试确认命令注册", acceptanceCriteria: criteria, phaseCount: 2, phaseAcceptanceCriteria: [criteria, criteria] })).toBeNull();
+  });
+
+  test("缺 description 被拒（no description）", () => {
+    expect(validateProposalInput({ objective: "o", verification: "v", acceptanceCriteria: criteria, phaseCount: 1, phaseAcceptanceCriteria: [criteria] })?.error).toBe("no description");
   });
 
   test("缺 objective 被拒（no objective）", () => {
@@ -80,6 +104,17 @@ describe("提案就绪度评估", () => {
 });
 
 describe("验收契约校验", () => {
+  test("真实 proposal execute 拒绝缺失 goal/phase/task description", async () => {
+    __setGoalForTest(goal());
+    __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
+    const base = { objective: "o", description: "goal desc", verification: "v", acceptanceCriteria: criteria };
+    const missingPhase = await executeRawPlanProposalForTest({ ...base, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
+    expect(missingPhase.details.error).toBe("invalid phase description");
+    const missingTask = await executeRawPlanProposalForTest({ ...base, phases: [{ subject: "p", description: "phase desc", acceptanceCriteria: criteria, tasks: [{ subject: "t" }] }] });
+    expect(missingTask.details.error).toBe("invalid task graph");
+    expect(String(missingTask.content[0].text)).toContain("task #1 description is required");
+  });
+
   test("真实 proposal execute 拒绝混合空 criterion/evidence", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
@@ -110,7 +145,7 @@ describe("验收契约校验", () => {
   test("非空 evidence 不靠魔法词过结构门并进入 LLM 语义预审", async () => {
     const evidenceWithoutMagicWords = [{ criterion: "task 状态可读取", evidence: "plan_read 的工具返回" }];
     expect(validateProposalInput({
-      objective: "o", verification: "v", acceptanceCriteria: evidenceWithoutMagicWords,
+      objective: "o", description: "验证工具返回，不扩张范围。", verification: "v", acceptanceCriteria: evidenceWithoutMagicWords,
       phaseCount: 1, phaseAcceptanceCriteria: [undefined], planType: "phase",
     })).toBeNull();
 
@@ -740,12 +775,14 @@ describe("验收契约校验", () => {
   test("确认摘要展示冻结验收条件与完成后用户复核", () => {
     const proposal: PlanProposal = {
       objective: "修复 UI",
+      description: "修复 UI 逻辑但不扩张视觉验收门。",
       verification: "测试与代码证据满足要求",
       acceptanceCriteria: criteria,
       userReviewItems: ["在真实 TUI 确认浮层观感"],
       phases: [{ subject: "实现修复", acceptanceCriteria: criteria }],
     };
     const text = formatProposalForConfirm(goal(), proposal);
+    expect(text).toContain("说明：修复 UI 逻辑但不扩张视觉验收门。");
     expect(text).toContain("独立验收条件：");
     expect(text).toContain("测试通过");
     expect(text).toContain("完成后用户复核：在真实 TUI 确认浮层观感");
@@ -758,6 +795,9 @@ describe("验收契约校验", () => {
     expect(prompt).toContain("Goal Plan");
     expect(prompt).toContain("read/grep/find/ls/bash");
     expect(prompt).toContain("userReviewItems");
+    expect(prompt).toContain("goal、每个可见 phase 和每个 task 都必须提供 description");
+    expect(prompt).toContain("提交前做一次轻量自检并直接修正");
+    expect(prompt).not.toContain("contextSummary");
     expect(prompt).toContain("phase_plan 或 goal_plan");
   });
 });
@@ -921,6 +961,7 @@ describe("切片4 · formatProposalForConfirm", () => {
   test("默认只显示目标 + phase 列表 + task 计数，不展开 task 明细", () => {
     const proposal: PlanProposal = {
       objective: "修好 auth 测试",
+      description: "修复认证回归，不改无关会话机制。",
       verification: "npm test auth 全过",
       phases: [
         {
@@ -935,6 +976,7 @@ describe("切片4 · formatProposalForConfirm", () => {
     };
     const text = formatProposalForConfirm(goal(), proposal);
     expect(text).toContain("目标：修好 auth 测试");
+    expect(text).toContain("说明：修复认证回归，不改无关会话机制。");
     expect(text).toContain("验证：npm test auth 全过");
     expect(text).toContain("就绪度：L1");
     expect(text).toContain("缺口提示：");

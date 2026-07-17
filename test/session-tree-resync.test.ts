@@ -28,21 +28,25 @@ import dgoal, {
 } from "../index.ts";
 
 function task(id: number, subject: string, status: Task["status"] = "pending"): Task {
-  return { id, subject, status };
+  return { id, subject, description: `${subject} 的任务说明。`, status };
 }
 function phase(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase {
-  return { id, subject, tasks, status };
+  return { id, subject, description: `${subject} 的阶段说明。`, tasks, status };
 }
 function makeGoal(overrides: Partial<GoalState> = {}): GoalState {
   const plan: TaskPlan = { phases: [phase(1, "p1", [task(1, "a")])], nextId: 2 };
   return {
     id: "g1",
     objective: "测目标",
+    description: "验证 session 重同步。",
+    planType: "phase",
     status: "active",
     startedAt: 1,
     updatedAt: 1,
     iteration: 0,
     plan,
+    verification: "bun test test/session-tree-resync.test.ts",
+    acceptanceCriteria: [{ criterion: "session 分支状态正确重同步", evidence: "bun test test/session-tree-resync.test.ts" }],
     ...overrides,
   };
 }
@@ -56,7 +60,7 @@ function makeCtx(entries: Array<{ type?: string; customType?: string; data?: unk
 }
 
 function dgoalEntry(goal: GoalState) {
-  return { type: "custom", customType: "dgoal-plan-v1", data: { goal } };
+  return { type: "custom", customType: "dgoal-plan-v2", data: { goal } };
 }
 
 function captureHandlers() {
@@ -81,7 +85,7 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
 
     // tree 之后：新分支的 goal 已推进（phase 1 done，task done）
     const newGoal = makeGoal({
-      plan: { phases: [phase(1, "p1", [task(1, "a", "done")], "done")], nextId: 2 },
+      plan: { phases: [phase(1, "p1", [{ ...task(1, "a", "done"), evidence: "bun test" }], "done")], nextId: 2 },
       updatedAt: 999,
     });
     resyncGoalFromSession(makeCtx([dgoalEntry(newGoal)]) as never);
@@ -98,7 +102,7 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     __resetGoalForTest();
     __setGoalForTest(makeGoal()); // tree 之前有 goal
 
-    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-plan-v1 entry
+    resyncGoalFromSession(makeCtx([]) as never); // 新分支无 dgoal-plan-v2 entry
 
     expect(__getGoalForTest()).toBeUndefined();
   });
@@ -130,10 +134,10 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     expect(__getGoalForTest()?.id).toBe("lazy-active");
 
     __setGoalForTest(undefined);
-    const pending = makeGoal({ id: "lazy-pending", status: "pending", plan: undefined });
+    const pending = makeGoal({ id: "lazy-pending", status: "pending", planType: undefined, plan: undefined, verification: undefined, acceptanceCriteria: undefined });
     __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
     const proposalResult = await phasePlanTool.execute("test", {
-      objective: "交付", verification: "bun test", acceptanceCriteria: [{ criterion: "通过", evidence: "bun test" }], phases: [{ subject: "实现" }],
+      objective: "交付", description: "完成交付并保持既定边界。", verification: "bun test", acceptanceCriteria: [{ criterion: "通过", evidence: "bun test" }], phases: [{ subject: "实现", description: "实现交付结果。" }],
     }, undefined, undefined, makeCtx([dgoalEntry(pending)]) as never);
     expect(proposalResult.details?.planType).toBe("phase");
     expect(__getGoalForTest()?.id).toBe("lazy-pending");
@@ -266,24 +270,23 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     await pending;
   });
 
-  test("旧持久 phase 缺 tasks 时 load/resync 规范化并保护 TUI 渲染", () => {
+  test("v2 拒绝缺 tasks 的旧 phase，不再规范化兼容", () => {
     __resetGoalForTest();
-    const legacy = makeGoal({ plan: { phases: [{ id: 1, subject: "legacy", status: "in_progress" } as never], nextId: 2 } });
+    const legacy = makeGoal({ plan: { phases: [{ id: 1, subject: "legacy", description: "legacy desc", status: "in_progress" } as never], nextId: 2 } });
     const context = makeCtx([dgoalEntry(legacy)]);
-    expect(loadGoal(context as never)?.plan?.phases[0].tasks).toEqual([]);
+    expect(loadGoal(context as never)).toBeUndefined();
     expect(() => resyncGoalFromSession(context as never)).not.toThrow();
-    const restored = __getGoalForTest();
-    expect(restored?.plan?.phases[0].tasks).toEqual([]);
-    expect(() => buildBodyLines(restored)).not.toThrow();
+    expect(__getGoalForTest()).toBeUndefined();
+    expect(() => buildBodyLines(__getGoalForTest())).not.toThrow();
   });
 
-  test("旧持久 task 的 activeForm 在 load/resync 时被剥离", () => {
+  test("v2 拒绝仍带 activeForm 的旧 task", () => {
     __resetGoalForTest();
     const legacy = makeGoal({ plan: { phases: [phase(1, "legacy", [{ ...task(1, "旧任务"), activeForm: "旧进行时" } as never], "in_progress")], nextId: 2 } });
     const context = makeCtx([dgoalEntry(legacy)]);
-    expect(loadGoal(context as never)?.plan?.phases[0].tasks[0]).not.toHaveProperty("activeForm");
+    expect(loadGoal(context as never)).toBeUndefined();
     resyncGoalFromSession(context as never);
-    expect(__getGoalForTest()?.plan?.phases[0].tasks[0]).not.toHaveProperty("activeForm");
+    expect(__getGoalForTest()).toBeUndefined();
   });
 
   test("UI 抛错不阻断状态重同步（TUI边界防护）", () => {

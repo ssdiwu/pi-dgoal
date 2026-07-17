@@ -29,20 +29,19 @@ describe("/dgoal command aliases", () => {
 describe("v0.5.2 切片8 · 裸 /dgoal 承接前文启动", () => {
   test("buildProposePrompt 承接版：objective 为占位时发承接指令，要求 agent 归纳 objective", () => {
     const goal: GoalState = {
-      id: "g", objective: BARE_START_OBJECTIVE, status: "pending",
+      id: "g", objective: BARE_START_OBJECTIVE, description: "等待从前文归纳。", status: "pending",
       startedAt: 1, updatedAt: 1, iteration: 0,
-      contextSummary: "前文讨论了对齐的方案",
     } as GoalState;
     const prompt = buildProposePrompt(goal);
     expect(prompt).toContain("承接前文");
     expect(prompt).toContain("归纳");
-    expect(prompt).toContain("objective 必须由你从前文归纳");
-    expect(prompt).toContain("前文讨论了对齐的方案");
+    expect(prompt).toContain("objective 与 description 必须由你从前文归纳");
+    expect(prompt).not.toContain("contextSummary");
   });
 
   test("buildProposePrompt 普通版：objective 明确时不发承接指令", () => {
     const goal: GoalState = {
-      id: "g", objective: "修好测试", status: "pending",
+      id: "g", objective: "修好测试", description: "修复测试但不扩张范围。", status: "pending",
       startedAt: 1, updatedAt: 1, iteration: 0,
     } as GoalState;
     const prompt = buildProposePrompt(goal);

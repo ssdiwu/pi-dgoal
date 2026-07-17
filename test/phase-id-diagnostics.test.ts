@@ -17,17 +17,23 @@ import {
 } from "../index.ts";
 
 const ctx = { cwd: process.cwd(), ui: {}, sessionManager: { getBranch: () => [] } } as never;
-const execute = (tool: { execute: Function }, params: Record<string, unknown>) => tool.execute("test", params, undefined, undefined, ctx);
-const task = (id: number, subject: string, status: Task["status"] = "pending"): Task => ({ id, subject, status });
-const phase = (id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase => ({ id, subject, tasks, status });
+const execute = (tool: { name?: string; execute: Function }, params: Record<string, unknown>) => tool.execute(
+  "test",
+  tool.name === "plan_create" ? { description: "新增任务以推进当前阶段。", ...params } : params,
+  undefined,
+  undefined,
+  ctx,
+);
+const task = (id: number, subject: string, status: Task["status"] = "pending"): Task => ({ id, subject, description: `${subject} 的任务说明。`, status });
+const phase = (id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase => ({ id, subject, description: `${subject} 的阶段说明。`, tasks, status });
 
 describe("new Plan uses separate phase/task ID namespaces", () => {
   test("phase IDs and plan-global task IDs each start at 1", () => {
     const proposal: PlanProposal = {
-      objective: "o", planType: "goal",
+      objective: "o", description: "goal desc", planType: "goal",
       phases: [
-        { subject: "p1", tasks: [{ subject: "t1" }, { subject: "t2" }] },
-        { subject: "p2", tasks: [{ subject: "t3" }] },
+        { subject: "p1", description: "p1 desc", tasks: [{ subject: "t1", description: "t1 desc" }, { subject: "t2", description: "t2 desc" }] },
+        { subject: "p2", description: "p2 desc", tasks: [{ subject: "t3", description: "t3 desc" }] },
       ],
     };
     const plan = proposalToPlan(proposal);
@@ -37,26 +43,26 @@ describe("new Plan uses separate phase/task ID namespaces", () => {
   });
 
   test("empty phases still receive contiguous IDs", () => {
-    const plan = proposalToPlan({ objective: "o", planType: "phase", phases: [{ subject: "p1" }, { subject: "p2" }, { subject: "p3" }] });
+    const plan = proposalToPlan({ objective: "o", description: "goal desc", planType: "phase", phases: [{ subject: "p1", description: "p1 desc" }, { subject: "p2", description: "p2 desc" }, { subject: "p3", description: "p3 desc" }] });
     expect(plan.phases.map((item) => item.id)).toEqual([1, 2, 3]);
     expect(plan.nextId).toBe(1);
   });
 
   test("blockedBy local indexes map to plan-global task IDs", () => {
     const plan = proposalToPlan({
-      objective: "o", planType: "phase",
-      phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" as never }] }],
+      objective: "o", description: "goal desc", planType: "phase",
+      phases: [{ subject: "p", description: "p desc", tasks: [{ subject: "t1", description: "t1 desc" }, { subject: "t2", description: "t2 desc", blockedBy: "[1]" as never }] }],
     });
     expect(plan.phases[0].tasks[1].blockedBy).toEqual([1]);
   });
 
   test("phase #1 and task #1 remain unambiguous through typed tool targets", async () => {
     const plan = proposalToPlan({
-      objective: "o", planType: "phase",
-      phases: [{ subject: "阶段一", tasks: [{ subject: "任务一" }] }],
+      objective: "o", description: "goal desc", planType: "phase",
+      phases: [{ subject: "阶段一", description: "阶段一说明", tasks: [{ subject: "任务一", description: "任务一说明" }] }],
     });
     __setGoalForTest({
-      id: "separate-namespaces", objective: "o", planType: "phase", status: "active",
+      id: "separate-namespaces", objective: "o", description: "goal desc", planType: "phase", status: "active",
       startedAt: 1, updatedAt: 1, iteration: 0, plan,
     } as GoalState);
     const phaseResult = await execute(planReadTool, { target: "phase", id: 1 });
@@ -72,7 +78,7 @@ describe("new Plan uses separate phase/task ID namespaces", () => {
 
 function nonContiguousGoal(): GoalState {
   return {
-    id: "old", objective: "Plan", planType: "goal", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+    id: "old", objective: "Plan", description: "验证非连续 ID 诊断。", planType: "goal", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
     plan: {
       revision: 0,
       phases: [
@@ -85,7 +91,7 @@ function nonContiguousGoal(): GoalState {
   } as GoalState;
 }
 
-describe("phase diagnostics preserve non-contiguous legacy IDs inside dgoal-plan-v1", () => {
+describe("phase diagnostics preserve non-contiguous IDs in memory", () => {
   beforeEach(() => {
     __resetGoalForTest();
     __setGoalForTest(nonContiguousGoal());

@@ -16,16 +16,17 @@ import {
 } from "../index.ts";
 
 function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, status, ...extra };
+  return { id, subject, description: `${subject} 服务于当前阶段。`, status, ...extra };
 }
 function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase {
-  return { id, subject, tasks, status };
+  return { id, subject, description: `${subject} 服务于整体目标。`, tasks, status };
 }
 
 function goal(overrides: Partial<GoalState> = {}): GoalState {
   return {
     id: "g1",
     objective: "修测试",
+    description: "恢复测试并保持既有行为边界。",
     status: "active",
     startedAt: 1,
     updatedAt: 1,
@@ -62,6 +63,13 @@ describe("Three-Plan prompt", () => {
     expect(text).toContain("当前是 Goal Plan");
     expect(text).toContain("phase_check");
     expect(text).toContain("goal_check");
+  });
+
+  test("system prompt 注入 goal description 且不再包含 contextSummary", () => {
+    const text = buildSystemPrompt(goal({ description: "采用最小修复，不重写模块。" }));
+    expect(text).toContain("<dgoal_description>\n采用最小修复，不重写模块。\n</dgoal_description>");
+    expect(text).not.toContain("contextSummary");
+    expect(text).not.toContain("dgoal_context");
   });
 });
 
@@ -182,6 +190,22 @@ describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () =
     const block = buildPlanContextBlock(g);
     expect(block).toContain("[done] phase #1: 第一阶段");
     expect(block).toContain("[in_progress] phase #2: 第二阶段");
+  });
+
+  test("当前/未来 phase 与 task 注入 description，done phase 仍软遗忘", () => {
+    const g = goal({
+      plan: {
+        phases: [
+          p(1, "已完成", [t(1, "旧任务", "done", { description: "旧任务说明", evidence: "ok" })], "done"),
+          p(2, "当前阶段", [t(2, "新任务", "in_progress", { description: "新任务说明" })], "in_progress"),
+        ],
+        nextId: 3,
+      },
+    });
+    const block = buildPlanContextBlock(g);
+    expect(block).not.toContain("旧任务说明");
+    expect(block).toContain("description: 当前阶段 服务于整体目标。");
+    expect(block).toContain("description: 新任务说明");
   });
 
   test("blocked task 带 blockedReason", () => {

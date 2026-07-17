@@ -1,6 +1,6 @@
 # ADR 0033：proposal 主导背景固化与直接建计划
 
-> Status：背景职责继续有效；ADR 0038 已把公共 proposal 入口改为 `phase_plan` / `goal_plan`，并删除验收/预算策略字段。覆盖 ADR 0027 中“启动前独立摘要子进程 + 全失败阻断启动”的产生方式。
+> Status：主 LLM 直接建立 Plan、取消独立背景摘要及其失败阻断继续有效；`contextSummary` 的字段、持久化、注入与旧值兼容语义已被 ADR 0042 覆盖。ADR 0038 已把公共 proposal 入口改为 `phase_plan` / `goal_plan`，并删除验收/预算策略字段。
 
 ## 背景
 

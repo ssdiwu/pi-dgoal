@@ -90,12 +90,13 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
 
   test("语义预审用户中断时 goal 仍为 pending 且没有 active proposal", async () => {
     __resetGoalForTest();
-    __setGoalForTest({ id: "semantic-abort", objective: "测试目标", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setGoalForTest({ id: "semantic-abort", objective: "测试目标", description: "等待提案确认。", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     const result = await __executePlanProposalForTest({
       objective: "测试目标",
+      description: "验证中断边界，不扩张范围。",
       verification: "bun test",
       acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }],
-      phases: [{ subject: "阶段", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
+      phases: [{ subject: "阶段", description: "完成中断路径验证。", acceptanceCriteria: [{ criterion: "测试通过", evidence: "bun test" }] }],
     }, { signal: AbortSignal.abort() });
     expect(result.details?.error).toBe("semantic review technical error");
     expect(result.isError).toBe(true);

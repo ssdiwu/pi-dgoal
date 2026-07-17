@@ -1,6 +1,7 @@
 // 切片 4 验收：PlanStatusDialog Component 测试（render + handleInput + 边界 + 缓存）。
 // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 4。
 import { describe, expect, test } from "bun:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
   __setCheckSnapshotForTest,
@@ -35,16 +36,17 @@ function mockTheme(): any {
 
 // ---- goal/phase/task 工厂 ----
 function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, status, ...extra };
+  return { id, subject, description: `${subject} 的完整任务说明`, status, ...extra };
 }
 function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending", extra: Partial<Phase> = {}): Phase {
-  return { id, subject, tasks, status, ...extra };
+  return { id, subject, description: `${subject} 的完整阶段说明`, tasks, status, ...extra };
 }
 function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
   const now = Date.now();
   return {
     id: "g1",
     objective: "实施 v0.4.2",
+    description: "按已确认边界完成实现并验证。",
     status: "active",
     startedAt: now - 5 * 60 * 1000,
     updatedAt: now - 5 * 60 * 1000,
@@ -53,8 +55,6 @@ function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
     ...overrides,
   };
 }
-
-beforeAllSetI18n();
 
 // =============================================================================
 // render
@@ -65,8 +65,8 @@ describe("PlanStatusDialog.render", () => {
     const g = goal([p(1, "p1", [], "in_progress")]);
     const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
     const lines = dlg.render(80);
-    // 期望：上边框(1) + heading(1) + body(1) + hint(1) + 下边框(1) = 5 行
-    expect(lines.length).toBe(5);
+    // 列表页包含 goal description、空行、可选 phase、hint 与边框。
+    expect(lines.length).toBe(7);
     // 第一行 = 上边框 + 标题（mockTheme 包装为 <border>...<accent>...<bold>title</bold>...</accent>...</border>）
     expect(lines[0]).toContain("dgoal 详细查询 Modal");
     expect(lines[0]).toContain("╭─"); // 上边框起手
@@ -75,6 +75,8 @@ describe("PlanStatusDialog.render", () => {
     expect(lines[1]).toContain("🎯 实施 v0.4.2");
     expect(lines[1]).toContain("<accent>"); // accent 染色
     expect(lines[1]).toContain("<bold>"); // bold
+    expect(lines.join("\n")).toContain("按已确认边界完成实现并验证");
+    expect(lines.join("\n")).toContain("› ");
     // 最后一行 = 下边框
     expect(lines[lines.length - 1]).toContain("╰─");
     expect(lines[lines.length - 1]).toContain("─╯");
@@ -95,13 +97,12 @@ describe("PlanStatusDialog.render", () => {
     }
   });
 
-  test("短 plan 不显示滚动键，只显示关闭提示", () => {
+  test("列表页始终提示选择与 Enter 进入详情", () => {
     const dlg = new PlanStatusDialog(goal([p(1, "p1", [], "in_progress")]), mockTheme() as any, () => {});
-    const lines = dlg.render(80);
-    const hint = lines[lines.length - 2];
-    expect(hint).toContain("ESC/Ctrl+C 关闭");
-    expect(hint).not.toContain("↓/j");
-    expect(hint).not.toContain("PgDn/PgUp");
+    const hint = dlg.render(80).at(-2)!;
+    expect(hint).toContain("↑/↓/j/k 选择");
+    expect(hint).toContain("Enter 查看");
+    expect(hint).toContain("ESC 关闭");
   });
 
   test("建检运行中时 /dgoal s 展示活性片段而不展示报告正文", () => {
@@ -125,6 +126,25 @@ describe("PlanStatusDialog.render", () => {
     }
   });
 
+  test("超长 goal description 可从开头逐页浏览到末尾和 Plan 列表", () => {
+    const description = `BEGIN-${"说明".repeat(500)}-END`;
+    const dlg = new PlanStatusDialog(
+      goal([p(1, "phase-after-description", [], "in_progress")], { description }),
+      mockTheme() as any,
+      () => {},
+    );
+    const seen: string[] = [];
+    seen.push(dlg.render(40).join("\n"));
+    expect(seen[0]).toContain("BEGIN");
+    for (let page = 0; page < 30; page += 1) {
+      dlg.handleInput("\u001b[6~");
+      seen.push(dlg.render(40).join("\n"));
+    }
+    const all = seen.join("\n");
+    expect(all).toContain("END");
+    expect(all).toContain("phase-after-description");
+  });
+
   test("heading 钉顶：scroll 到第二页 heading 仍在第 2 行", () => {
     // 制造 30+ phase 让 scroll 生效
     const phases: Phase[] = [];
@@ -140,6 +160,15 @@ describe("PlanStatusDialog.render", () => {
     const second = dlg.render(80);
     expect(second[1]).toContain("🎯"); // heading 仍钉顶
     expect(second[1]).toContain("<accent>"); // 仍是 accent+bold
+  });
+
+  test("非正、极窄与标题临界宽度安全降级且不输出超宽行", () => {
+    const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+    const dlg = new PlanStatusDialog(goal([p(1, "p1", [], "in_progress")]), plainTheme as any, () => {});
+    expect(dlg.render(0)).toEqual([]);
+    for (let width = 1; width <= 40; width += 1) {
+      expect(dlg.render(width).every((line) => visibleWidth(line) <= width)).toBe(true);
+    }
   });
 
   test("empty goal → 带边框的空 dgoal 状态", () => {
@@ -161,12 +190,29 @@ describe("PlanStatusDialog.render", () => {
     expect(lines.at(-1)).toContain("╰─");
   });
 
-  test("render 缓存命中：相同 (width, elapsedSec) 第二次返回 cached", () => {
+  test("render 缓存命中：相同 (width, elapsedSec, checkSnapshot) 第二次返回 cached", () => {
     const g = goal([p(1, "p1", [], "in_progress")]);
     const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
     const first = dlg.render(80);
-    const second = dlg.render(80); // 同一秒
+    const second = dlg.render(80); // 同一秒、同一审核快照
     expect(second).toBe(first); // === 引用相等表示缓存
+  });
+
+  test("同一秒审核活性快照变化会使 render cache 失效", () => {
+    const realNow = Date.now;
+    Date.now = () => 1_000_000;
+    __setCheckSnapshotForTest(undefined);
+    try {
+      const dlg = new PlanStatusDialog(goal([p(1, "p1", [], "in_progress")]), mockTheme() as any, () => {});
+      const before = dlg.render(80);
+      __setCheckSnapshotForTest({ liveness: "thinking", idleSecondsLeft: 60, idleSecondsTotal: 60 });
+      const after = dlg.render(80);
+      expect(after).not.toBe(before);
+      expect(after.join("\n")).toContain("建检活性");
+    } finally {
+      __setCheckSnapshotForTest(undefined);
+      Date.now = realNow;
+    }
   });
 
   test("handleInput 触发 invalidate 后 render 不再缓存命中", () => {
@@ -180,8 +226,9 @@ describe("PlanStatusDialog.render", () => {
     // 第一行（边框）和第二行（heading）相同
     expect(after[0]).toBe(before[0]); // 上边框相同
     expect(after[1]).toBe(before[1]); // heading 相同
-    // 倒数第二行（hint 含新 offset 数字）应该变化
-    expect(after[after.length - 2]).not.toBe(before[before.length - 2]); // hint 不同
+    // 选择标记从 p1 移到 p2。
+    expect(before.find((line) => line.includes("› "))).toContain("p1");
+    expect(after.find((line) => line.includes("› "))).toContain("p2");
     // 最后一行（下边框）相同
     expect(after[after.length - 1]).toBe(before[before.length - 1]); // 下边框相同
   });
@@ -210,45 +257,30 @@ describe("PlanStatusDialog.handleInput", () => {
     expect(doneCount).toBe(1);
   });
 
-  test("↓ → scroll +1（line 1 之后到 phase 行）", () => {
-    const phases: Phase[] = [];
-    for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
+  test("↓ 与 j 按逻辑 plan item 移动选中态", () => {
+    const phases = [p(1, "p1", [], "pending"), p(2, "p2", [], "pending"), p(3, "p3", [], "pending")];
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
-    const first = dlg.render(80);
-    dlg.handleInput("\u001b[B"); // down
-    const second = dlg.render(80);
-    // hint 行变化：lines N-M 数字
-    expect(second[second.length - 2]).not.toBe(first[first.length - 2]);
-  });
-
-  test("j → scroll +1（vim）", () => {
-    const phases: Phase[] = [];
-    for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
-    const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
-    const first = dlg.render(80);
+    dlg.handleInput("\u001b[B");
+    expect(dlg.render(80).find((line) => line.includes("› "))).toContain("p2");
     dlg.handleInput("j");
-    const second = dlg.render(80);
-    expect(second[second.length - 2]).not.toBe(first[first.length - 2]);
+    expect(dlg.render(80).find((line) => line.includes("› "))).toContain("p3");
   });
 
-  test("End/G → 跳到 maxOffset（25 phase / maxVisible 20 → end=5, lines 6-25）", () => {
+  test("End/G 选中最后一项并滚入可见窗口", () => {
     const phases: Phase[] = [];
     for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     dlg.handleInput("G");
-    const lines = dlg.render(80);
-    // 25 phase, maxVisible=20 → maxOffset=5 → 显示 lines 6-25
-    expect(lines[lines.length - 2]).toContain(`6-25`);
+    expect(dlg.render(80).find((line) => line.includes("› "))).toContain("p25");
   });
 
-  test("Home/g → 跳到顶", () => {
+  test("Home/g 回到第一项并保留选择位置", () => {
     const phases: Phase[] = [];
     for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     dlg.handleInput("G");
     dlg.handleInput("g");
-    const lines = dlg.render(80);
-    expect(lines[lines.length - 2]).toContain(`1-`);
+    expect(dlg.render(80).find((line) => line.includes("› "))).toContain("p1");
   });
 
   test("未识别键 → noop（不崩）", () => {
@@ -264,6 +296,67 @@ describe("PlanStatusDialog.handleInput", () => {
     dlg.handleInput("j"); // noop
     expect(doneCount).toBe(0);
     dlg.handleInput("\u001b"); // exit
+    expect(doneCount).toBe(1);
+  });
+});
+
+describe("PlanStatusDialog 两层导航", () => {
+  test("Enter 打开 phase 详情，Esc 返回列表且保留原选择", () => {
+    let doneCount = 0;
+    const phase = p(1, "实现", [t(1, "写代码")], "blocked", {
+      description: "先完成最小垂直切片，再扩大覆盖。",
+      blockedReason: "等待依赖恢复",
+    });
+    const dlg = new PlanStatusDialog(goal([phase]), mockTheme() as any, () => { doneCount += 1; });
+
+    dlg.handleInput("\r");
+    const detail = dlg.render(100).join("\n");
+    expect(detail).toContain("dgoal 计划项详情");
+    expect(detail).toContain("phase #1 · 实现");
+    expect(detail).toContain("状态：blocked");
+    expect(detail).toContain("先完成最小垂直切片，再扩大覆盖");
+    expect(detail).toContain("task 进度：0/1");
+    expect(detail).toContain("阻塞原因：等待依赖恢复");
+
+    dlg.handleInput("\u001b");
+    const list = dlg.render(100);
+    expect(doneCount).toBe(0);
+    expect(list[0]).toContain("dgoal 详细查询 Modal");
+    expect(list.find((line) => line.includes("› "))).toContain("实现");
+  });
+
+  test("task 详情展示 description/status/phase/dependencies/evidence/blockedReason", () => {
+    const task = t(2, "修复回归", "blocked", {
+      description: "复现后只修根因，不改无关断言。",
+      blockedBy: [1],
+      evidence: "bun test test/regression.test.ts",
+      blockedReason: "依赖 task #1",
+    });
+    const dlg = new PlanStatusDialog(goal([p(1, "实现", [task], "blocked")]), mockTheme() as any, () => {});
+    dlg.handleInput("j"); // phase → task
+    dlg.handleInput("\r");
+    const detail = dlg.render(100).join("\n");
+    expect(detail).toContain("task #2 · 修复回归");
+    expect(detail).toContain("状态：blocked");
+    expect(detail).toContain("所在 phase：#1 实现");
+    expect(detail).toContain("复现后只修根因，不改无关断言");
+    expect(detail).toContain("依赖：#1");
+    expect(detail).toContain("证据：bun test test/regression.test.ts");
+    expect(detail).toContain("阻塞原因：依赖 task #1");
+  });
+
+  test("详情页独立滚动，Ctrl+C 直接关闭", () => {
+    let doneCount = 0;
+    const task = t(1, "长说明", "in_progress", { description: "说明内容".repeat(300) });
+    const dlg = new PlanStatusDialog(goal([p(1, "实现", [task], "in_progress")]), mockTheme() as any, () => { doneCount += 1; });
+    dlg.handleInput("j");
+    dlg.handleInput("\r");
+    const first = dlg.render(40).at(-2)!;
+    dlg.handleInput("j");
+    const second = dlg.render(40).at(-2)!;
+    expect(first).not.toBe(second);
+    expect(second).toContain("2-21");
+    dlg.handleInput("\u0003");
     expect(doneCount).toBe(1);
   });
 });
@@ -314,13 +407,14 @@ describe("PlanStatusDialog.render 换行", () => {
     const g = goal([p(1, longSubject, [], "in_progress")]);
     const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
     const lines = dlg.render(80);
-    const body = lines.slice(2, -2);
+    const phaseStart = lines.findIndex((line) => line.includes("├─ ◐"));
+    const body = lines.slice(phaseStart, -2);
     expect(body.length).toBeGreaterThan(1);
     // 首行含树形前缀 + 状态字符；mock theme 标签可能在前
     expect(body[0]).toContain("├─ ◐");
-    // 续行缩进 6 列（1 左内边距 + ├─ ○  共 5 列）
+    // 续行按选中标记 + 树形前缀对齐。
     for (let i = 1; i < body.length; i++) {
-      expect(body[i]).toMatch(/^ {6}\S/);
+      expect(body[i]).toMatch(/^ {7}\S/);
     }
     // 所有 a 字符都应出现在 body 里
     const aCount = body.join("").split("a").length - 1;
@@ -343,9 +437,9 @@ describe("PlanStatusDialog.render 换行", () => {
     expect(taskLines.length).toBeGreaterThan(1);
     // 首行含 task 树形前缀 + 状态字符
     expect(taskLines[0]).toContain("│    ◐");
-    // 续行缩进 8 列（1 左内边距 + │    ○  共 7 列）
+    // 续行按两列选中槽位 + task 树形前缀对齐。
     for (let i = 1; i < taskLines.length; i++) {
-      expect(taskLines[i]).toMatch(/^ {8}\S/);
+      expect(taskLines[i]).toMatch(/^ {9}\S/);
     }
     // 所有 b 字符都应出现在 task 行里
     const bCount = taskLines.join("").split("b").length - 1;
@@ -372,27 +466,16 @@ describe("PlanStatusDialog.render 换行", () => {
     expect(cCount).toBe(longSubject.length);
   });
 
-  test("换行后按物理行滚动：j 下移到同一 task 的续行", () => {
+  test("换行后 j 仍按逻辑 item 选择，不落到续行", () => {
     const longSubject = "x".repeat(100);
-    const phases: Phase[] = [];
-    for (let i = 1; i <= 10; i++) {
-      phases.push(p(i, `p${i}`, [t(i, longSubject, "pending")], "pending"));
-    }
+    const phases = [p(1, "p1", [t(1, longSubject, "pending")], "pending")];
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
-    const first = dlg.render(80);
-    const firstBodyStart = first.findIndex((line) => line.includes("├─"));
-    const firstBody = first.slice(firstBodyStart, -2);
-    expect(firstBody.length).toBeGreaterThan(1);
-    // 内容超过 20 行，应显示滚动提示
-    expect(first[first.length - 2]).toContain("dgoal");
-
+    expect(dlg.render(80).find((line) => line.includes("› "))).toContain("p1");
     dlg.handleInput("j");
-    const second = dlg.render(80);
-    const secondBodyStart = second.findIndex((line) => line.includes("├─") || line.includes("│"));
-    const secondBody = second.slice(secondBodyStart, -2);
-
-    // heading 可占多行但始终钉顶；body 按物理行滚动
-    expect(secondBody[0]).toBe(firstBody[1]);
+    const rendered = dlg.render(80);
+    const selectedIndex = rendered.findIndex((line) => line.includes("› "));
+    expect(rendered[selectedIndex]).toContain("│    ○");
+    expect(rendered.slice(selectedIndex, -2).join("")).toContain("x");
   });
 
   test("elapsed 每秒更新时 heading 变、body 不变", () => {
