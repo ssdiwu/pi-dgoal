@@ -65,8 +65,8 @@ describe("PlanStatusDialog.render", () => {
     const g = goal([p(1, "p1", [], "in_progress")]);
     const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
     const lines = dlg.render(80);
-    // 列表页包含 goal description、空行、可选 phase、hint 与边框。
-    expect(lines.length).toBe(7);
+    // 列表页包含 goal description、当前 frontier/下一动作、空行、可选 phase、hint 与边框。
+    expect(lines.length).toBeGreaterThanOrEqual(9);
     // 第一行 = 上边框 + 标题（mockTheme 包装为 <border>...<accent>...<bold>title</bold>...</accent>...</border>）
     expect(lines[0]).toContain("dgoal 详细查询 Modal");
     expect(lines[0]).toContain("╭─"); // 上边框起手
@@ -76,6 +76,8 @@ describe("PlanStatusDialog.render", () => {
     expect(lines[1]).toContain("<accent>"); // accent 染色
     expect(lines[1]).toContain("<bold>"); // bold
     expect(lines.join("\n")).toContain("按已确认边界完成实现并验证");
+    expect(lines.join("\n")).toContain("当前 frontier");
+    expect(lines.join("\n")).toContain("下一合法动作");
     expect(lines.join("\n")).toContain("› ");
     // 最后一行 = 下边框
     expect(lines[lines.length - 1]).toContain("╰─");

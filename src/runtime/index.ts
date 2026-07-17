@@ -363,6 +363,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogDetailBlockedBy": "依赖：{value}",
       "status.dialogDetailEvidence": "证据：{value}",
       "status.dialogDetailBlockedReason": "阻塞原因：{value}",
+      "status.frontierReason": "当前 frontier：{reason}",
+      "status.frontierNext": "下一合法动作：{next}",
+      "status.dialogLatestCheck": "最新建检：{value}",
+      "status.dialogLatestFeedback": "最新反馈：{value}",
+      "status.dialogLatestClaim": "最新完成声明：{value}",
       "status.dialogNone": "无",
       "notify.abortedPaused": "dgoal 已暂停（用户中断{detail}）。运行 /dgoal resume 继续。",
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
@@ -408,6 +413,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "check.activity.prefix": "建检活性",
       "check.activity.attempt": "第 {attempt}/{total} 次",
       "audit.model": "模型：{model}",
+      "audit.latestCheckValue": "{status} · 模型 {model} · revision {revision} · {checkedAt}",
+      "audit.latestClaimValue": "第 {attempt} 次 · {summary}｜验证：{verification}",
       "tool.paused": "当前 /dgoal 目标已暂停（{reason}）。只读操作可用；修改、建检或完成请先运行 /dgoal resume。",
       "tool.pausedWithDetail": "当前 /dgoal 目标已暂停（{reason}）。暂停说明：{detail}。处理后请运行 /dgoal resume。",
       "tool.plan.noGoal": "当前没有进行中的 /dgoal 目标，无法操作 plan。",
@@ -419,6 +426,41 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.get.evidence": "  证据：{evidence}",
       "tool.plan.get.blockedReason": "  阻塞原因：{blockedReason}",
       "tool.plan.get.blockedBy": "  依赖：{blockedBy}",
+      "tool.plan.frontierReason": "当前 frontier：{reason}",
+      "tool.plan.frontierNext": "下一合法动作：{next}",
+      "tool.plan.latestCheck": "最新建检：{value}",
+      "tool.plan.latestFeedback": "最新反馈：{value}",
+      "tool.plan.latestClaim": "最新完成声明：{value}",
+      "frontier.paused": "Plan 已暂停：{reason}",
+      "frontier.pausedNext": "处理暂停原因后运行 /dgoal resume",
+      "frontier.taskDependencies": "task #{taskId} 正在等待依赖 {dependencies} 完成",
+      "frontier.taskDependenciesNext": "先完成依赖 {dependencies}",
+      "frontier.taskBlocked": "task #{taskId} 被阻塞：{reason}",
+      "frontier.taskBlockedNext": "解除阻塞后用 plan_update 将 task #{taskId} 恢复为 in_progress",
+      "frontier.taskPending": "task #{taskId} 已就绪但尚未开始",
+      "frontier.taskPendingNext": "调用 plan_update 将 task #{taskId} 设为 in_progress",
+      "frontier.taskInProgress": "task #{taskId} 尚未带可复验证据完成",
+      "frontier.taskInProgressNext": "完成工作后调用 plan_update，将 task #{taskId} 以 evidence 更新为 done",
+      "frontier.phaseBlocked": "当前 phase #{phaseId} 被阻塞：{reason}",
+      "frontier.phaseBlockedNext": "解除阻塞后用 plan_update 将 phase #{phaseId} 恢复为 in_progress",
+      "frontier.phaseNoTasks": "当前 phase #{phaseId} 还没有可执行 task",
+      "frontier.phaseNoTasksNext": "用 plan_create 在 phase #{phaseId} 创建服务当前目标的 task",
+      "frontier.phaseCheckRejected": "phase #{phaseId} 的最新 phase_check 未通过",
+      "frontier.phaseCheckRejectedNext": "根据最新反馈在 phase #{phaseId} 创建接续 task，修复后重新 phase_check",
+      "frontier.phaseCheckNeeded": "phase #{phaseId} 的 task 已全部带证据完成，但缺少当前 revision 的 approved phase_check",
+      "frontier.phaseCheckNeededNext": "调用 phase_check 核验 phase #{phaseId}",
+      "frontier.phaseReady": "phase #{phaseId} 已满足当前完成守卫但尚未标记 done",
+      "frontier.phaseReadyNext": "调用 plan_update 将 phase #{phaseId} 标记 done",
+      "frontier.goalCheckRejected": "最新 goal_check 未通过",
+      "frontier.goalCheckRejectedNext": "按最新反馈重开受影响 phase 并创建接续 task，修复后重新 goal_check",
+      "frontier.goalCheckNeeded": "所有 phase 已 done，但缺少当前 revision 的 approved goal_check",
+      "frontier.goalCheckNeededNext": "调用 goal_check 进行目标终审",
+      "frontier.goalReady": "当前 Plan 已满足完成守卫但尚未收口",
+      "frontier.goalReadyNext": "调用 plan_update(target=goal,status=done) 并提供 summary 与 verification",
+      "frontier.taskPlanReady": "Task Plan 的 task 已全部带证据完成，正在等待自动收口",
+      "frontier.taskPlanReadyNext": "无需更新隐藏 phase 或 goal；最后一个 task 的 plan_update 会自动收口",
+      "frontier.itemDone": "{kind} #{id} 已完成",
+      "frontier.itemWaitingPhase": "{kind} #{id} 尚未到达；当前 frontier 仍在 phase #{phaseId}",
       "tool.propose.noPendingGoal": "当前没有 pending 的 /dgoal 目标（启动闸门未激活）。",
       "tool.propose.submitted": "计划提案已通过结构与语义预审（{count} 个 phase），正在等待启动闸门确认。",
       "tool.check.phaseNotFound": "phase #{phaseId} 不存在。",
@@ -549,6 +591,11 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.dialogDetailBlockedBy": "Depends on: {value}",
       "status.dialogDetailEvidence": "Evidence: {value}",
       "status.dialogDetailBlockedReason": "Blocked reason: {value}",
+      "status.frontierReason": "Current frontier: {reason}",
+      "status.frontierNext": "Next legal action: {next}",
+      "status.dialogLatestCheck": "Latest check: {value}",
+      "status.dialogLatestFeedback": "Latest feedback: {value}",
+      "status.dialogLatestClaim": "Latest completion claim: {value}",
       "status.dialogNone": "None",
       "notify.abortedPaused": "dgoal paused (user interrupted{detail}). Run /dgoal resume to continue.",
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
@@ -593,6 +640,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "check.activity.prefix": "Check activity",
       "check.activity.attempt": "attempt {attempt}/{total}",
       "audit.model": "model: {model}",
+      "audit.latestCheckValue": "{status} · model {model} · revision {revision} · {checkedAt}",
+      "audit.latestClaimValue": "attempt {attempt} · {summary} | verification: {verification}",
       "tool.paused": "The current /dgoal goal is paused ({reason}). Read-only operations are available; to mutate, check, or complete, run /dgoal resume first.",
       "tool.pausedWithDetail": "The current /dgoal goal is paused ({reason}). Pause detail: {detail}. Run /dgoal resume after resolving it.",
       "tool.plan.noGoal": "There is no active /dgoal goal; cannot operate on the plan.",
@@ -604,6 +653,41 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.get.evidence": "  Evidence: {evidence}",
       "tool.plan.get.blockedReason": "  Blocked reason: {blockedReason}",
       "tool.plan.get.blockedBy": "  Depends on: {blockedBy}",
+      "tool.plan.frontierReason": "Current frontier: {reason}",
+      "tool.plan.frontierNext": "Next legal action: {next}",
+      "tool.plan.latestCheck": "Latest check: {value}",
+      "tool.plan.latestFeedback": "Latest feedback: {value}",
+      "tool.plan.latestClaim": "Latest completion claim: {value}",
+      "frontier.paused": "Plan is paused: {reason}",
+      "frontier.pausedNext": "Resolve the pause reason, then run /dgoal resume",
+      "frontier.taskDependencies": "task #{taskId} is waiting for dependencies {dependencies}",
+      "frontier.taskDependenciesNext": "Complete dependencies {dependencies} first",
+      "frontier.taskBlocked": "task #{taskId} is blocked: {reason}",
+      "frontier.taskBlockedNext": "Resolve the blocker, then use plan_update to return task #{taskId} to in_progress",
+      "frontier.taskPending": "task #{taskId} is ready but has not started",
+      "frontier.taskPendingNext": "Use plan_update to set task #{taskId} to in_progress",
+      "frontier.taskInProgress": "task #{taskId} is not yet done with reproducible evidence",
+      "frontier.taskInProgressNext": "Finish the work, then use plan_update to mark task #{taskId} done with evidence",
+      "frontier.phaseBlocked": "current phase #{phaseId} is blocked: {reason}",
+      "frontier.phaseBlockedNext": "Resolve the blocker, then use plan_update to return phase #{phaseId} to in_progress",
+      "frontier.phaseNoTasks": "current phase #{phaseId} has no executable tasks",
+      "frontier.phaseNoTasksNext": "Use plan_create to add a task that serves the current goal to phase #{phaseId}",
+      "frontier.phaseCheckRejected": "the latest phase_check for phase #{phaseId} was rejected",
+      "frontier.phaseCheckRejectedNext": "Create a follow-up task in phase #{phaseId} from the latest feedback, fix it, then rerun phase_check",
+      "frontier.phaseCheckNeeded": "all tasks in phase #{phaseId} are done with evidence, but there is no approved phase_check for the current revision",
+      "frontier.phaseCheckNeededNext": "Run phase_check for phase #{phaseId}",
+      "frontier.phaseReady": "phase #{phaseId} satisfies its current completion guards but is not marked done",
+      "frontier.phaseReadyNext": "Use plan_update to mark phase #{phaseId} done",
+      "frontier.goalCheckRejected": "the latest goal_check was rejected",
+      "frontier.goalCheckRejectedNext": "Reopen the affected phase and create a follow-up task from the latest feedback; fix it, then rerun goal_check",
+      "frontier.goalCheckNeeded": "all phases are done, but there is no approved goal_check for the current revision",
+      "frontier.goalCheckNeededNext": "Run goal_check for final goal review",
+      "frontier.goalReady": "the current Plan satisfies its completion guards but has not been finalized",
+      "frontier.goalReadyNext": "Call plan_update(target=goal,status=done) with summary and verification",
+      "frontier.taskPlanReady": "all Task Plan tasks are done with evidence and the Plan is waiting for automatic closure",
+      "frontier.taskPlanReadyNext": "Do not update the hidden phase or goal; the final task plan_update closes the Plan automatically",
+      "frontier.itemDone": "{kind} #{id} is done",
+      "frontier.itemWaitingPhase": "{kind} #{id} is not at the current frontier; work remains in phase #{phaseId}",
       "tool.propose.noPendingGoal": "There is no pending /dgoal goal (startup gate is not active).",
       "tool.propose.submitted": "The plan proposal passed structural and semantic preflight ({count} phases) and is waiting for startup-gate confirmation.",
       "tool.check.phaseNotFound": "phase #{phaseId} does not exist.",
@@ -2088,7 +2172,7 @@ export const phasePlanTool = definePublicTool({
   promptSnippet: "提交只做 goal 终审的 Phase Plan",
   promptGuidelines: [
     "只有用户显式进入 /dgoal 后才能调用。",
-    "goal、每个 phase 和每个初始 task 都必须提供非空 description，解释理由、作用与方法边界；提交前轻量删除不必要内容并核对依赖和证据，不新增自检硬门。",
+    "goal、每个 phase 和每个初始 task 都必须提供非空 description，解释理由、作用与方法边界；提交前做精简质量检查：删除不必要内容，核对端到端结果、适用时的对象/状态生命周期、真实调用链、失败路径、依赖与证据，并确保 Plan 结构和 goal 验收契约一致；简单目标允许判定某项不适用，不输出自检报告或新增 hard gate。",
     "phase 是进度主干，不设置 phase 独立验收条件；所有 phase 完成后调用 goal_check。",
     "若用户在确认 UI 切换为 Goal Plan，改用 goal_plan 重新提交。",
   ],
@@ -2109,7 +2193,7 @@ export const goalPlanTool = definePublicTool({
   promptSnippet: "提交 phase 与 goal 双层建检的 Goal Plan",
   promptGuidelines: [
     "只有用户显式进入 /dgoal 后才能调用。",
-    "goal、每个 phase 和每个初始 task 都必须提供非空 description，解释理由、作用与方法边界；提交前轻量删除不必要内容并核对依赖和证据，不新增自检硬门。",
+    "goal、每个 phase 和每个初始 task 都必须提供非空 description，解释理由、作用与方法边界；提交前做精简质量检查：删除不必要内容，核对端到端结果、适用时的对象/状态生命周期、真实调用链、失败路径、依赖与证据，并确保 Plan 结构和 phase/goal 验收契约一致；简单目标允许判定某项不适用，不输出自检报告或新增 hard gate。",
     "每个 phase 必须有独立验收价值和 acceptanceCriteria；不要按代码/测试/文档机械拆 phase。",
     "若用户在确认 UI 切换为 Phase Plan，改用 phase_plan 重新提交。",
   ],
@@ -2243,13 +2327,33 @@ export const planReadTool = definePublicTool({
       value = { objective: goal.objective, description: goal.description, planType: resolvePlanType(goal), status: goal.status, revision: goal.plan?.revision, phases: goal.plan?.phases ?? [], goalCheck: goal.goalCheck };
     }
     return {
-      content: [{ type: "text", text: formatPlanReadSummary(value, target, resolvePlanType(goal)) }],
+      content: [{ type: "text", text: formatPlanReadSummary(value, target, resolvePlanType(goal), goal) }],
       details: { target, planType: resolvePlanType(goal), readOnly: true },
     };
   },
 });
 
-function formatPlanReadSummary(value: unknown, target: string, planType: PlanType): string {
+function formatFrontierReadLines(goal: GoalState, target?: { kind: "phase" | "task"; id: number }): string[] {
+  const diagnostic = derivePlanFrontierDiagnostic(goal, target);
+  return diagnostic
+    ? [
+      t("tool.plan.frontierReason", { reason: diagnostic.reason }),
+      t("tool.plan.frontierNext", { next: diagnostic.nextAction }),
+    ]
+    : [];
+}
+
+function formatLatestAuditReadLines(goal: GoalState, target?: { kind: "phase" | "task"; id: number }): string[] {
+  const observation = deriveLatestAuditObservation(goal, target);
+  if (!observation) return [];
+  return [
+    ...(observation.check ? [t("tool.plan.latestCheck", { value: formatLatestCheckValue(observation.check) })] : []),
+    ...(observation.feedback ? [t("tool.plan.latestFeedback", { value: observation.feedback })] : []),
+    ...(observation.latestClaim ? [t("tool.plan.latestClaim", { value: formatLatestClaimValue(observation.latestClaim) })] : []),
+  ];
+}
+
+function formatPlanReadSummary(value: unknown, target: string, planType: PlanType, goal: GoalState): string {
   const record = value as Record<string, unknown>;
   const phases = Array.isArray(record.phases) ? record.phases as Phase[] : [];
   const tasksOf = (phase: Phase): Task[] => Array.isArray(phase.tasks) ? phase.tasks : [];
@@ -2262,6 +2366,8 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
       ...(task.evidence ? [t("tool.plan.get.evidence", { evidence: task.evidence })] : []),
       ...(task.blockedReason ? [t("tool.plan.get.blockedReason", { blockedReason: task.blockedReason })] : []),
       ...(task.blockedBy?.length ? [t("tool.plan.get.blockedBy", { blockedBy: task.blockedBy.map((id) => `#${id}`).join(", ") })] : []),
+      ...formatFrontierReadLines(goal, { kind: "task", id: task.id }),
+      ...formatLatestAuditReadLines(goal, { kind: "task", id: task.id }),
     ].join("\n");
   }
   if (target === "phase") {
@@ -2271,6 +2377,8 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
       formatPhaseDisplay({ ...phase, tasks }, `phase #${phase.id} · `),
       t("tool.plan.get.description", { description: phase.description ?? "" }),
       ...tasks.flatMap((task) => [formatTaskDisplay(task, `  └─ task #${task.id} · `), `     说明：${task.description}`]),
+      ...formatFrontierReadLines(goal, { kind: "phase", id: phase.id }),
+      ...formatLatestAuditReadLines(goal, { kind: "phase", id: phase.id }),
     ].join("\n");
   }
   const doneTasks = tasks.filter((task) => task.status === "done").length;
@@ -2278,12 +2386,12 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
     ? `Task Plan · ${doneTasks}/${tasks.length} tasks`
     : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${phases.filter((phase) => phase.status === "done").length}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
   const goalDescription = typeof record.description === "string" ? record.description : "";
-  if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`].join("\n");
-  if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `))].join("\n");
+  if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`, ...formatFrontierReadLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
+  if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `)), ...formatFrontierReadLines(goal)].join("\n");
   return [title, `说明：${goalDescription}`, ...phases.flatMap((phase) => {
     const phaseTasks = tasksOf(phase);
     return [formatPhaseDisplay({ ...phase, tasks: phaseTasks }, `├─ phase #${phase.id} · `), ...phaseTasks.map((task) => formatTaskDisplay(task, `│    task #${task.id} · `))];
-  })].join("\n");
+  }), ...formatFrontierReadLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
 }
 
 export const planUpdateTool = definePublicTool({
@@ -2653,6 +2761,13 @@ export const goalCheckTool = definePublicTool({
     }
     const summary = String(params.summary).trim();
     const verification = String(params.verification).trim();
+    if (!summary || !verification) {
+      return {
+        content: [{ type: "text", text: "goal_check summary and verification cannot be blank." }],
+        details: { error: "completion claim required" },
+        isError: true,
+      };
+    }
     const whatChanged = normalizeStringList((params as unknown as Record<string, unknown>).whatChanged);
     const userReview = trimOptionalText((params as unknown as Record<string, unknown>).userReview);
     const verificationBundle = normalizeVerificationBundle((params as unknown as Record<string, unknown>).verificationBundle);
@@ -3108,6 +3223,202 @@ export function currentUncheckedPhase(goal: GoalState): Phase | undefined {
   return goal.plan?.phases.find((phase) => !isDonePlanStatus(phase.status));
 }
 
+export interface PlanFrontierDiagnostic {
+  reason: string;
+  nextAction: string;
+}
+
+export interface LatestAuditObservation {
+  check?: CheckRecord;
+  feedback?: string;
+  latestClaim?: FinalAuditHistoryEntry;
+}
+
+function derivePhaseAuditObservation(goal: GoalState, phase: Phase): LatestAuditObservation | undefined {
+  const feedback = phase.check?.status === "approved"
+    ? undefined
+    : goal.phaseFeedbackById?.[String(phase.id)]?.report?.trim() || phase.check?.report?.trim();
+  return phase.check || feedback ? { check: phase.check, feedback } : undefined;
+}
+
+export function deriveLatestAuditObservation(
+  goal: GoalState,
+  target?: { kind: "phase" | "task"; id: number },
+): LatestAuditObservation | undefined {
+  if (!goal.plan || resolvePlanType(goal) === "task" || target?.kind === "task") return undefined;
+  if (target?.kind === "phase") {
+    const phase = goal.plan.phases.find((item) => item.id === target.id);
+    return phase ? derivePhaseAuditObservation(goal, phase) : undefined;
+  }
+  const latestClaim = goal.finalFeedback ? goal.finalAuditHistory?.at(-1) : undefined;
+  if (goal.finalFeedback || goal.goalCheck || latestClaim) {
+    const feedback = goal.goalCheck?.status === "approved"
+      ? undefined
+      : goal.finalFeedback?.report?.trim() || goal.goalCheck?.report?.trim();
+    return { check: goal.goalCheck, feedback, latestClaim };
+  }
+  const phase = currentUncheckedPhase(goal);
+  return phase ? derivePhaseAuditObservation(goal, phase) : undefined;
+}
+
+function formatLatestCheckValue(check: CheckRecord): string {
+  return t("audit.latestCheckValue", {
+    status: check.status,
+    model: check.modelId ?? t("status.dialogNone"),
+    revision: check.revision ?? t("status.dialogNone"),
+    checkedAt: check.checkedAt ? new Date(check.checkedAt).toISOString() : t("status.dialogNone"),
+  });
+}
+
+function formatLatestClaimValue(claim: FinalAuditHistoryEntry): string {
+  return t("audit.latestClaimValue", {
+    attempt: claim.attempt,
+    summary: claim.summary.trim() || t("status.dialogNone"),
+    verification: claim.verification.trim() || t("status.dialogNone"),
+  });
+}
+
+function diagnosticPhaseTasks(phase: Phase): Task[] {
+  return Array.isArray(phase.tasks) ? phase.tasks : [];
+}
+
+function unresolvedTaskDependencies(goal: GoalState, task: Task): Task[] {
+  const tasksById = new Map((goal.plan?.phases ?? []).flatMap(diagnosticPhaseTasks).map((item) => [item.id, item]));
+  return (task.blockedBy ?? [])
+    .map((id) => tasksById.get(id))
+    .filter((item): item is Task => Boolean(item && !isDonePlanStatus(item.status)));
+}
+
+function taskFrontierDiagnostic(goal: GoalState, task: Task): PlanFrontierDiagnostic {
+  const unresolved = unresolvedTaskDependencies(goal, task);
+  if (unresolved.length) {
+    const dependencies = unresolved.map((item) => `#${item.id}(${item.status})`).join(", ");
+    return {
+      reason: t("frontier.taskDependencies", { taskId: task.id, dependencies }),
+      nextAction: t("frontier.taskDependenciesNext", { dependencies }),
+    };
+  }
+  if (task.status === "blocked") {
+    return {
+      reason: t("frontier.taskBlocked", { taskId: task.id, reason: task.blockedReason?.trim() || t("status.dialogNone") }),
+      nextAction: t("frontier.taskBlockedNext", { taskId: task.id }),
+    };
+  }
+  if (task.status === "pending") {
+    return {
+      reason: t("frontier.taskPending", { taskId: task.id }),
+      nextAction: t("frontier.taskPendingNext", { taskId: task.id }),
+    };
+  }
+  return {
+    reason: t("frontier.taskInProgress", { taskId: task.id }),
+    nextAction: t("frontier.taskInProgressNext", { taskId: task.id }),
+  };
+}
+
+function currentTaskFrontier(phase: Phase, goal: GoalState): Task | undefined {
+  const unfinished = diagnosticPhaseTasks(phase).filter((task) => !isDonePlanStatus(task.status));
+  return unfinished.find((task) => task.status === "in_progress")
+    ?? unfinished.find((task) => task.status === "pending" && unresolvedTaskDependencies(goal, task).length === 0)
+    ?? unfinished.find((task) => task.status === "blocked")
+    ?? unfinished[0];
+}
+
+function phaseFrontierDiagnostic(goal: GoalState, phase: Phase): PlanFrontierDiagnostic {
+  if (phase.status === "blocked" && phase.blockedReason?.trim()) {
+    return {
+      reason: t("frontier.phaseBlocked", { phaseId: phase.id, reason: phase.blockedReason.trim() }),
+      nextAction: t("frontier.phaseBlockedNext", { phaseId: phase.id }),
+    };
+  }
+  const task = currentTaskFrontier(phase, goal);
+  if (task) return taskFrontierDiagnostic(goal, task);
+  if (phase.status === "blocked") {
+    return {
+      reason: t("frontier.phaseBlocked", { phaseId: phase.id, reason: t("status.dialogNone") }),
+      nextAction: t("frontier.phaseBlockedNext", { phaseId: phase.id }),
+    };
+  }
+  if (!diagnosticPhaseTasks(phase).length) {
+    return {
+      reason: t("frontier.phaseNoTasks", { phaseId: phase.id }),
+      nextAction: t("frontier.phaseNoTasksNext", { phaseId: phase.id }),
+    };
+  }
+  if (resolvePlanType(goal) === "task") {
+    return { reason: t("frontier.taskPlanReady"), nextAction: t("frontier.taskPlanReadyNext") };
+  }
+  if (resolvePlanType(goal) === "goal") {
+    const revision = goal.plan?.revision ?? 0;
+    if (phase.check?.status === "rejected" && phase.check.revision === revision) {
+      return {
+        reason: t("frontier.phaseCheckRejected", { phaseId: phase.id }),
+        nextAction: t("frontier.phaseCheckRejectedNext", { phaseId: phase.id }),
+      };
+    }
+    if (phase.check?.status !== "approved" || phase.check.revision !== revision) {
+      return {
+        reason: t("frontier.phaseCheckNeeded", { phaseId: phase.id }),
+        nextAction: t("frontier.phaseCheckNeededNext", { phaseId: phase.id }),
+      };
+    }
+  }
+  return {
+    reason: t("frontier.phaseReady", { phaseId: phase.id }),
+    nextAction: t("frontier.phaseReadyNext", { phaseId: phase.id }),
+  };
+}
+
+function goalFrontierDiagnostic(goal: GoalState): PlanFrontierDiagnostic | undefined {
+  if (!goal.plan) return undefined;
+  if (goal.status === "paused") {
+    return {
+      reason: t("frontier.paused", { reason: goal.pauseReasonDetail?.trim() || goal.pauseReason || "unknown" }),
+      nextAction: t("frontier.pausedNext"),
+    };
+  }
+  const phase = currentUncheckedPhase(goal);
+  if (phase) return phaseFrontierDiagnostic(goal, phase);
+  const revision = goal.plan.revision ?? 0;
+  if (resolvePlanType(goal) !== "task" && goal.goalCheck?.status === "rejected" && goal.goalCheck.revision === revision) {
+    return { reason: t("frontier.goalCheckRejected"), nextAction: t("frontier.goalCheckRejectedNext") };
+  }
+  if (resolvePlanType(goal) !== "task" && (goal.goalCheck?.status !== "approved" || goal.goalCheck.revision !== revision)) {
+    return { reason: t("frontier.goalCheckNeeded"), nextAction: t("frontier.goalCheckNeededNext") };
+  }
+  return { reason: t("frontier.goalReady"), nextAction: t("frontier.goalReadyNext") };
+}
+
+export function derivePlanFrontierDiagnostic(
+  goal: GoalState,
+  target?: { kind: "phase" | "task"; id: number },
+): PlanFrontierDiagnostic | undefined {
+  const global = goalFrontierDiagnostic(goal);
+  if (!target || !goal.plan || goal.status === "paused") return global;
+  const currentPhase = currentUncheckedPhase(goal);
+  if (target.kind === "phase") {
+    const phase = goal.plan.phases.find((item) => item.id === target.id);
+    if (!phase) return global;
+    if (isDonePlanStatus(phase.status)) {
+      return { reason: t("frontier.itemDone", { kind: "phase", id: phase.id }), nextAction: global?.nextAction ?? t("frontier.goalReadyNext") };
+    }
+    if (currentPhase && currentPhase.id !== phase.id) {
+      return { reason: t("frontier.itemWaitingPhase", { kind: "phase", id: phase.id, phaseId: currentPhase.id }), nextAction: global?.nextAction ?? "" };
+    }
+    return phaseFrontierDiagnostic(goal, phase);
+  }
+  const phase = goal.plan.phases.find((item) => diagnosticPhaseTasks(item).some((task) => task.id === target.id));
+  const task = phase ? diagnosticPhaseTasks(phase).find((item) => item.id === target.id) : undefined;
+  if (!phase || !task) return global;
+  if (isDonePlanStatus(task.status)) {
+    return { reason: t("frontier.itemDone", { kind: "task", id: task.id }), nextAction: global?.nextAction ?? t("frontier.goalReadyNext") };
+  }
+  if (currentPhase && currentPhase.id !== phase.id) {
+    return { reason: t("frontier.itemWaitingPhase", { kind: "task", id: task.id, phaseId: currentPhase.id }), nextAction: global?.nextAction ?? "" };
+  }
+  return taskFrontierDiagnostic(goal, task);
+}
+
 // 阶段序号（1-based）到真实 phaseId 的映射。旧 plan 可能非连续；新 plan 中序号 == phaseId。
 function phaseNumberToId(goal: GoalState, phaseNumber: number): number | undefined {
   return goal.plan?.phases[phaseNumber - 1]?.id;
@@ -3285,7 +3596,7 @@ export function buildProposePrompt(goal: GoalState) {
     `5. goal、每个可见 phase 和每个 task 都必须提供 description：说明为什么存在、如何服务上层目标、为什么采用当前方法以及要避免什么偏移；不要复述标题或写运行态文案。`,
     `6. phase 是启动时确认的主干，运行中不新增；每个 phase 可带初始 task，后续只能动态新增 task。`,
     `7. 若前文已明确边界，补充 nonGoals 与 guardrails。`,
-    `8. 提交前做一次轻量自检并直接修正：删除不服务目标的 phase/task/验收门，核对未知假设、用户决策边界、依赖与证据路径；不要输出单独自检报告，也不要新增 hard gate。`,
+    `8. 提交前做一次精简质量检查并直接修正：删除不服务目标的 phase/task/验收门；核对端到端可观察结果是否有 Plan 承载，适用时的对象/状态生命周期与生产者—消费者真实调用链是否完整，失败/恢复路径是否与真实风险相称；再确认 verification/acceptanceCriteria 与这些路径一致。简单目标允许判定某项不适用；同时核对未知假设、用户决策边界、依赖与证据路径。不要输出单独自检报告，也不要新增 hard gate。`,
     ...(isBareStart ? [`9. objective 与 description 必须由你从前文归纳，不能保留占位。`] : []),
     `${isBareStart ? 10 : 9}. 调用 phase_plan 或 goal_plan 提交；提交后等待用户确认。用户若切换类型，按反馈改用另一个入口工具重新提交。`,
   ].join("\n");
@@ -5412,6 +5723,61 @@ function hasValidBlockedReason(status: PlanStatus, blockedReason: unknown): bool
     : blockedReason === undefined;
 }
 
+function isPersistedFeedback(value: unknown, allowedKeys: readonly string[]): value is CheckFeedback {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const feedback = value as Record<string, unknown>;
+  return hasOnlyKeys(feedback, allowedKeys)
+    && typeof feedback.report === "string" && Boolean(feedback.report.trim())
+    && typeof feedback.createdAt === "number" && Number.isFinite(feedback.createdAt);
+}
+
+function isPersistedPhaseFeedbackMap(value: unknown, plan: TaskPlan): value is Record<string, PhaseCheckFeedback> | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const phaseIds = new Set(plan.phases.map((phase) => phase.id));
+  return Object.entries(value as Record<string, unknown>).every(([key, item]) => {
+    if (!isPersistedFeedback(item, ["phaseId", "report", "createdAt"])) return false;
+    const feedback = item as PhaseCheckFeedback;
+    return isPositiveInteger(feedback.phaseId) && String(feedback.phaseId) === key && phaseIds.has(feedback.phaseId);
+  });
+}
+
+function isPersistedFinalFeedback(value: unknown): value is FinalCheckFeedback | undefined {
+  if (value === undefined) return true;
+  return isPersistedFeedback(value, ["report", "rejectedCount", "createdAt"])
+    && Number.isInteger((value as FinalCheckFeedback).rejectedCount)
+    && (value as FinalCheckFeedback).rejectedCount >= 0;
+}
+
+function isPersistedVerificationBundle(value: unknown): value is VerificationBundle | undefined {
+  if (value === undefined) return true;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const bundle = value as Record<string, unknown>;
+  return hasOnlyKeys(bundle, ["changes", "acceptanceEvidence", "selfTest", "risks"])
+    && [bundle.changes, bundle.acceptanceEvidence, bundle.selfTest, bundle.risks]
+      .every((item) => typeof item === "string" && Boolean(item.trim()));
+}
+
+function isPersistedFinalAuditHistory(value: unknown): value is FinalAuditHistoryEntry[] | undefined {
+  if (value === undefined) return true;
+  if (!Array.isArray(value)) return false;
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const entry = item as Record<string, unknown>;
+    return hasOnlyKeys(entry, ["attempt", "report", "summary", "verification", "whatChanged", "userReview", "auditMode", "verificationBundle", "workspaceFingerprint", "createdAt"])
+      && isPositiveInteger(entry.attempt)
+      && typeof entry.report === "string" && Boolean(entry.report.trim())
+      && typeof entry.summary === "string" && Boolean(entry.summary.trim())
+      && typeof entry.verification === "string" && Boolean(entry.verification.trim())
+      && (entry.whatChanged === undefined || (Array.isArray(entry.whatChanged) && entry.whatChanged.every((value) => typeof value === "string" && Boolean(value.trim()))))
+      && (entry.userReview === undefined || typeof entry.userReview === "string")
+      && (entry.auditMode === undefined || entry.auditMode === "diagnostic" || entry.auditMode === "narrow_confirmation")
+      && isPersistedVerificationBundle(entry.verificationBundle)
+      && (entry.workspaceFingerprint === undefined || (typeof entry.workspaceFingerprint === "string" && Boolean(entry.workspaceFingerprint.trim())))
+      && typeof entry.createdAt === "number" && Number.isFinite(entry.createdAt);
+  });
+}
+
 function isPersistedPlanValid(plan: TaskPlan, planType: PlanType): boolean {
   if (!Array.isArray(plan.phases) || plan.phases.length === 0 || !isPositiveInteger(plan.nextId)) return false;
   if (plan.revision !== undefined && (!Number.isInteger(plan.revision) || plan.revision < 0)) return false;
@@ -5473,12 +5839,18 @@ export function isGoalState(value: unknown): value is GoalState {
     !["pending", "active", "paused", "done"].includes(String(goal.status)) ||
     typeof goal.startedAt !== "number" || !Number.isFinite(goal.startedAt) ||
     typeof goal.updatedAt !== "number" || !Number.isFinite(goal.updatedAt) ||
-    typeof goal.iteration !== "number" || !Number.isInteger(goal.iteration) || goal.iteration < 0
+    typeof goal.iteration !== "number" || !Number.isInteger(goal.iteration) || goal.iteration < 0 ||
+    (goal.rejectedCount !== undefined && (!Number.isInteger(goal.rejectedCount) || goal.rejectedCount < 0))
   ) return false;
   if (!isNormalizedStringList(goal.userReviewItems) || !isNormalizedStringList(goal.nonGoals) || !isNormalizedStringList(goal.guardrails)) return false;
   if (!goal.plan) return goal.status === "pending" && goal.planType === undefined;
   if (goal.planType !== "task" && goal.planType !== "phase" && goal.planType !== "goal") return false;
   if (!isPersistedPlanValid(goal.plan, goal.planType)) return false;
+  if (
+    !isPersistedPhaseFeedbackMap(goal.phaseFeedbackById, goal.plan) ||
+    !isPersistedFinalFeedback(goal.finalFeedback) ||
+    !isPersistedFinalAuditHistory(goal.finalAuditHistory)
+  ) return false;
   if (goal.planType === "task") {
     return goal.verification === undefined && goal.acceptanceCriteria === undefined && goal.goalCheck === undefined;
   }
@@ -6148,11 +6520,33 @@ export function buildBodyLinesNoHeading(goal: GoalState | undefined): RenderLine
   return buildBodyLines(goal).slice(2); // drop heading + spacer
 }
 
+function buildFrontierStatusLines(goal: GoalState, target?: { kind: "phase" | "task"; id: number }): string[] {
+  const diagnostic = derivePlanFrontierDiagnostic(goal, target);
+  return diagnostic
+    ? [
+      t("status.frontierReason", { reason: diagnostic.reason }),
+      t("status.frontierNext", { next: diagnostic.nextAction }),
+    ]
+    : [];
+}
+
+function buildLatestAuditStatusLines(goal: GoalState, target?: { kind: "phase" | "task"; id: number }): string[] {
+  const observation = deriveLatestAuditObservation(goal, target);
+  if (!observation) return [];
+  return [
+    ...(observation.check ? [t("status.dialogLatestCheck", { value: formatLatestCheckValue(observation.check) })] : []),
+    ...(observation.feedback ? [t("status.dialogLatestFeedback", { value: observation.feedback })] : []),
+    ...(observation.latestClaim ? [t("status.dialogLatestClaim", { value: formatLatestClaimValue(observation.latestClaim) })] : []),
+  ];
+}
+
 /** `/dgoal s` 列表页：goal description 可滚动，但只有 phase/task 可选择。 */
 export function buildPlanStatusListLines(goal: GoalState | undefined): RenderLine[] {
   if (!goal?.plan || goal.plan.phases.length === 0 || goal.status === "pending") return [];
   return [
     { type: "description", text: t("status.description", { description: goal.description }) },
+    ...buildFrontierStatusLines(goal).map((text) => ({ type: "description" as const, text })),
+    ...buildLatestAuditStatusLines(goal).map((text) => ({ type: "description" as const, text })),
     { type: "spacer", text: "" },
     ...buildBodyLinesNoHeading(goal),
   ];
@@ -6186,6 +6580,8 @@ export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: 
       t("status.dialogDetailDescription", { description: phase.description }),
       t("status.dialogDetailProgress", { done: countDoneTasks(phase), total: phase.tasks.length }),
       t("status.dialogDetailBlockedReason", { value: phase.blockedReason?.trim() || none }),
+      ...buildFrontierStatusLines(goal, target),
+      ...buildLatestAuditStatusLines(goal, target),
     ];
   }
   for (const phase of goal.plan.phases) {
@@ -6199,6 +6595,7 @@ export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: 
       t("status.dialogDetailBlockedBy", { value: task.blockedBy?.length ? task.blockedBy.map((id) => `#${id}`).join(", ") : none }),
       t("status.dialogDetailEvidence", { value: task.evidence?.trim() || none }),
       t("status.dialogDetailBlockedReason", { value: task.blockedReason?.trim() || none }),
+      ...buildFrontierStatusLines(goal, target),
     ];
   }
   return [];

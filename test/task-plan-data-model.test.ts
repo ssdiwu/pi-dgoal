@@ -162,6 +162,30 @@ describe("ADR 0042 · isGoalState 新契约", () => {
     blockedWithoutReason.plan!.phases[0].tasks[0].status = "blocked";
     expect(isGoalState(blockedWithoutReason)).toBe(false);
   });
+
+  test("拒绝会破坏只读审核投影的脏 feedback 与 history", () => {
+    const malformedPhaseFeedback = makeGoalWithPlan() as unknown as Record<string, unknown>;
+    malformedPhaseFeedback.phaseFeedbackById = { "1": { phaseId: 1, report: 42, createdAt: 1 } };
+    expect(isGoalState(malformedPhaseFeedback)).toBe(false);
+
+    const malformedFinalFeedback = makeGoalWithPlan() as unknown as Record<string, unknown>;
+    malformedFinalFeedback.finalFeedback = { report: 42, rejectedCount: 1, createdAt: 1 };
+    expect(isGoalState(malformedFinalFeedback)).toBe(false);
+
+    const malformedHistory = makeGoalWithPlan() as unknown as Record<string, unknown>;
+    malformedHistory.finalAuditHistory = [{
+      attempt: 1,
+      report: "未通过",
+      summary: 42,
+      verification: "npm test",
+      createdAt: 1,
+    }];
+    expect(isGoalState(malformedHistory)).toBe(false);
+
+    const malformedRejectedCount = makeGoalWithPlan() as unknown as Record<string, unknown>;
+    malformedRejectedCount.rejectedCount = "1";
+    expect(isGoalState(malformedRejectedCount)).toBe(false);
+  });
 });
 
 describe("切片1 · persist/load 往返", () => {

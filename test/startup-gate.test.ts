@@ -796,7 +796,14 @@ describe("验收契约校验", () => {
     expect(prompt).toContain("read/grep/find/ls/bash");
     expect(prompt).toContain("userReviewItems");
     expect(prompt).toContain("goal、每个可见 phase 和每个 task 都必须提供 description");
-    expect(prompt).toContain("提交前做一次轻量自检并直接修正");
+    expect(prompt).toContain("提交前做一次精简质量检查并直接修正");
+    expect(prompt).toContain("端到端可观察结果");
+    expect(prompt).toContain("对象/状态生命周期");
+    expect(prompt).toContain("生产者—消费者真实调用链");
+    expect(prompt).toContain("失败/恢复路径");
+    expect(prompt).toContain("verification/acceptanceCriteria 与这些路径一致");
+    expect(prompt).toContain("简单目标允许判定某项不适用");
+    expect(prompt).toContain("不要输出单独自检报告，也不要新增 hard gate");
     expect(prompt).not.toContain("contextSummary");
     expect(prompt).toContain("phase_plan 或 goal_plan");
   });

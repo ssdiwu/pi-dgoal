@@ -327,6 +327,8 @@ describe("Three-Plan public tool surface", () => {
     expect(read.content[0].text).toContain("Task Plan · 0/2 tasks");
     expect(read.content[0].text).toContain("├─ task #1 · ○ A");
     expect(read.content[0].text).toContain("├─ task #2 · ○ B");
+    expect(read.content[0].text).toContain("当前 frontier：task #1 已就绪但尚未开始");
+    expect(read.content[0].text).toContain("下一合法动作：调用 plan_update 将 task #1 设为 in_progress");
     expect(read.content[0].text).not.toContain('"tasks"');
     expect(read.details).toMatchObject({ target: "plan", planType: "task", readOnly: true });
 
@@ -336,6 +338,29 @@ describe("Three-Plan public tool surface", () => {
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");
     expect((await execute(planReadTool, { target: "phase", id: 1 })).details.error).toBe("hidden phase");
+  });
+
+  test("plan_read projects only the latest audit feedback and completion claim", async () => {
+    __setGoalForTest({
+      id: "latest-audit-read", objective: "交付", description: "完成交付。", planType: "phase", status: "active",
+      startedAt: 1, updatedAt: 1, iteration: 0,
+      plan: { revision: 2, nextId: 2, phases: [{
+        id: 1, subject: "实现", description: "完成实现。", status: "done",
+        tasks: [{ id: 1, subject: "编码", description: "实现行为。", status: "done", evidence: "bun test" }],
+      }] },
+      goalCheck: { status: "rejected", report: "最新反馈", modelId: "test/model", checkedAt: 2, revision: 2 },
+      finalFeedback: { report: "最新反馈", rejectedCount: 2, createdAt: 2 },
+      finalAuditHistory: [
+        { attempt: 1, report: "旧反馈", summary: "旧声明", verification: "旧验证", createdAt: 1 },
+        { attempt: 2, report: "最新反馈", summary: "最新声明", verification: "最新验证", createdAt: 2 },
+      ],
+    });
+    const read = await execute(planReadTool, { target: "goal" });
+    expect(read.content[0].text).toContain("最新建检：rejected · 模型 test/model · revision 2");
+    expect(read.content[0].text).toContain("最新反馈：最新反馈");
+    expect(read.content[0].text).toContain("最新完成声明：第 2 次 · 最新声明｜验证：最新验证");
+    expect(read.content[0].text).not.toContain("旧声明");
+    expect(read.content[0].text).not.toContain("旧反馈");
   });
 
   test("phase/task descriptions can be revised with trace while goal description stays frozen", async () => {
@@ -449,6 +474,29 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "audit_error", report: "provider down", revision: 2 });
     expect(__getRuntimeStateForTest().currentCheckSnapshot).toBeUndefined();
+  });
+
+  test("goal_check rejects whitespace-only completion claims before auditing", async () => {
+    __setGoalForTest({
+      id: "blank-claim", objective: "交付", planType: "phase", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
+      verification: "tests", acceptanceCriteria: [{ criterion: "passes", evidence: "bun test" }],
+      plan: { revision: 2, nextId: 3, phases: [{
+        id: 1, subject: "实现", status: "done",
+        tasks: [{ id: 2, subject: "做完", status: "done", evidence: "bun test" }],
+      }] },
+    } as never);
+    let auditorCalls = 0;
+    __setCompletionAuditorOverrideForTest(async () => {
+      auditorCalls += 1;
+      return { approved: false, aborted: false, output: "不应调用", liveness: "rejected" };
+    });
+
+    const blankSummary = await execute(goalCheckTool, { summary: "   ", verification: "bun test" });
+    expect(blankSummary.details.error).toBe("completion claim required");
+    const blankVerification = await execute(goalCheckTool, { summary: "完成", verification: "   " });
+    expect(blankVerification.details.error).toBe("completion claim required");
+    expect(auditorCalls).toBe(0);
+    expect(__getGoalForTest()?.finalAuditHistory).toBeUndefined();
   });
 
   test("goal_check rejection stays active and only permits in_progress phase reopen", async () => {

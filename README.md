@@ -62,7 +62,7 @@ Task Plan has no startup review, confirmation dialog, or independent auditor, an
 /dgoal <clear objective>
 ```
 
-An imperative such as “use dgoal to complete this objective” also enters the same explicit startup gate. The agent reads relevant code/docs, recommends Phase Plan or Goal Plan, submits frozen acceptance criteria, runs proposal semantic preflight, and waits for user confirmation.
+An imperative such as “use dgoal to complete this objective” also enters the same explicit startup gate. The agent reads relevant code/docs, recommends Phase Plan or Goal Plan, runs a concise proposal-quality check across the end-to-end result, applicable lifecycle/call paths, failure paths, and acceptance-contract alignment, then submits frozen acceptance criteria, runs proposal semantic preflight, and waits for user confirmation. This check directly corrects the proposal; it does not create a report, model call, state, or hard gate.
 
 ```text
 Phase Plan
@@ -96,7 +96,7 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 | `phase_plan` | Submit an explicitly activated Phase Plan with required goal/phase descriptions and a frozen goal contract |
 | `goal_plan` | Submit an explicitly activated Goal Plan with required descriptions and frozen phase/goal contracts |
 | `plan_create` | Add a task with a required description; never add a phase |
-| `plan_read` | Read a plan, goal, phase, or task; pure read: plan/goal return aggregate phase/task progress for the whole Plan, while phase/task return one compact item; no raw Plan payload (Task Plan hides its phase) |
+| `plan_read` | Read a plan, goal, phase, or task; pure read: aggregate/item output includes the current frontier reason and next legal action, plus only the latest applicable check/feedback/completion claim from existing evidence; no raw Plan payload (Task Plan hides its phase) |
 | `plan_update` | Sole agent-facing writer for task/phase/goal progress, phase/task description revisions, completion, and agent pause |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
@@ -133,7 +133,7 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 - **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
 - **`Ctrl+O`:** expands tasks and audit activity under Phase/Goal Plan phases; the ten-second completion snapshot shows every phase and task.
-- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description and selectable phase/tasks; Enter opens full item details (description, status, dependencies, evidence, blocked reason), and Esc returns without losing the selection. Task Plan never exposes its hidden phase.
+- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description, current-frontier reason/next legal action, latest applicable audit projection, and selectable phase/tasks; Enter opens item details (description, status, dependencies, evidence, blocked reason, scoped frontier, and latest phase check/feedback), and Esc returns without losing the selection. Only the latest feedback/completion claim is exposed; the internal repair index stays hidden. Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 
 State and persistence never depend on successful rendering. Widget, modal, status, or notification errors may degrade presentation but cannot block completion or recovery.

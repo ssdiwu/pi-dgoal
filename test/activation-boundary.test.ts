@@ -14,6 +14,8 @@ describe("Three-Plan activation boundary", () => {
     expect(task).toContain("纯讨论、解释、能力问答不建计划");
     expect(task).toContain("推荐用户使用 /dgoal");
     expect(task).toContain("不得调用 phase_plan 或 goal_plan");
+    expect(task).not.toContain("对象/状态生命周期");
+    expect(task).not.toContain("生产者—消费者真实调用链");
 
     const explicit = buildNaturalLanguageStartGuidance();
     expect(explicit).toContain("phase_plan / goal_plan");
@@ -27,6 +29,20 @@ describe("Three-Plan activation boundary", () => {
     for (const text of ["dgoal 是什么？", "不要用 dgoal", "请解释‘请用 dgoal’这句话", "你能用 dgoal 吗？"]) {
       expect(isNaturalLanguageDgoalStartRequest(text)).toBe(false);
     }
+  });
+
+  test("audited Plan guidance adds concise flow and contract checks without a new gate", () => {
+    const phaseGuidance = phasePlanTool.promptGuidelines.join("\n");
+    const goalGuidance = goalPlanTool.promptGuidelines.join("\n");
+    for (const guidance of [phaseGuidance, goalGuidance]) {
+      expect(guidance).toContain("精简质量检查");
+      expect(guidance).toContain("对象/状态生命周期");
+      expect(guidance).toContain("真实调用链");
+      expect(guidance).toContain("失败路径");
+      expect(guidance).toContain("不输出自检报告或新增 hard gate");
+    }
+    expect(phaseGuidance).toContain("Plan 结构和 goal 验收契约一致");
+    expect(goalGuidance).toContain("Plan 结构和 phase/goal 验收契约一致");
   });
 
   test("public entry schemas no longer expose implicit or runtime budget", () => {

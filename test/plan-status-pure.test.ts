@@ -11,6 +11,8 @@ import {
   colorize,
   computePlanStatusSelection,
   computeScrollOffset,
+  deriveLatestAuditObservation,
+  derivePlanFrontierDiagnostic,
   getPlanStatusTargets,
   type GoalState,
   type Phase,
@@ -244,6 +246,130 @@ describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
 // =============================================================================
 // colorize：层级基色映射（ADR 0009，状态不再靠颜色或粗体表达）
 // =============================================================================
+
+describe("共享 frontier 诊断", () => {
+  test("Task Plan 指向当前可执行 task，并要求带 evidence 完成", () => {
+    const g = goal([p(1, "隐藏 phase", [t(1, "执行", "in_progress")], "in_progress")], { planType: "task" });
+    const diagnostic = derivePlanFrontierDiagnostic(g);
+    expect(diagnostic?.reason).toContain("task #1 尚未带可复验证据完成");
+    expect(diagnostic?.nextAction).toContain("evidence");
+    expect(buildPlanStatusListLines(g).map((line) => line.text).join("\n")).toContain("当前 frontier");
+  });
+
+  test("由 blocked task 聚合出的 blocked phase 仍解释 task blocker", () => {
+    const blockedTask = t(1, "等待权限", "blocked", { blockedReason: "缺少授权" });
+    const g = goal([p(1, "实现", [blockedTask], "blocked")], { planType: "phase" });
+    const diagnostic = derivePlanFrontierDiagnostic(g);
+    expect(diagnostic?.reason).toContain("task #1 被阻塞：缺少授权");
+    expect(diagnostic?.nextAction).toContain("task #1");
+  });
+
+  test("选中 task 只解释其未完成依赖，不枚举未来 phase", () => {
+    const g = goal([p(1, "实现", [
+      t(1, "前置", "in_progress"),
+      t(2, "后续", "pending", { blockedBy: [1] }),
+    ], "in_progress")], { planType: "phase" });
+    const diagnostic = derivePlanFrontierDiagnostic(g, { kind: "task", id: 2 });
+    expect(diagnostic?.reason).toContain("等待依赖 #1(in_progress) 完成");
+    expect(diagnostic?.nextAction).toContain("先完成依赖 #1(in_progress)");
+  });
+
+  test("Goal Plan 在当前 phase 的 task 完成后要求 current revision 的 phase_check", () => {
+    const g = goal([p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress")], {
+      planType: "goal",
+      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress")] },
+    });
+    const diagnostic = derivePlanFrontierDiagnostic(g);
+    expect(diagnostic?.reason).toContain("缺少当前 revision 的 approved phase_check");
+    expect(diagnostic?.nextAction).toContain("phase_check");
+  });
+
+  test("只解释当前 frontier；未来 phase 的详情指回当前 phase", () => {
+    const g = goal([
+      p(1, "当前", [t(1, "执行", "in_progress")], "in_progress"),
+      p(2, "未来", [t(2, "稍后")], "pending"),
+    ], { planType: "phase" });
+    const detail = buildPlanStatusDetailLines(g, { kind: "phase", id: 2 }).join("\n");
+    expect(detail).toContain("当前 frontier 仍在 phase #1");
+    expect(detail).not.toContain("task #2 已就绪");
+  });
+
+  test("全部 phase done 后只解释 goal_check 这一项当前完成门", () => {
+    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
+    const g = goal([donePhase], { planType: "phase", plan: { revision: 2, nextId: 2, phases: [donePhase] } });
+    expect(derivePlanFrontierDiagnostic(g)?.nextAction).toContain("goal_check");
+  });
+});
+
+describe("最新审核信息只读投影", () => {
+  test("phase 只展示该 phase 的最新 CheckRecord 与反馈", () => {
+    const phase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress", {
+      check: { status: "rejected", report: "旧 check report", modelId: "test/model", checkedAt: 1, revision: 2 },
+    });
+    const g = goal([phase], {
+      planType: "goal",
+      plan: { revision: 2, nextId: 2, phases: [phase] },
+      phaseFeedbackById: {
+        "1": { phaseId: 1, report: "当前 phase 最新反馈", createdAt: 2 },
+        "2": { phaseId: 2, report: "未来 phase 历史反馈", createdAt: 1 },
+      },
+    });
+    const observation = deriveLatestAuditObservation(g, { kind: "phase", id: 1 });
+    expect(observation?.check?.status).toBe("rejected");
+    expect(observation?.feedback).toBe("当前 phase 最新反馈");
+    const detail = buildPlanStatusDetailLines(g, { kind: "phase", id: 1 }).join("\n");
+    expect(detail).toContain("最新建检：rejected");
+    expect(detail).toContain("最新反馈：当前 phase 最新反馈");
+    expect(detail).not.toContain("未来 phase 历史反馈");
+  });
+
+  test("approved phase check 不把残留 rejected feedback 误显示为最新", () => {
+    const phase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress", {
+      check: { status: "approved", report: "通过", modelId: "test/model", checkedAt: 2, revision: 2 },
+    });
+    const g = goal([phase], {
+      planType: "goal",
+      plan: { revision: 2, nextId: 2, phases: [phase] },
+      phaseFeedbackById: { "1": { phaseId: 1, report: "旧 rejected feedback", createdAt: 1 } },
+    });
+    const observation = deriveLatestAuditObservation(g, { kind: "phase", id: 1 });
+    expect(observation?.check?.status).toBe("approved");
+    expect(observation?.feedback).toBeUndefined();
+  });
+
+  test("approved goal check 不把旧 rejected 声明误显示为最新", () => {
+    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
+    const g = goal([donePhase], {
+      planType: "phase",
+      plan: { revision: 4, nextId: 2, phases: [donePhase] },
+      goalCheck: { status: "approved", report: "通过", modelId: "test/model", checkedAt: 4, revision: 4 },
+      finalAuditHistory: [{ attempt: 1, report: "旧反馈", summary: "旧失败声明", verification: "旧验证", createdAt: 1 }],
+    });
+    const observation = deriveLatestAuditObservation(g);
+    expect(observation?.check?.status).toBe("approved");
+    expect(observation?.latestClaim).toBeUndefined();
+    expect(buildPlanStatusListLines(g).map((line) => line.text).join("\n")).not.toContain("旧失败声明");
+  });
+
+  test("goal 只展示最新反馈与最新完成声明，内部旧账本不泄露", () => {
+    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
+    const g = goal([donePhase], {
+      planType: "phase",
+      plan: { revision: 4, nextId: 2, phases: [donePhase] },
+      goalCheck: { status: "rejected", report: "最新终审反馈", modelId: "test/model", checkedAt: 3, revision: 4 },
+      finalFeedback: { report: "最新终审反馈", rejectedCount: 2, createdAt: 3 },
+      finalAuditHistory: [
+        { attempt: 1, report: "旧报告", summary: "旧完成声明", verification: "旧验证", createdAt: 1 },
+        { attempt: 2, report: "最新终审反馈", summary: "最新完成声明", verification: "最新验证", createdAt: 3 },
+      ],
+    });
+    const text = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
+    expect(text).toContain("最新反馈：最新终审反馈");
+    expect(text).toContain("最新完成声明：第 2 次 · 最新完成声明｜验证：最新验证");
+    expect(text).not.toContain("旧完成声明");
+    expect(text).not.toContain("旧报告");
+  });
+});
 
 describe("两层 `/dgoal s` 纯函数", () => {
   test("列表页包含 goal description，并给 phase/task 提供稳定 target", () => {

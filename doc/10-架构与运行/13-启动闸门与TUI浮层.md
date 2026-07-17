@@ -26,7 +26,8 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
   → 主 agent 读相关文档/代码
   → 推荐 Phase Plan 或 Goal Plan
   → 为 goal / phase / 初始 task 写明 Description
-  → 调用 phase_plan / goal_plan
+  → 精简核对端到端结果、适用生命周期/真实调用链、失败路径与验收契约一致性
+  → 直接修正后调用 phase_plan / goal_plan
   → 结构校验
   → 当前会话模型语义预审
   → pending proposal
@@ -65,7 +66,8 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
 ## Proposal 语义边界
 
 - 确定性代码只校验结构、状态、Plan 类型与显式授权。
-- 当前会话模型判断候选条件属于独立验收、用户复核还是人工 blocker。
+- 主 agent 提交前的精简质量检查只修正 Plan/契约覆盖，不输出报告或新增 hard gate；简单目标允许判定检查项不适用。
+- 当前会话模型仍只判断候选条件属于独立验收、用户复核还是人工 blocker，不扩成 Plan 质量审核器。
 - 高风险真实动作由执行时工具边界决定，不靠 proposal 关键词猜测。
 - 审核器只核冻结结果，不扩张完成门。
 - 语义或技术失败不得留下半激活 Plan。
@@ -87,11 +89,11 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
 
 使用 `ctx.ui.custom(..., { overlay: true, anchor: "center" })`。它是列表/详情两层状态机：
 
-- **列表页**：钉住 goal heading；展示完整 goal description 与可选择的 phase/task 层级。Task Plan 平铺 task，不显示隐藏 phase。
+- **列表页**：钉住 goal heading；展示完整 goal description、当前 frontier 的直接原因与下一合法动作、最新适用 goal/phase 审核投影，以及可选择的 phase/task 层级。Task Plan 平铺 task，不显示隐藏 phase。
 - **选中与浏览**：`↑/↓` 或 `j/k` 按逻辑 Plan item 移动，`g/G` 选中首尾项并让窗口跟随；`PgDn/PgUp`、`Ctrl+D/Ctrl+U` 与 `Home/End` 只滚动列表物理行，不改变选中项，确保超长 goal description 可从头浏览到尾。换行续行不成为独立选择。
-- **详情页**：`Enter` 打开所选 phase/task，显示完整 description、status、所在 phase、dependencies、evidence 与 blocked reason；长文本独立滚动。
+- **详情页**：`Enter` 打开所选 phase/task，显示完整 description、status、所在 phase、dependencies、evidence、blocked reason、局部 frontier；phase 还显示最新 check/反馈。长文本独立滚动。
 - **返回/关闭**：详情页 `Esc` 返回列表并保留原选择，列表页 `Esc` 关闭；`Ctrl+C` 可直接关闭。
-- Phase/Goal Plan 列表包含 done phase 的 task；审核运行时只展示轻量活性片段，不展示原始报告正文。
+- Phase/Goal Plan 列表包含 done phase 的 task；审核运行时仍只展示轻量活性片段。审核终态只展示最新反馈与最新完成声明，较早 `finalAuditHistory` 修复索引不展开。
 
 持续显示浮层是 L3 widget；详细查询是 L2 overlay Modal，两者不可混叫。
 
