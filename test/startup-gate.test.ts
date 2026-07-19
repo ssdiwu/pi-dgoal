@@ -199,6 +199,86 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
+  test("语义预审拒绝依赖不可获取历史证据的条件，且不写入 pendingProposal", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-unavailable-history-evidence", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setProposalSemanticReviewForTest((_proposal, prompt) => {
+      expect(prompt).toContain("independently obtainable by the future auditor");
+      expect(prompt).toContain("unverifiable historical negative claim");
+      expect(prompt).toContain("unexported access log");
+      expect(prompt).toContain("agent, worker, or user memory");
+      return { decision: "reject", reason: "The claimed historical non-access cannot be independently verified from admissible evidence." };
+    });
+    const result = await __executePlanProposalForTest({
+      objective: "o",
+      verification: "检查来源记录",
+      acceptanceCriteria: [{ criterion: "没有任何实现者曾打开受限上游文件", evidence: "worker 的自述与未导出的访问日志" }],
+      phases: [{ subject: "p", acceptanceCriteria: [criteria[0]] }],
+    });
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.reason).toContain("historical non-access");
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    __resetGoalForTest();
+  });
+
+  test("语义预审一次投影全部不可准入条件，并保持旧 reject 状态边界", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-issues", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const historical = "没有任何实现者曾打开受限上游文件";
+    const subjective = "双载体视觉气质一致且令人满意";
+    const authorPrompt = buildProposePrompt(goal());
+    expect(authorPrompt).toContain("当前可观察状态或未来可复现结果");
+    expect(authorPrompt).toContain("Guardrails and non-goals constrain execution");
+    __setProposalSemanticReviewForTest((_proposal, prompt) => {
+      expect(prompt).toContain("report every inadmissible criterion");
+      return {
+        decision: "reject",
+        reason: "Two frozen conditions are inadmissible.",
+        issues: [
+          { sourceCriterion: historical, classification: "unverifiable_evidence", reason: "Past non-access is unavailable to the future auditor.", remedy: "Replace it with current source records and scans." },
+          { sourceCriterion: subjective, classification: "human_only", reason: "Visual satisfaction requires human judgment.", remedy: "Move it to userReviewItems." },
+        ],
+      } as any;
+    });
+    const result = await __executePlanProposalForTest({
+      objective: "o",
+      verification: "检查来源记录与样例",
+      acceptanceCriteria: [{ criterion: historical, evidence: "未导出的访问日志" }, { criterion: subjective, evidence: "联系表" }],
+      phases: [{ subject: "p", acceptanceCriteria: [criteria[0]] }],
+    });
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(String(result.details?.reason)).toContain(historical);
+    expect(String(result.details?.reason)).toContain(subjective);
+    expect(result.details?.issues).toEqual([
+      { sourceCriterion: historical, classification: "unverifiable_evidence", reason: "Past non-access is unavailable to the future auditor.", remedy: "Replace it with current source records and scans." },
+      { sourceCriterion: subjective, classification: "human_only", reason: "Visual satisfaction requires human judgment.", remedy: "Move it to userReviewItems." },
+    ]);
+    expect(__getPendingProposalForTest()).toBeUndefined();
+    __resetGoalForTest();
+  });
+
+  test("语义预审从模型 JSON 解析全部 issues 并投影", async () => {
+    __resetGoalForTest();
+    __setGoalForTest({ id: "pending-semantic-json-issues", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const criterion = "没有任何实现者曾打开受限上游文件";
+    const issue = { sourceCriterion: criterion, classification: "unverifiable_evidence", reason: "Past non-access is unavailable to the future auditor.", remedy: "Replace it with current source records and scans." };
+    __setProposalSemanticCompletionForTest(() => ({
+      stopReason: "stop",
+      content: [{ type: "text", text: JSON.stringify({ decision: "reject", reason: "Historical evidence is unavailable.", issues: [issue] }) }],
+    }));
+    const ctx = { model: {}, modelRegistry: { getApiKeyAndHeaders: async () => ({ ok: true as const, apiKey: "test" }) } };
+    const result = await __executePlanProposalForTest({
+      objective: "o",
+      verification: "检查来源记录",
+      acceptanceCriteria: [{ criterion, evidence: "未导出的访问日志" }],
+      phases: [{ subject: "p", acceptanceCriteria: [criteria[0]] }],
+    }, ctx);
+    expect(result.details?.error).toBe("semantic review rejected");
+    expect(result.details?.issues).toEqual([issue]);
+    expect(String(result.details?.reason)).toContain(criterion);
+    __resetGoalForTest();
+  });
+
   test("语义预审可将混合条件改写为独立条件并合并 userReviewItems", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-rewrite", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });

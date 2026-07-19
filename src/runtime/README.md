@@ -14,7 +14,7 @@ Task Plan 可直接建立和整份替换 objective、goal description 与全部 
 
 ## Proposal 语义预审
 
-只用于 Phase/Goal Plan。主 agent 在提交前先做固定的精简质量检查：核对端到端结果、适用时的对象/状态生命周期与真实调用链、失败路径，以及 Plan 结构和冻结验收契约是否一致；简单目标允许判定某项不适用，检查结果直接修正 proposal，不生成报告、模型调用、状态或 hard gate。确定性代码随后校验结构、状态、Plan 类型与用户授权；当前会话模型仍只负责独立验收 / 用户复核 / 人工 blocker 语义分流。预审默认 60 秒 idle timeout，可配置 `proposalSemanticReviewIdleTimeoutSeconds`；终态为 approved / rewritten / rejected / technical_error。
+只用于 Phase/Goal Plan。主 agent 在提交前先做固定的精简质量检查：核对端到端结果、适用时的对象/状态生命周期与真实调用链、失败路径，以及 Plan 结构和冻结验收契约是否一致；简单目标允许判定某项不适用，检查结果直接修正 proposal，不生成报告、模型调用、状态或 hard gate。确定性代码随后校验结构、状态、Plan 类型与用户授权；当前会话模型负责独立验收 / 用户复核 / 人工 blocker 语义分流，并拒绝依赖未来审核器不可取得证据的冻结条件，例如无可导出不可变审计记录支撑的历史否定事实。此类条件不得迁移为用户复核，而应收缩为可观察、可独立复验的主张后重新提交。提案作者提示在提交前采用同一证据边界；拒绝结果可携带逐条件 `issues`，一次列出全部发现的不可准入条件及改写方向。预审默认 60 秒 idle timeout，可配置 `proposalSemanticReviewIdleTimeoutSeconds`；终态为 approved / rewritten / rejected / technical_error。
 
 自然语言明确要求使用 dgoal 可形成一次性显式授权，但仍经过预审与确认 UI。不存在隐式 proposal 或 runtime budget 路径。
 

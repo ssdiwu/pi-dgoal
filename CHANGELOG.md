@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.8] - 2026-07-20
+
+### Fixed
+
+- **Proposal evidence admissibility**: startup guidance and semantic review now reject frozen acceptance conditions that depend on evidence a future auditor cannot independently obtain, including unsupported historical non-access claims, unexported access logs, and agent/worker/user memory. Such claims must be removed or narrowed to observable, independently auditable evidence rather than being moved to user review; rejection can return all identified criterion-level issues in one response.
+
 ## [0.7.7] - 2026-07-17
 
 ### Breaking

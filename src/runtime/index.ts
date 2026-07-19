@@ -487,7 +487,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.validate.noDescription": "proposal 必须包含 description，说明为什么推进此 goal、为什么采用当前方法以及要避免什么方法偏移。",
       "proposal.validate.noVerification": "proposal 必须包含 verification（goal 级验收说明）：交付什么、满足什么标准。新 goal 的冻结完成门是 acceptanceCriteria，verification 帮助理解完成标准但不单独作为终审完成门。可参考启动背景里的“验收标准”，但要显式写出，不要留空，也不要用“完成并验证”“确保没问题”这类空话。",
       "proposal.validate.noAcceptanceCriteria": "proposal 必须为 goal 提供 LLM 可独立验收的 criterion + evidence；Goal Plan 还必须为每个 phase 提供，Phase Plan 不设 phase 完成门。人工体验项请放入 userReviewItems。",
-      "proposal.validate.semanticReviewRejected": "proposal 未通过启动前语义预审：{reason}。请按阻塞说明补充只有用户能提供的信息、凭据、授权或决策后再提交；主观体验项应移入 userReviewItems。",
+      "proposal.validate.semanticReviewRejected": "proposal 未通过启动前语义预审：{reason}。请按说明补充审核器可独立复验的证据、收缩不可验证的绝对主张，或补充只有用户能提供的信息、凭据、授权或决策后再提交；主观体验项应移入 userReviewItems。",
       "proposal.validate.semanticReviewTechnicalError": "启动前语义预审遇到技术错误，未形成语义结论：{reason}。这不是计划内容问题；可稍后重试 /dgoal，或检查模型/网络可用性。",
       "proposal.semantic.liveness": "语义预审·{liveness}",
       "proposal.semantic.liveness.authenticating": "认证中",
@@ -715,7 +715,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.validate.noDescription": "proposal must include a description explaining why this goal matters, why this approach is chosen, and which method drift to avoid.",
       "proposal.validate.noVerification": "proposal must include verification (goal-level acceptance summary): what is delivered and what standards are met. The frozen completion gate for new goals is acceptanceCriteria; verification helps understand the completion standard but is not a standalone final-audit gate. You may refer to the startup context's acceptance criteria, but you must state them explicitly and not leave them blank or use empty phrases like 'done and verified'.",
       "proposal.validate.noAcceptanceCriteria": "proposal must provide LLM-independent criterion + evidence for the goal; Goal Plan must also provide them for every phase, while Phase Plan has no phase completion contract. Put manual experience checks in userReviewItems.",
-      "proposal.validate.semanticReviewRejected": "proposal failed the pre-start semantic review: {reason}. Supply the user-only information, credentials, authorization, or decision named by the blocker before resubmitting; move subjective experience checks into userReviewItems.",
+      "proposal.validate.semanticReviewRejected": "proposal failed the pre-start semantic review: {reason}. Before resubmitting, supply independently auditable evidence, narrow an unverifiable absolute claim, or supply the user-only information, credentials, authorization, or decision named by the blocker; move subjective experience checks into userReviewItems.",
       "proposal.validate.semanticReviewTechnicalError": "The pre-start semantic review hit a technical error and produced no semantic conclusion: {reason}. This is not a plan-content issue; retry /dgoal later, or check model/network availability.",
       "proposal.semantic.liveness": "Semantic preflight·{liveness}",
       "proposal.semantic.liveness.authenticating": "authenticating",
@@ -1057,6 +1057,23 @@ function normalizeSemanticMigrations(value: unknown): ProposalSemanticMigration[
   return normalized;
 }
 
+function normalizeProposalSemanticIssues(value: unknown): ProposalSemanticIssue[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined;
+  const allowed = new Set<ProposalSemanticIssueClassification>(["human_only", "user_blocker", "unverifiable_evidence"]);
+  const normalized: ProposalSemanticIssue[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") return undefined;
+    const raw = item as Record<string, unknown>;
+    const sourceCriterion = trimOptionalText(raw.sourceCriterion);
+    const classification = raw.classification;
+    const reason = trimOptionalText(raw.reason);
+    const remedy = trimOptionalText(raw.remedy);
+    if (!sourceCriterion || typeof classification !== "string" || !allowed.has(classification as ProposalSemanticIssueClassification) || !reason || !remedy) return undefined;
+    normalized.push({ sourceCriterion, classification: classification as ProposalSemanticIssueClassification, reason, remedy });
+  }
+  return normalized;
+}
+
 function normalizeAcceptanceCriteria(value: unknown): AcceptanceCriterion[] | undefined {
   if (!Array.isArray(value) || value.length === 0) return undefined;
   const normalized: AcceptanceCriterion[] = [];
@@ -1195,16 +1212,26 @@ export interface ProposalSemanticMigration {
   userReviewItem: string;
 }
 
+export type ProposalSemanticIssueClassification = "human_only" | "user_blocker" | "unverifiable_evidence";
+
+export interface ProposalSemanticIssue {
+  sourceCriterion: string;
+  classification: ProposalSemanticIssueClassification;
+  reason: string;
+  remedy: string;
+}
+
 export interface ProposalSemanticReview {
   decision: ProposalSemanticDecision;
   acceptanceCriteria?: AcceptanceCriterion[];
   phaseAcceptanceCriteria?: AcceptanceCriterion[][];
   userReviewItems?: string[];
   migratedUserReviewItems?: ProposalSemanticMigration[];
+  issues?: ProposalSemanticIssue[];
   reason?: string;
 }
 
-let proposalSemanticReviewOverrideForTest: ((proposal: PlanProposal) => Promise<ProposalSemanticReview> | ProposalSemanticReview) | undefined;
+let proposalSemanticReviewOverrideForTest: ((proposal: PlanProposal, prompt: string) => Promise<ProposalSemanticReview> | ProposalSemanticReview) | undefined;
 let proposalSemanticCompletionOverrideForTest: (() => Promise<{ stopReason: StopReason; content: unknown[] }> | { stopReason: StopReason; content: unknown[] }) | undefined;
 let proposalSemanticReviewTimeoutOverrideForTest: number | undefined;
 // 测试专用：注入流式事件序列，模拟真实 provider 流的活性与最终结果。生产路径不设置该接缝。
@@ -1228,17 +1255,20 @@ function buildProposalSemanticReviewPrompt(proposal: PlanProposal): string {
   return [
     "Review this dgoal proposal before it is shown to the user.",
     "Your semantic job is narrow: decide whether the plan can finish without an impossible human completion gate.",
-    "Classify each proposed completion condition as exactly one of: (1) independently judgeable by an LLM using repository files, commands, tests, tool responses, or observable external state; (2) subjective/experiential post-completion user review, which must move to userReviewItems; (3) a real blocker requiring user-only information, credentials, authorization, or a decision.",
+    "Classify each proposed completion condition as exactly one of: (1) independently judgeable by an LLM using repository files, commands, tests, tool responses, or observable external state; (2) subjective/experiential post-completion user review, which must move to userReviewItems; (3) a real blocker requiring user-only information, credentials, authorization, or a decision; (4) an inadmissible frozen condition whose claim or evidence cannot be independently obtained by the future auditor through its permitted tools.",
     "This proposal always uses an explicit user-confirmation path.",
     planInstruction,
     "Do not accept a human approval, sign-off, visual inspection, real-person trial, subjective rating, or developer/model assertion as a completion condition, even when its evidence also contains a valid command, path, URL, or test output.",
     "If a criterion mixes a verifiable result with a human-only condition, rewrite it to the verifiable result and move the removed human-only requirement to userReviewItems.",
+    "A condition is independently judgeable only when both its claim and evidence are independently obtainable by the future auditor. Do not assume access to a parent transcript, an unexported access log, agent, worker, or user memory, or undocumented host telemetry. An unverifiable historical negative claim (for example, that a past read, copy, or action never occurred) is category (4) unless an immutable, exported audit trail available to the auditor proves it.",
+    "For category (4), reject the proposal rather than moving the condition to userReviewItems. Explain that the proposal must remove the absolute historical claim or narrow it to observable, independently auditable evidence; do not infer a legal conclusion.",
+    "Before deciding reject, inspect every frozen criterion in every layer. When any criterion makes the proposal inadmissible, report every inadmissible criterion in issues; do not stop after the first one or wait for a resubmission to reveal another. Each issue must quote an exact sourceCriterion from the proposal, classify it as human_only, user_blocker, or unverifiable_evidence, and give a reason plus a concrete remedy.",
     "Do not add new completion requirements from project instructions or your own preferences. Review only the supplied proposal. Do not act as the execution safety boundary; runtime tool_call preflight enforces actual high-risk actions.",
     "Return JSON only. Use exactly one of these decision-specific shapes:",
     '{"decision":"approve","reason":"optional short reason"}',
-    '{"decision":"reject","reason":"blocking semantic issue and the exact user input still needed"}',
+    '{"decision":"reject","reason":"short summary of all blocking issues","issues":[{"sourceCriterion":"exact original criterion","classification":"human_only|user_blocker|unverifiable_evidence","reason":"why this criterion is inadmissible","remedy":"how to rewrite, move, or remove it"}]}',
     '{"decision":"rewrite","acceptanceCriteria":[{"criterion":"...","evidence":"..."}],"phaseAcceptanceCriteria":[[{"criterion":"...","evidence":"..."}]],"userReviewItems":["..."],"migratedUserReviewItems":[{"sourceCriterion":"exact original criterion removed from the frozen contract","userReviewItem":"the corresponding non-blocking review item"}],"reason":"optional short reason"}',
-    "For approve, do not echo or normalize any acceptance criteria; the runtime keeps the supplied contract unchanged. For rewrite, return all goal criteria and, for Goal Plan, all phase criteria after rewriting. Every original criterion that is removed or changed must have an exact sourceCriterion entry in migratedUserReviewItems, and its userReviewItem must also appear in userReviewItems. For reject, explain the blocker and what only the user can provide.",
+    "For approve, do not echo or normalize any acceptance criteria; the runtime keeps the supplied contract unchanged. For rewrite, return all goal criteria and, for Goal Plan, all phase criteria after rewriting. Every original criterion that is removed or changed must have an exact sourceCriterion entry in migratedUserReviewItems, and its userReviewItem must also appear in userReviewItems. For reject, provide a short summary and the complete issues array; old reject responses without issues remain acceptable for compatibility.",
     "<dgoal_proposal>",
     escapeXml(JSON.stringify(proposal)),
     "</dgoal_proposal>",
@@ -1280,12 +1310,15 @@ function parseSemanticReviewResponse(text: string): ProposalSemanticReview | und
       : normalizeSemanticMigrations(raw.migratedUserReviewItems);
     if (raw.migratedUserReviewItems !== undefined && !migratedUserReviewItems) return undefined;
     const userReviewItems = normalizeStringList(raw.userReviewItems);
+    const issues = raw.issues === undefined ? undefined : normalizeProposalSemanticIssues(raw.issues);
+    if (raw.issues !== undefined && !issues) return undefined;
     return {
       decision,
       ...(acceptanceCriteria ? { acceptanceCriteria } : {}),
       ...(phaseAcceptanceCriteria ? { phaseAcceptanceCriteria: phaseAcceptanceCriteria as AcceptanceCriterion[][] } : {}),
       ...(userReviewItems ? { userReviewItems } : {}),
       ...(migratedUserReviewItems ? { migratedUserReviewItems } : {}),
+      ...(issues ? { issues } : {}),
       ...(typeof raw.reason === "string" && raw.reason.trim() ? { reason: raw.reason.trim() } : {}),
     };
   } catch {
@@ -1293,8 +1326,24 @@ function parseSemanticReviewResponse(text: string): ProposalSemanticReview | und
   }
 }
 
+function formatProposalSemanticIssues(issues: ProposalSemanticIssue[] | undefined): string | undefined {
+  if (!issues?.length) return undefined;
+  return issues.map((issue, index) => `${index + 1}. ${issue.sourceCriterion}\n   ${issue.reason}\n   Remedy: ${issue.remedy}`).join("\n");
+}
+
 function validateSemanticReviewShape(review: ProposalSemanticReview, proposal: PlanProposal): string | undefined {
-  if (review.decision === "reject") return review.reason || "semantic reviewer rejected the proposal";
+  if (review.decision === "reject") {
+    if (review.issues) {
+      const sourceCriteria = new Set([
+        ...(proposal.acceptanceCriteria ?? []),
+        ...proposal.phases.flatMap((phase) => phase.acceptanceCriteria ?? []),
+      ].map((criterion) => criterion.criterion));
+      if (review.issues.some((issue) => !sourceCriteria.has(issue.sourceCriterion))) {
+        return "semantic reviewer issue source was not found in the original criteria";
+      }
+    }
+    return undefined;
+  }
   const phasePlan = proposal.planType === "phase";
   const originalPhases = proposal.phases.map((phase) => phase.acceptanceCriteria ?? []);
   if (review.decision === "approve") {
@@ -1419,7 +1468,7 @@ async function runProposalSemanticReview(ctx: DgoalContext, proposal: PlanPropos
   // 测试接缝 1：直接注入最终语义结果（保留向后兼容）。
   if (proposalSemanticReviewOverrideForTest) {
     try {
-      const review = await proposalSemanticReviewOverrideForTest(proposal);
+      const review = await proposalSemanticReviewOverrideForTest(proposal, buildProposalSemanticReviewPrompt(proposal));
       return outcomeFromReview(review);
     } catch (error) {
       return { kind: "technical_error", reason: `semantic reviewer failed: ${formatError(error)}` };
@@ -1673,10 +1722,15 @@ function mergeProposalReviewItems(current: string[] | undefined, additions: stri
   return merged.length ? merged : undefined;
 }
 
-function applyProposalSemanticReview(proposal: PlanProposal, review: ProposalSemanticReview): { proposal?: PlanProposal; error?: string } {
+function applyProposalSemanticReview(proposal: PlanProposal, review: ProposalSemanticReview): { proposal?: PlanProposal; error?: string; issues?: ProposalSemanticIssue[] } {
   const shapeError = validateSemanticReviewShape(review, proposal);
   if (shapeError) return { error: shapeError };
-  if (review.decision === "reject") return { error: review.reason || "semantic reviewer rejected the proposal" };
+  if (review.decision === "reject") {
+    return {
+      error: [review.reason, formatProposalSemanticIssues(review.issues)].filter(Boolean).join("\n") || "semantic reviewer rejected the proposal",
+      ...(review.issues ? { issues: review.issues } : {}),
+    };
+  }
   if (review.decision === "approve") return { proposal };
   return {
     proposal: {
@@ -1871,7 +1925,7 @@ const auditedPlanProposalTool = defineTool({
     if (!reviewed.proposal) {
       return {
         content: [{ type: "text", text: t("proposal.validate.semanticReviewRejected", { reason: reviewed.error ?? "invalid semantic review result" }) }],
-        details: { error: "semantic review rejected", reason: reviewed.error },
+        details: { error: "semantic review rejected", reason: reviewed.error, ...(reviewed.issues ? { issues: reviewed.issues } : {}) },
         isError: false,
       };
     }
@@ -3592,13 +3646,15 @@ export function buildProposePrompt(goal: GoalState) {
     `1. 读相关代码/文档，理解目标、范围和真实风险。`,
     `2. 若 phase 只用于组织进度，推荐 Phase Plan（所有 phase 完成后只做 goal_check）；只有每个 phase 都有真实独立验收价值、通过会降低后续不确定性或解锁推进时，才推荐 Goal Plan（phase_check + goal_check）。`,
     `3. 两种 Plan 都要提交 goal 级 verification 与 acceptanceCriteria；Goal Plan 还必须为每个 phase 提交 acceptanceCriteria，Phase Plan 不提交 phase 完成门。`,
-    `4. acceptanceCriteria 只能包含可由 read/grep/find/ls/bash、项目工件或可观察外部状态独立复验的条件；人工体验项移入 userReviewItems。`,
-    `5. goal、每个可见 phase 和每个 task 都必须提供 description：说明为什么存在、如何服务上层目标、为什么采用当前方法以及要避免什么偏移；不要复述标题或写运行态文案。`,
-    `6. phase 是启动时确认的主干，运行中不新增；每个 phase 可带初始 task，后续只能动态新增 task。`,
-    `7. 若前文已明确边界，补充 nonGoals 与 guardrails。`,
-    `8. 提交前做一次精简质量检查并直接修正：删除不服务目标的 phase/task/验收门；核对端到端可观察结果是否有 Plan 承载，适用时的对象/状态生命周期与生产者—消费者真实调用链是否完整，失败/恢复路径是否与真实风险相称；再确认 verification/acceptanceCriteria 与这些路径一致。简单目标允许判定某项不适用；同时核对未知假设、用户决策边界、依赖与证据路径。不要输出单独自检报告，也不要新增 hard gate。`,
-    ...(isBareStart ? [`9. objective 与 description 必须由你从前文归纳，不能保留占位。`] : []),
-    `${isBareStart ? 10 : 9}. 调用 phase_plan 或 goal_plan 提交；提交后等待用户确认。用户若切换类型，按反馈改用另一个入口工具重新提交。`,
+    `4. acceptanceCriteria 只能包含未来审核器可通过 read/grep/find/ls/bash、项目工件或可观察外部状态独立取得的当前可观察状态或未来可复现结果；人工体验项移入 userReviewItems。不得把过去发生/未发生、特定 agent 或审核曾执行的动作、未导出的日志或记忆写成冻结完成门。`,
+    `5. Guardrails and non-goals constrain execution; they are not acceptanceCriteria and must not be restated as frozen completion conditions. Before submitting, audit every criterion together: remove or narrow every inadmissible historical claim, move subjective review to userReviewItems, and ensure no remaining criterion depends on a future Plan approval or named reviewer.`,
+    `6. 若语义预审拒绝，按其一次列出的全部 issues 同时修正后再重提；不要逐条试错。`,
+    `7. goal、每个可见 phase 和每个 task 都必须提供 description：说明为什么存在、如何服务上层目标、为什么采用当前方法以及要避免什么偏移；不要复述标题或写运行态文案。`,
+    `8. phase 是启动时确认的主干，运行中不新增；每个 phase 可带初始 task，后续只能动态新增 task。`,
+    `9. 若前文已明确边界，补充 nonGoals 与 guardrails。`,
+    `10. 提交前做一次精简质量检查并直接修正：删除不服务目标的 phase/task/验收门；核对端到端可观察结果是否有 Plan 承载，适用时的对象/状态生命周期与生产者—消费者真实调用链是否完整，失败/恢复路径是否与真实风险相称；再确认 verification/acceptanceCriteria 与这些路径一致。简单目标允许判定某项不适用；同时核对未知假设、用户决策边界、依赖与证据路径。不要输出单独自检报告，也不要新增 hard gate。`,
+    ...(isBareStart ? [`11. objective 与 description 必须由你从前文归纳，不能保留占位。`] : []),
+    `${isBareStart ? 12 : 11}. 调用 phase_plan 或 goal_plan 提交；提交后等待用户确认。用户若切换类型，按反馈改用另一个入口工具重新提交。`,
   ].join("\n");
 }
 
@@ -5946,7 +6002,7 @@ export function __setI18nForTest(mockI18n: I18nApiLike | undefined) {
 
 // 测试专用：注入 proposal 语义预审结果，避免单元测试调用真实模型；生产路径不设置该接缝。
 export function __setProposalSemanticReviewForTest(
-  reviewer: ((proposal: PlanProposal) => Promise<ProposalSemanticReview> | ProposalSemanticReview) | undefined,
+  reviewer: ((proposal: PlanProposal, prompt: string) => Promise<ProposalSemanticReview> | ProposalSemanticReview) | undefined,
 ) {
   proposalSemanticReviewOverrideForTest = reviewer;
 }
