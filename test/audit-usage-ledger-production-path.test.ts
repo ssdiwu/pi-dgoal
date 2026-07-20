@@ -122,7 +122,7 @@ test("goal_check keeps the pre-call active state; only plan_update writes done",
   expect(__getGoalForTest()).toBeUndefined();
 });
 
-test("successful auditor tool events persist a reusable checkpoint and usage record", async () => {
+test("successful auditor tool events persist one final reusable checkpoint and usage record", async () => {
   fakeAudit([
     { type: "tool_execution_start", toolCallId: "bash-1", toolName: "bash", args: { command: "printf checkpoint" } },
     { type: "tool_execution_end", toolCallId: "bash-1", toolName: "bash", result: { content: [] }, isError: false },
@@ -131,12 +131,17 @@ test("successful auditor tool events persist a reusable checkpoint and usage rec
       usage: { input: 12, output: 8, totalTokens: 20, cost: { input: 0.12, output: 0.08 } },
     } },
   ], 44);
+  const persisted: Array<{ type: string; data: any }> = [];
+  __setApiForTest({ appendEntry: (type: string, data: any) => persisted.push({ type, data }) });
   setGoalPlan("checkpoint-and-usage");
   const result = await phaseCheck();
   expect(result.details?.approved).toBe(true);
   expect(__getGoalForTest()?.auditCheckpoints?.phase?.records).toEqual([expect.objectContaining({
     toolName: "bash", args: { command: "printf checkpoint" }, started: true, ended: true, status: "success",
   })]);
+  // 候选健康状态与 phase check 终态各写一次；逐工具 start/end 不得追加全量 Goal。
+  expect(persisted).toHaveLength(2);
+  expect(persisted.at(-1)?.data.goal.auditCheckpoints.phase.records).toEqual([expect.objectContaining({ status: "success" })]);
   await new Promise((resolve) => setTimeout(resolve, 20));
   const records = readFileSync(join(tempDir, "audit-usage.jsonl"), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse);
   expect(records).toHaveLength(1);

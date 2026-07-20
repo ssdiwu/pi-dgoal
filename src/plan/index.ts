@@ -39,6 +39,8 @@ export interface Phase {
   /** Why this phase exists, how it advances the goal, and the chosen approach boundary. */
   description: string;
   acceptanceCriteria?: AcceptanceCriterion[];
+  /** Goal Plan only: local mutation counter for phase_check validity. */
+  revision?: number;
   /** Goal Plan only: latest independent phase_check result. */
   check?: CheckRecord;
   status: PlanStatus;

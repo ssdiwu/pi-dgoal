@@ -831,14 +831,18 @@ function bumpPlanRevision(plan: TaskPlan): TaskPlan {
   return { ...plan, revision: (plan.revision ?? 0) + 1 };
 }
 
+function phaseRevision(phase: Phase): number {
+  return phase.revision ?? 0;
+}
+
 function invalidateGoalCheck(goal: GoalState): GoalState {
   return goal.goalCheck ? { ...goal, goalCheck: undefined } : goal;
 }
 
 function invalidatePhaseAndGoalCheck(goal: GoalState, phaseId: number): GoalState {
   if (!goal.plan) return invalidateGoalCheck(goal);
-  const phases = goal.plan.phases.map((phase) => phase.id === phaseId && phase.check
-    ? { ...phase, check: undefined }
+  const phases = goal.plan.phases.map((phase) => phase.id === phaseId
+    ? { ...phase, revision: phaseRevision(phase) + 1, check: undefined }
     : phase);
   return {
     ...goal,
@@ -2578,7 +2582,7 @@ export const planUpdateTool = definePublicTool({
       }
       if (rawStatus && isDonePlanStatus(nextStatus)) {
         if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: `phase #${phase.id} tasks are not all done with evidence.` }], details: { error: "tasks not done" } };
-        if (planType === "goal" && (phase.check?.status !== "approved" || phase.check.revision !== (goal.plan.revision ?? 0))) {
+        if (planType === "goal" && (phase.check?.status !== "approved" || phase.check.revision !== phaseRevision(phase))) {
           return { content: [{ type: "text", text: `phase #${phase.id} requires a current approved phase_check before it can be marked done.` }], details: { error: "phase check required" } };
         }
       }
@@ -2674,6 +2678,12 @@ function currentGoalForCheckResult(startedGoal: GoalState, revision: number, ses
   if (goalRuntimeState.sessionGeneration !== sessionGeneration || !latest || latest.id !== startedGoal.id || !latest.plan || !isGoalMutable(latest.status)) return undefined;
   return (latest.plan.revision ?? 0) === revision ? latest : undefined;
 }
+function currentPhaseForCheckResult(startedGoal: GoalState, phaseId: number, revision: number, sessionGeneration: number): GoalState | undefined {
+  const latest = goalRuntimeState.currentGoal;
+  const phase = latest?.plan?.phases.find((item) => item.id === phaseId);
+  if (goalRuntimeState.sessionGeneration !== sessionGeneration || !latest || latest.id !== startedGoal.id || !phase || !isGoalMutable(latest.status)) return undefined;
+  return phaseRevision(phase) === revision ? latest : undefined;
+}
 
 function staleCheckResult(scope: AuditorScope, startedGoal: GoalState, revision: number, sessionGeneration: number) {
   const latest = goalRuntimeState.currentGoal;
@@ -2717,7 +2727,7 @@ export const phaseCheckTool = definePublicTool({
     const current = currentUncheckedPhase(goal);
     if (current && current.id !== phase.id) return { content: [{ type: "text", text: `phase #${current.id} must be checked before phase #${phase.id}.` }], details: { error: "phase order violation" } };
     if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: `phase #${phase.id} tasks are not all done with evidence.` }], details: { error: "tasks not done" } };
-    const auditRevision = goal.plan.revision ?? 0;
+    const auditRevision = phaseRevision(phase);
     const auditSessionGeneration = goalRuntimeState.sessionGeneration;
     let result: AuditorResult;
     try {
@@ -2728,12 +2738,12 @@ export const phaseCheckTool = definePublicTool({
           goal,
           phase,
           onUpdate: (update) => {
-            if (currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration)) emitPublicCheckUpdate(onUpdate as never, update);
+            if (currentPhaseForCheckResult(goal, phase.id, auditRevision, auditSessionGeneration)) emitPublicCheckUpdate(onUpdate as never, update);
             else onUpdate?.(update as never);
           },
         });
     } catch (error) {
-      const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+      const latest = currentPhaseForCheckResult(goal, phase.id, auditRevision, auditSessionGeneration);
       if (!latest) return staleCheckResult("phase", goal, auditRevision, auditSessionGeneration);
       const reason = formatError(error);
       const check: CheckRecord = { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision };
@@ -2744,7 +2754,7 @@ export const phaseCheckTool = definePublicTool({
       pauseOnAuditFailure(ctx, reason, "phase");
       return { content: [{ type: "text", text: `phase_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
     }
-    const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
+    const latest = currentPhaseForCheckResult(goal, phase.id, auditRevision, auditSessionGeneration);
     if (!latest) return staleCheckResult("phase", goal, auditRevision, auditSessionGeneration);
     if (result.liveness === "auditor_error" || result.aborted || result.error) {
       const reason = result.error ?? "aborted";
@@ -2893,7 +2903,7 @@ export const goalCheckTool = definePublicTool({
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
     return {
-      content: [{ type: "text", text: result.approved ? "goal_check approved. Call plan_update(target=goal,status=done) to finish and close the Plan." : `goal_check rejected:\n${report}` }],
+      content: [{ type: "text", text: result.approved ? "goal_check approved. Call plan_update(target=goal,status=done) to finish and close the Plan." : `goal_check rejected:${rejectedCount >= 3 ? `\n\n⚠ 已连续 ${rejectedCount} 次终审未通过；Plan 仍保持 active。请优先修复最新报告中的冻结条件，必要时由用户决定暂停或缩小目标。` : ""}\n${report}` }],
       details: {
         approved: result.approved,
         planType,
@@ -3403,7 +3413,7 @@ function phaseFrontierDiagnostic(goal: GoalState, phase: Phase): PlanFrontierDia
     return { reason: t("frontier.taskPlanReady"), nextAction: t("frontier.taskPlanReadyNext") };
   }
   if (resolvePlanType(goal) === "goal") {
-    const revision = goal.plan?.revision ?? 0;
+    const revision = phaseRevision(phase);
     if (phase.check?.status === "rejected" && phase.check.revision === revision) {
       return {
         reason: t("frontier.phaseCheckRejected", { phaseId: phase.id }),
@@ -3652,7 +3662,7 @@ export function buildProposePrompt(goal: GoalState) {
     `7. goal、每个可见 phase 和每个 task 都必须提供 description：说明为什么存在、如何服务上层目标、为什么采用当前方法以及要避免什么偏移；不要复述标题或写运行态文案。`,
     `8. phase 是启动时确认的主干，运行中不新增；每个 phase 可带初始 task，后续只能动态新增 task。`,
     `9. 若前文已明确边界，补充 nonGoals 与 guardrails。`,
-    `10. 提交前做一次精简质量检查并直接修正：删除不服务目标的 phase/task/验收门；核对端到端可观察结果是否有 Plan 承载，适用时的对象/状态生命周期与生产者—消费者真实调用链是否完整，失败/恢复路径是否与真实风险相称；再确认 verification/acceptanceCriteria 与这些路径一致。简单目标允许判定某项不适用；同时核对未知假设、用户决策边界、依赖与证据路径。不要输出单独自检报告，也不要新增 hard gate。`,
+    `10. 提交前做一次精简质量检查并直接修正：删除不服务目标的 phase/task/验收门；核对端到端可观察结果是否有 Plan 承载，适用时的对象/状态生命周期与生产者—消费者真实调用链是否完整，失败/恢复路径是否与真实风险相称；再确认 verification/acceptanceCriteria 与这些路径一致。若一个目标同时包含可独立交付的核心能力、样例/迁移或强化验证责任，向用户软性建议拆成独立 goal，但不得新增硬门或替用户决定。简单目标允许判定某项不适用；同时核对未知假设、用户决策边界、依赖与证据路径。不要输出单独自检报告，也不要新增 hard gate。`,
     ...(isBareStart ? [`11. objective 与 description 必须由你从前文归纳，不能保留占位。`] : []),
     `${isBareStart ? 12 : 11}. 调用 phase_plan 或 goal_plan 提交；提交后等待用户确认。用户若切换类型，按反馈改用另一个入口工具重新提交。`,
   ].join("\n");
@@ -5044,11 +5054,13 @@ async function runAuditorWithCandidates(args: {
         && (goalRuntimeState.currentGoal.plan?.revision ?? 0) === revision
         ? goalRuntimeState.currentGoal.auditCheckpoints?.[scope]
         : undefined,
+      // 逐工具 checkpoint 仅服务当前审核候选链的内存复用。每次写入完整 Goal
+      // 会使 append-only session 以工具事件频率膨胀；审核终态的后续状态写入
+      // 会原子持久化最终稳定 checkpoint。中途退出允许重跑本次审核。
       onCheckpoint: (checkpoint) => {
         const goal = goalRuntimeState.currentGoal;
         if (goalRuntimeState.sessionGeneration !== sessionGeneration || !goal || goal.id !== goalId || (goal.plan?.revision ?? 0) !== revision) return;
         goalRuntimeState.currentGoal = setAuditCheckpoint(goal, scope, checkpoint);
-        persistGoal(goalRuntimeState.currentGoal);
       },
       attempt,
     }),
@@ -6374,13 +6386,6 @@ export function applyPlanMutation(
 const PLAN_WIDGET_KEY = "dgoal-plan";
 const PLAN_OVERLAY_MAX_LINES = 10;
 
-// phase 状态符号（unicode 自带视觉，无需 theme.fg）
-const PHASE_ICON: Record<PlanStatus, string> = {
-  pending: "○",
-  in_progress: "◐",
-  done: "✓",
-  blocked: "⚠",
-};
 
 // 渲染选项：持续显示展开态跟随 Pi 的 app.tools.expand（默认 Ctrl+O）。
 interface RenderPlanOptions {
@@ -6396,7 +6401,7 @@ function shouldExpandTasksInPersistentOverlay(status: Phase["status"]): boolean 
 }
 
 function formatTaskDisplay(task: Task, prefix: string, subjectMax?: number, activitySuffix = ""): string {
-  const icon = PHASE_ICON[task.status] ?? "○";
+  const icon = STATUS_GLYPH[task.status] ?? "○";
   const subject = subjectMax === undefined ? task.subject : truncateLine(task.subject, subjectMax);
   const rendered = isDonePlanStatus(task.status) ? ansiStrikethrough(subject) : subject;
   const active = task.status === "in_progress" ? activitySuffix : "";
@@ -6412,7 +6417,7 @@ function formatActivitySuffix(frame = Math.floor(Date.now() / 1000)): string {
 }
 
 function formatPhaseDisplay(phase: Phase, prefix: string, subjectMax?: number): string {
-  const icon = PHASE_ICON[phase.status] ?? "○";
+  const icon = STATUS_GLYPH[phase.status] ?? "○";
   const subject = subjectMax === undefined ? phase.subject : truncateLine(phase.subject, subjectMax);
   const rendered = isDonePlanStatus(phase.status) ? ansiStrikethrough(subject) : subject;
   const blocked = phase.status === "blocked" && phase.blockedReason

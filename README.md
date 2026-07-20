@@ -74,7 +74,7 @@ goal_plan → [phase_check → plan_update(phase, done)] × N
 → goal_check → plan_update(goal, done)
 ```
 
-A `check` records an audit result only; it never marks a phase or goal done. Only `plan_update` changes completion state and UI. Any plan mutation increments its revision, invalidating stale approvals; if the revision changes while an audit is running, that result is discarded and must be rerun.
+A `check` records an audit result only; it never marks a phase or goal done. Only `plan_update` changes completion state and UI. Plan writes invalidate the final `goal_check`; task/description changes invalidate only their own phase approval. If the relevant revision changes while an audit is running, that result is discarded and must be rerun.
 
 ### Commands
 

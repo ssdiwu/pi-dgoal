@@ -46,3 +46,5 @@
 | [0040](./0040-工具结果人类可读投影.md) | 工具结果人类可读投影 | 公开工具以摘要与文字展开投影展示，details 不直出 |
 | [0041](./0041-TaskPlan末任务自动收口.md) | Task Plan 末任务自动收口 | 最后一个带证据 task 的完成更新原子关闭 Task Plan；进行中仅用动态省略点投影 |
 | [0042](./0042-三层Description必填并移除contextSummary.md) | 三层 Description 必填并移除 contextSummary | goal/可见 phase/task 必须说明理由与方法边界；删除背景摘要字段，状态 Modal 改为列表/详情两层 |
+| [0043](./0043-Phase审核使用局部修订号.md) | Phase 审核使用局部修订号 | Goal Plan 的 phase approval 按所属 phase 的局部修订失效，goal_check 仍匹配全局 Plan revision |
+| [0044](./0044-审核检查点只持久化稳定状态.md) | 审核检查点只持久化稳定状态 | 不再为逐工具进度追加完整 Goal 快照；终态和稳定 checkpoint 保持可恢复 |

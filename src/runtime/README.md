@@ -10,7 +10,7 @@
 
 Task Plan 可直接建立和整份替换 objective、goal description 与全部 task，隐藏内部单 phase。Phase/Goal Plan 复用显式启动闸门；三层 Description 必填，goal description 随确认冻结，phase/task 可显式修订；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。Description 进入主 agent 执行上下文，但不是独立审核完成门。新 Plan 的 phase 与 plan-global task 使用各自从 `1` 开始的 ID namespace，`nextId` 仅分配 task；v1 持久态不迁移。
 
-`phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。用户命令与技术熔断仍可暂停/恢复；Plan 写操作使旧审核记录失效。
+`phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。全局 Plan revision 保护 goal check；task/phase 的受审事实变化只递增所属 phase revision 并使该 phase check 失效。用户命令与技术熔断仍可暂停/恢复。
 
 ## Proposal 语义预审
 

@@ -397,7 +397,7 @@ describe("Three-Plan public tool surface", () => {
     } as never);
     __setPhaseCheckOverrideForTest(async () => ({ approved: true, output: "<APPROVED>", liveness: "approved" }));
     await execute(phaseCheckTool, { phaseId: 1 });
-    expect(__getGoalForTest()?.plan?.phases[0].check?.revision).toBe(7);
+    expect(__getGoalForTest()?.plan?.phases[0].check?.revision).toBe(0);
     await execute(planCreateTool, { phaseId: 1, subject: "补回归" });
     expect(__getGoalForTest()?.plan?.revision).toBe(8);
     expect(__getGoalForTest()?.plan?.phases[0].check).toBeUndefined();
@@ -408,7 +408,7 @@ describe("Three-Plan public tool surface", () => {
     expect(phaseDone.details.error).toBe("phase check required");
   });
 
-  test("concurrent Plan revision changes discard stale phase_check and goal_check results", async () => {
+  test("unrelated Plan revision changes preserve an in-flight phase_check while goal_check stays global", async () => {
     __setGoalForTest({
       id: "concurrent-phase", objective: "交付", planType: "goal", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
       verification: "tests", acceptanceCriteria: [{ criterion: "passes", evidence: "bun test" }],
@@ -423,8 +423,8 @@ describe("Three-Plan public tool surface", () => {
       return { approved: true, output: "<APPROVED>", liveness: "approved" };
     });
     const phaseResult = await execute(phaseCheckTool, { phaseId: 1 });
-    expect(phaseResult.details).toMatchObject({ stale: true, checkedRevision: 7, currentRevision: 8 });
-    expect(__getGoalForTest()?.plan?.phases[0].check).toBeUndefined();
+    expect(phaseResult.details.approved).toBe(true);
+    expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "approved", revision: 0 });
 
     __setGoalForTest({
       id: "concurrent-goal", objective: "交付", planType: "phase", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
@@ -456,7 +456,7 @@ describe("Three-Plan public tool surface", () => {
     const result = await execute(phaseCheckTool, { phaseId: 1 });
     expect(result.details.approved).toBe(false);
     expect(__getGoalForTest()?.plan?.phases[0].status).toBe("pending");
-    expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "rejected", revision: 4 });
+    expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "rejected", revision: 0 });
   });
 
   test("audit errors are recorded before the Plan pauses", async () => {
@@ -472,7 +472,7 @@ describe("Three-Plan public tool surface", () => {
     const result = await execute(phaseCheckTool, { phaseId: 1 });
     expect(result.isError).toBe(true);
     expect(__getGoalForTest()?.status).toBe("paused");
-    expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "audit_error", report: "provider down", revision: 2 });
+    expect(__getGoalForTest()?.plan?.phases[0].check).toMatchObject({ status: "audit_error", report: "provider down", revision: 0 });
     expect(__getRuntimeStateForTest().currentCheckSnapshot).toBeUndefined();
   });
 

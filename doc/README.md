@@ -31,6 +31,7 @@
 20. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
 21. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
 22. `20-能力参考/30-CriticalThinking-Wayfinder与SpecSelfReview参考.md` — 从路由、探索、减法与建检四维判断，并记录已落地的 Task Plan frontier guidance 与 Plan/task 软性自检提示
+23. `20-能力参考/31-Plannotator计划审阅扩展参考.md` — 浏览器计划审阅、批注与 Diff 的机制核对；明确只作为 dgoal 可选审阅 UI 参考
 
 历史材料：
 
