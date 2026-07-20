@@ -28,7 +28,9 @@ Phase Plan adds a final independent review for the whole goal. Goal Plan adds a 
 
 Plan type determines progress structure and independent-audit density; [`dteam`](https://github.com/ssdiwu/pi-dteam) is an optional model-tier routing and fresh-context execution layer. It can be used on its own or inside a Task, Phase, or Goal Plan. For non-trivial repository work that still needs facts, the main agent can first dispatch bounded, complementary, read-only T3 probes, then synthesize their sourced reports and decide whether to close, implement, verify, or escalate.
 
-dteam does not own or update Plan state, resolve user-only decisions, replace explicit `/dgoal` authorization and confirmation, run `phase_check` / `goal_check`, or perform the final `plan_update` closure. The Plan remains the progress and audit authority; dteam only executes the current bounded slice.
+### Task DAG execution frontier
+
+The current phase also exposes a derived Task DAG read model: ready tasks, waiting dependencies, transitive root blockers, and tasks immediately unlocked by completion of a ready task. The ready set is the current legal execution or delegation boundary; waiting and blocked tasks cannot advance. Ready means only that declared dependencies are satisfied, not that tasks are safe to run concurrently. The main agent still chooses the execution route, checks scope conflicts, verifies results, and updates Plan state.
 
 ## Install
 
@@ -96,7 +98,7 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 | `phase_plan` | Submit an explicitly activated Phase Plan with required goal/phase descriptions and a frozen goal contract |
 | `goal_plan` | Submit an explicitly activated Goal Plan with required descriptions and frozen phase/goal contracts |
 | `plan_create` | Add a task with a required description; never add a phase |
-| `plan_read` | Read a plan, goal, phase, or task; pure read: aggregate/item output includes the current frontier reason and next legal action, plus only the latest applicable check/feedback/completion claim from existing evidence; no raw Plan payload (Task Plan hides its phase) |
+| `plan_read` | Read a plan, goal, phase, or task; pure read: aggregate/item output includes the current frontier reason, next legal action, and current-phase Task DAG projection (ready/waiting/root blockers/immediate unlocks), plus only the latest applicable check/feedback/completion claim from existing evidence; no raw Plan payload (Task Plan hides its phase) |
 | `plan_update` | Sole agent-facing writer for task/phase/goal progress, phase/task description revisions, completion, and agent pause |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
@@ -133,7 +135,7 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 - **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
 - **`Ctrl+O`:** expands tasks and audit activity under Phase/Goal Plan phases; the ten-second completion snapshot shows every phase and task.
-- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description, current-frontier reason/next legal action, latest applicable audit projection, and selectable phase/tasks; Enter opens item details (description, status, dependencies, evidence, blocked reason, scoped frontier, and latest phase check/feedback), and Esc returns without losing the selection. Only the latest feedback/completion claim is exposed; the internal repair index stays hidden. Task Plan never exposes its hidden phase.
+- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description, current-frontier reason/next legal action, current-phase Task DAG projection, latest applicable audit projection, and selectable phase/tasks; Enter opens item details (description, status, dependencies, evidence, blocked reason, scoped frontier/graph state, and latest phase check/feedback), and Esc returns without losing the selection. Only the latest feedback/completion claim is exposed; the internal repair index stays hidden. Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 
 State and persistence never depend on successful rendering. Widget, modal, status, or notification errors may degrade presentation but cannot block completion or recovery.

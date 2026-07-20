@@ -12,6 +12,7 @@ import {
   computePlanStatusSelection,
   computeScrollOffset,
   deriveLatestAuditObservation,
+  deriveCurrentTaskGraph,
   derivePlanFrontierDiagnostic,
   getPlanStatusTargets,
   type GoalState,
@@ -262,6 +263,78 @@ describe("共享 frontier 诊断", () => {
     const diagnostic = derivePlanFrontierDiagnostic(g);
     expect(diagnostic?.reason).toContain("task #1 被阻塞：缺少授权");
     expect(diagnostic?.nextAction).toContain("task #1");
+  });
+
+  test("Task DAG 派生 ready、waiting、根阻塞与立即解锁关系", () => {
+    const g = goal([p(1, "实现", [
+      t(1, "等待凭据", "blocked", { blockedReason: "缺 token" }),
+      t(2, "调用接口", "pending", { blockedBy: [1] }),
+      t(3, "核对文档", "in_progress"),
+      t(4, "准备用例"),
+      t(5, "运行用例", "pending", { blockedBy: [4] }),
+      t(6, "已完成", "done", { evidence: "bun test" }),
+      t(7, "汇总结果", "pending", { blockedBy: [2] }),
+    ], "in_progress")], { planType: "task" });
+
+    const graph = deriveCurrentTaskGraph(g)!;
+    expect(graph.ready.map((node) => node.task.id)).toEqual([3, 4]);
+    expect(graph.waiting.map((node) => node.task.id)).toEqual([2, 5, 7]);
+    expect(graph.blocked.map((node) => node.task.id)).toEqual([1]);
+    expect(graph.rootBlockers.map((task) => task.id)).toEqual([1]);
+    expect(graph.nodes.find((node) => node.task.id === 1)?.rootBlockers.map((task) => task.id)).toEqual([1]);
+    expect(graph.nodes.find((node) => node.task.id === 2)?.rootBlockers.map((task) => task.id)).toEqual([1]);
+    expect(graph.nodes.find((node) => node.task.id === 7)?.rootBlockers.map((task) => task.id)).toEqual([1]);
+    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks).toEqual([]);
+    expect(graph.nodes.find((node) => node.task.id === 2)?.unblocks).toEqual([]);
+    expect(graph.nodes.find((node) => node.task.id === 4)?.unblocks.map((task) => task.id)).toEqual([5]);
+
+    const list = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
+    expect(list).toContain("Task DAG · 当前 phase #1");
+    expect(list).toContain("可推进：#3(in_progress), #4(pending)");
+    expect(list).toContain("等待：#2 ← #1(blocked); #5 ← #4(pending); #7 ← #2(pending)");
+    expect(list).toContain("根阻塞：#1（缺 token）");
+    expect(list).toContain("完成可解锁：#4 → #5");
+    expect(list).not.toContain("#1 → #2");
+    expect(list).not.toContain("#2 → #7");
+
+    const waitingDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 2 }).join("\n");
+    expect(waitingDetail).toContain("图状态：等待");
+    expect(waitingDetail).toContain("未完成直接依赖：#1(blocked)");
+    expect(waitingDetail).toContain("传递根阻塞：#1（缺 token）");
+
+    const blockedDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 1 }).join("\n");
+    expect(blockedDetail).toContain("传递根阻塞：#1（缺 token）");
+
+    const indirectDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 7 }).join("\n");
+    expect(indirectDetail).toContain("未完成直接依赖：#2(pending)");
+    expect(indirectDetail).toContain("传递根阻塞：#1（缺 token）");
+  });
+
+  test("phase 级 blocked 会清空 ready 与立即解锁，并成为图根阻塞", () => {
+    const g = goal([p(1, "实现", [
+      t(1, "前置", "in_progress"),
+      t(2, "后续", "pending", { blockedBy: [1] }),
+    ], "blocked", { blockedReason: "等待用户授权" })], { planType: "phase" });
+    const graph = deriveCurrentTaskGraph(g)!;
+    expect(graph.ready).toEqual([]);
+    expect(graph.nodes.map((node) => node.state)).toEqual(["phase_blocked", "phase_blocked"]);
+    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks).toEqual([]);
+
+    const list = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
+    expect(list).toContain("可推进：无");
+    expect(list).toContain("根阻塞：phase #1（等待用户授权）");
+    expect(list).not.toContain("完成可解锁：");
+    expect(buildPlanStatusDetailLines(g, { kind: "task", id: 1 }).join("\n")).toContain("图状态：phase 阻塞");
+  });
+
+  test("重复 blockedBy 不会重复计数或漏掉立即解锁", () => {
+    const g = goal([p(1, "实现", [
+      t(1, "前置", "in_progress"),
+      t(2, "后续", "pending", { blockedBy: [1, 1] }),
+    ], "in_progress")], { planType: "task" });
+    const graph = deriveCurrentTaskGraph(g)!;
+    expect(graph.nodes.find((node) => node.task.id === 2)?.unresolvedDependencies.map((task) => task.id)).toEqual([1]);
+    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks.map((task) => task.id)).toEqual([2]);
   });
 
   test("选中 task 只解释其未完成依赖，不枚举未来 phase", () => {

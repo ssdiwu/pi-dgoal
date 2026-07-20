@@ -28,7 +28,9 @@ Phase Plan 为整个目标增加一次最终独立审核；Goal Plan 则在**每
 
 Plan 类型决定进度结构与独立审核密度；[`dteam`](https://github.com/ssdiwu/pi-dteam) 是可选的模型分级路由与 fresh 上下文执行层，可独立使用，也可嵌入 Task、Phase 或 Goal Plan。非极小仓库任务仍需事实时，主代理可以先派有界、互补、只读的 T3 探测，再综合带来源的报告，决定收口、实施、复验或升级。
 
-dteam 不拥有或更新 Plan 状态，不处理只能由用户决定的问题，不替代显式 `/dgoal` 授权与确认、`phase_check` / `goal_check`，也不执行最终的 `plan_update` 收口。Plan 仍是进度与审核权威；dteam 只执行当前有界切片。
+### Task DAG 执行 frontier
+
+当前 phase 还会暴露纯派生的 Task DAG 读模型：ready task、waiting 依赖、传递根阻塞，以及 ready task 完成后会立即解锁的 task。ready 集合是当前合法执行或委派边界；waiting 与 blocked task 不能推进。ready 只表示已声明依赖满足，不表示 task 之间可安全并发。主代理仍负责选择执行方式、核对范围冲突、验证结果并更新 Plan 状态。
 
 ## 安装
 
@@ -96,7 +98,7 @@ goal_plan → [phase_check → plan_update(phase, done)] × N
 | `phase_plan` | 显式启动 Phase Plan；提交必填 goal/phase description，冻结 goal 验收契约并进入确认 UI |
 | `goal_plan` | 显式启动 Goal Plan；提交必填三层 description，冻结 phase + goal 验收契约并进入确认 UI |
 | `plan_create` | 新增带必填 description 的 task；不能新增 phase |
-| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：聚合/单项结果会解释当前 frontier 的直接原因与下一合法动作，并只组合现有证据中最新的适用 check、反馈与完成声明；不回传原始 Plan payload（Task Plan 隐藏 phase） |
+| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：聚合/单项结果会解释当前 frontier 的直接原因、下一合法动作与当前 phase 的 Task DAG 投影（ready/waiting/根阻塞/立即解锁），并只组合现有证据中最新的适用 check、反馈与完成声明；不回传原始 Plan payload（Task Plan 隐藏 phase） |
 | `plan_update` | 唯一 agent 写工具：task / phase / goal 进度、phase/task description 修订、完成与主动暂停 |
 | `phase_check` | Goal Plan 的 phase 独立审核；只写 CheckRecord |
 | `goal_check` | Phase/Goal Plan 的整体独立审核；只写 CheckRecord |
@@ -133,7 +135,7 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 - **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 按当前终端显示宽度裁切目标标题。
 - **`Ctrl+O`**：展开 Phase/Goal Plan 的 task 与建检活性；完成后的十秒快照展示全部 phase/task。
-- **`/dgoal s` Modal**：两层浏览。列表页显示完整 goal description、当前 frontier 原因/下一合法动作、最新适用审核投影与可选择的 phase/task；Enter 打开所选项的完整 description、status、dependency、evidence、blocked reason、局部 frontier 及最新 phase check/反馈，Esc 返回且保留选择。只展示最新反馈/完成声明，内部修复索引不展开；Task Plan 不显示内部隐藏 phase。
+- **`/dgoal s` Modal**：两层浏览。列表页显示完整 goal description、当前 frontier 原因/下一合法动作、当前 phase 的 Task DAG 投影、最新适用审核投影与可选择的 phase/task；Enter 打开所选项的完整 description、status、dependency、evidence、blocked reason、局部 frontier/graph state 及最新 phase check/反馈，Esc 返回且保留选择。只展示最新反馈/完成声明，内部修复索引不展开；Task Plan 不显示内部隐藏 phase。
 - **状态栏**：显示 starting / active / paused / done。
 
 状态机与持久化不依赖 TUI 渲染成功。`setWidget`、Modal、status 或 notify 抛错只能降级展示，不能阻断完成或恢复。

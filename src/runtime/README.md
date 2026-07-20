@@ -12,6 +12,10 @@ Task Plan 可直接建立和整份替换 objective、goal description 与全部 
 
 `phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。全局 Plan revision 保护 goal check；task/phase 的受审事实变化只递增所属 phase revision 并使该 phase check 失效。用户命令与技术熔断仍可暂停/恢复。
 
+## Task DAG 读模型
+
+runtime 对当前未完成 phase 调用纯函数 `deriveTaskGraph`，从 phase/task status 与去重后的 `blockedBy` 派生 ready、waiting、phase/task 传递根阻塞和 ready task 完成后的立即解锁关系；phase 级 blocked 会使 ready 集合为空。该结果进入 `plan_read`、`/dgoal s` 与每轮 `<dgoal_task_graph>` prompt block，但不进入 `GoalState` 或持久化。ready 是主 agent 当前合法执行或委派边界，只表达依赖已满足，不保证 task 之间可安全并发；主 agent 仍负责选择执行方式、核对范围冲突、验证结果并经 `plan_update` 推进。
+
 ## Proposal 语义预审
 
 只用于 Phase/Goal Plan。主 agent 在提交前先做固定的精简质量检查：核对端到端结果、适用时的对象/状态生命周期与真实调用链、失败路径，以及 Plan 结构和冻结验收契约是否一致；简单目标允许判定某项不适用，检查结果直接修正 proposal，不生成报告、模型调用、状态或 hard gate。确定性代码随后校验结构、状态、Plan 类型与用户授权；当前会话模型负责独立验收 / 用户复核 / 人工 blocker 语义分流，并拒绝依赖未来审核器不可取得证据的冻结条件，例如无可导出不可变审计记录支撑的历史否定事实。此类条件不得迁移为用户复核，而应收缩为可观察、可独立复验的主张后重新提交。提案作者提示在提交前采用同一证据边界；拒绝结果可携带逐条件 `issues`，一次列出全部发现的不可准入条件及改写方向。预审默认 60 秒 idle timeout，可配置 `proposalSemanticReviewIdleTimeoutSeconds`；终态为 approved / rewritten / rejected / technical_error。
@@ -24,4 +28,4 @@ phase/goal check 复用 `src/audit/` 与 `src/isolated-pi/`。业务 rejection �
 
 ## 持久化与 UI 边界
 
-新状态写入 `dgoal-plan-v2`；`dgoal-plan-v1` 与更早 entry 不迁移，`contextSummary` 不再属于状态或 proposal。恢复时按 Plan 类型严格复验 goal/plan 的 Description、验收契约、状态与依赖，以及 pending proposal 的完整结构；任一脏字段使整条 entry 失效。`plan_read` 与 `/dgoal s` 共享纯派生的当前 frontier 诊断，只说明直接原因和下一合法动作；二者还会组合现有 `CheckRecord`、最新 feedback、task evidence 与最新完成声明，但不展示内部历史索引，也不新增持久字段。`/dgoal s` 使用列表/详情两层 Modal，返回保留选择；持续浮层不显示 Description 或诊断。持久化必须先于 UI 更新，`setWidget` / status / notify / Modal 异常不能阻断状态机。
+新状态写入 `dgoal-plan-v2`；`dgoal-plan-v1` 与更早 entry 不迁移，`contextSummary` 不再属于状态或 proposal。恢复时按 Plan 类型严格复验 goal/plan 的 Description、验收契约、状态与依赖，以及 pending proposal 的完整结构；任一脏字段使整条 entry 失效。`plan_read` 与 `/dgoal s` 共享纯派生的当前 frontier 诊断与 Task DAG 读模型：共同展示直接原因、下一合法动作，以及当前 phase 的 ready/waiting、根阻塞与立即解锁关系；二者还会组合现有 `CheckRecord`、最新 feedback、task evidence 与最新完成声明。所有诊断均不展示内部历史索引，也不新增持久字段。`/dgoal s` 使用列表/详情两层 Modal，返回保留选择；持续浮层不显示 Description 或诊断。持久化必须先于 UI 更新，`setWidget` / status / notify / Modal 异常不能阻断状态机。

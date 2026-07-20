@@ -57,11 +57,11 @@ export interface TaskPlan {
 }
 
 export function countDoneTasks(phase: Phase): number {
-  return phase.tasks.filter((task) => isDonePlanStatus(task.status)).length;
+  return (Array.isArray(phase.tasks) ? phase.tasks : []).filter((task) => isDonePlanStatus(task.status)).length;
 }
 
 export function flattenTasks(plan: TaskPlan | undefined): Task[] {
-  return plan?.phases.flatMap((phase) => phase.tasks) ?? [];
+  return plan?.phases.flatMap((phase) => Array.isArray(phase.tasks) ? phase.tasks : []) ?? [];
 }
 
 export function findPhaseByTask(plan: TaskPlan | undefined, taskId: number): number {
@@ -91,6 +91,94 @@ export function detectPlanCycle(allTasks: readonly Task[], taskId: number, newBl
     return false;
   };
   return [...edges.keys()].some(hasCycleFrom);
+}
+export type TaskGraphNodeState = "ready" | "waiting" | "blocked" | "phase_blocked" | "done";
+
+export interface TaskGraphNodeView {
+  task: Task;
+  state: TaskGraphNodeState;
+  unresolvedDependencies: Task[];
+  rootBlockers: Task[];
+  /** Tasks that would become ready if this task alone moved to done now. */
+  unblocks: Task[];
+}
+
+export interface TaskGraphView {
+  phaseId: number;
+  phaseBlocked: boolean;
+  phaseBlockedReason?: string;
+  nodes: TaskGraphNodeView[];
+  ready: TaskGraphNodeView[];
+  waiting: TaskGraphNodeView[];
+  blocked: TaskGraphNodeView[];
+  rootBlockers: Task[];
+}
+
+/**
+ * Derive the executable graph view for one existing phase from Task.blockedBy.
+ * This is a read model only: no graph state is persisted and no task is scheduled.
+ */
+export function deriveTaskGraph(plan: TaskPlan | undefined, phaseId: number): TaskGraphView | undefined {
+  const phase = plan?.phases.find((item) => item.id === phaseId);
+  if (!phase) return undefined;
+  const phaseTasks = Array.isArray(phase.tasks) ? phase.tasks : [];
+  const allTasks = flattenTasks(plan);
+  const phaseBlocked = phase.status === "blocked";
+  const byId = new Map(allTasks.map((task) => [task.id, task]));
+  const unresolvedFor = (task: Task): Task[] => [...new Set(task.blockedBy ?? [])]
+    .map((id) => byId.get(id))
+    .filter((dependency): dependency is Task => Boolean(dependency && !isDonePlanStatus(dependency.status)));
+
+  const rootBlockersFor = (task: Task): Task[] => {
+    const roots = new Map<number, Task>();
+    if (task.status === "blocked") roots.set(task.id, task);
+    const visited = new Set<number>();
+    const visit = (candidate: Task) => {
+      if (visited.has(candidate.id)) return;
+      visited.add(candidate.id);
+      if (candidate.status === "blocked") {
+        roots.set(candidate.id, candidate);
+        return;
+      }
+      for (const dependency of unresolvedFor(candidate)) visit(dependency);
+    };
+    for (const dependency of unresolvedFor(task)) visit(dependency);
+    return [...roots.values()];
+  };
+
+  const nodes: TaskGraphNodeView[] = phaseTasks.map((task) => {
+    const unresolvedDependencies = unresolvedFor(task);
+    const state: TaskGraphNodeState = isDonePlanStatus(task.status)
+      ? "done"
+      : phaseBlocked
+        ? "phase_blocked"
+        : task.status === "blocked"
+          ? "blocked"
+          : unresolvedDependencies.length
+            ? "waiting"
+            : "ready";
+    const unblocks = state === "ready" ? phaseTasks.filter((candidate) => {
+      if (candidate.id === task.id || isDonePlanStatus(candidate.status) || candidate.status === "blocked") return false;
+      const unresolved = unresolvedFor(candidate);
+      return unresolved.length === 1 && unresolved[0]?.id === task.id;
+    }) : [];
+    return { task, state, unresolvedDependencies, rootBlockers: rootBlockersFor(task), unblocks };
+  });
+  const rootBlockers = new Map<number, Task>();
+  for (const node of nodes) {
+    if (node.task.status === "blocked") rootBlockers.set(node.task.id, node.task);
+    for (const blocker of node.rootBlockers) rootBlockers.set(blocker.id, blocker);
+  }
+  return {
+    phaseId,
+    phaseBlocked,
+    ...(phaseBlocked && phase.blockedReason?.trim() ? { phaseBlockedReason: phase.blockedReason.trim() } : {}),
+    nodes,
+    ready: nodes.filter((node) => node.state === "ready"),
+    waiting: nodes.filter((node) => node.state === "waiting"),
+    blocked: nodes.filter((node) => node.state === "blocked" || node.state === "phase_blocked"),
+    rootBlockers: [...rootBlockers.values()],
+  };
 }
 
 export function recomputePhaseStatus(phase: Phase): PlanStatus {

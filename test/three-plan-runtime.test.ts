@@ -329,6 +329,8 @@ describe("Three-Plan public tool surface", () => {
     expect(read.content[0].text).toContain("├─ task #2 · ○ B");
     expect(read.content[0].text).toContain("当前 frontier：task #1 已就绪但尚未开始");
     expect(read.content[0].text).toContain("下一合法动作：调用 plan_update 将 task #1 设为 in_progress");
+    expect(read.content[0].text).toContain("Task DAG · 当前 phase #1");
+    expect(read.content[0].text).toContain("可推进：#1(pending), #2(pending)");
     expect(read.content[0].text).not.toContain('"tasks"');
     expect(read.details).toMatchObject({ target: "plan", planType: "task", readOnly: true });
 

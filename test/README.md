@@ -17,12 +17,12 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 
 | 文件 | 验证内容 |
 |---|---|
-| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；三层 Description 必填/冻结/显式修订；Task Plan 隐藏 phase/整份替换及最后 task 自动收口；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
+| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；三层 Description 必填/冻结/显式修订；Task Plan 隐藏 phase/整份替换及最后 task 自动收口；`plan_read` Task DAG 投影；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
 | `activation-boundary.test.ts` | Task Plan 默认 guidance、Phase/Goal Plan 显式激活边界、自然语言显式授权反例、入口 schema 不再暴露 implicit / runtime budget |
 | `task-plan-data-model.test.ts` | Description 新契约、Plan 数据与 `dgoal-plan-v2` 持久化往返、v1/旧 entry 隔离、check feedback helper |
-| `state-machine-and-prompt.test.ts` | 三档 Plan system prompt、Plan context 注入、软遗忘、暂停/恢复 helper |
+| `state-machine-and-prompt.test.ts` | 三档 Plan system prompt、Plan context 与 `<dgoal_task_graph>` 注入、通用 ready 执行/委派边界、软遗忘、暂停/恢复 helper |
 | `plan-overlay-render.test.ts` | 常驻浮层按终端显示宽度裁切 heading、phase/task 展开、reload、完成闪现与 UI 容错 |
-| `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | `/dgoal s` 两层 Modal 的逻辑项选择、列表/详情导航、description/运行字段投影、共享 frontier 原因/下一动作、仅最新审核反馈/完成声明、返回保位、换行、滚动、缓存和组件契约 |
+| `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | `/dgoal s` 两层 Modal 的逻辑项选择、列表/详情导航、description/运行字段投影、共享 frontier 原因/下一动作、Task DAG ready/waiting/传递根阻塞/立即解锁、仅最新审核反馈/完成声明、返回保位、换行、滚动、缓存和组件契约 |
 | `startup-gate.test.ts` | Phase/Goal proposal 结构校验、精简端到端/生命周期/契约一致性 guidance、语义预审、Plan 类型切换反馈、确认 UI 与技术/语义失败分流 |
 | `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令路由、裸命令承接、启动中断与投递去重 |
 

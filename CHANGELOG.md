@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Task DAG 可解释读模型**：当前未完成 phase 现在从既有 `blockedBy` 与 task status 纯派生 ready、waiting、传递根阻塞和立即解锁关系，并同步投影到 `plan_read`、`/dgoal s` 与主 agent prompt；不新增持久字段或调度状态。ready 只声明主 agent 当前合法执行或委派的 task，不绑定具体执行扩展，也不代替并发冲突判断；结果经主 agent 核验后仍由 `plan_update` 写 Plan。
+
 ## [0.7.9] - 2026-07-20
 
 ### Changed

@@ -5,6 +5,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildGoalBoundaryBlock,
   buildPlanContextBlock,
+  buildTaskGraphContextBlock,
   buildSystemPrompt,
   buildCheckFeedbackBlock,
   shouldAbortCurrentTurnOnClear,
@@ -70,6 +71,38 @@ describe("Three-Plan prompt", () => {
     expect(text).toContain("<dgoal_description>\n采用最小修复，不重写模块。\n</dgoal_description>");
     expect(text).not.toContain("contextSummary");
     expect(text).not.toContain("dgoal_context");
+  });
+
+  test("system prompt 注入当前 Task DAG，并声明通用 ready 执行边界", () => {
+    const phase = p(1, "实现", [
+      t(1, "准备", "blocked", { blockedReason: "缺 <token>" }),
+      t(2, "执行", "pending", { blockedBy: [1] }),
+      t(3, "核对", "in_progress"),
+      t(4, "准备测试"),
+      t(5, "运行测试", "pending", { blockedBy: [4] }),
+    ], "in_progress");
+    const g = goal({ planType: "task", plan: { phases: [phase], nextId: 6, revision: 2 } });
+    const block = buildTaskGraphContextBlock(g);
+    expect(block).toContain('<dgoal_task_graph phaseId="1">');
+    expect(block).toContain("ready: #3(in_progress), #4(pending)");
+    expect(block).toContain("waiting: #2 ← #1(blocked); #5 ← #4(pending)");
+    expect(block).toContain("root_blockers: #1（缺 &lt;token&gt;）");
+    expect(block).toContain("unblocks: #4 → #5");
+
+    const text = buildSystemPrompt(g);
+    expect(text).toContain(block);
+    expect(text).toContain("<dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界");
+    expect(text).toContain("ready 只表示依赖已满足，不代表 task 之间可安全并发");
+    expect(text).toContain("Plan 状态只由主 agent 写入");
+    expect(text).not.toContain("dteam");
+  });
+
+  test("phase 级 blocked 时 prompt 不暴露 ready task", () => {
+    const phase = p(1, "实现", [t(1, "待执行")], "blocked");
+    phase.blockedReason = "等待用户授权";
+    const block = buildTaskGraphContextBlock(goal({ planType: "phase", plan: { phases: [phase], nextId: 2 } }));
+    expect(block).toContain("ready: none");
+    expect(block).toContain("root_blockers: phase #1（等待用户授权）");
   });
 });
 

@@ -10,6 +10,7 @@ import { streamSimple } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
   countDoneTasks,
+  deriveTaskGraph,
   detectPlanCycle,
   findPhaseByTask,
   flattenTasks,
@@ -21,6 +22,8 @@ import {
   type PlanStatus,
   type PlanType,
   type Task,
+  type TaskGraphNodeView,
+  type TaskGraphView,
   type TaskPlan,
 } from "../plan/index.ts";
 import {
@@ -83,7 +86,7 @@ export interface VerificationBundle {
 }
 export type FinalAuditMode = "diagnostic" | "narrow_confirmation";
 
-export { countDoneTasks, detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
+export { countDoneTasks, deriveTaskGraph, detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
 export { computeScrollOffset } from "../tui/helpers.ts";
 // Keep observable event parsing and abort binding tied to the isolated child that actually uses them.
 export {
@@ -431,6 +434,31 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.latestCheck": "最新建检：{value}",
       "tool.plan.latestFeedback": "最新反馈：{value}",
       "tool.plan.latestClaim": "最新完成声明：{value}",
+      "graph.heading": "Task DAG · 当前 phase #{phaseId}",
+      "graph.ready": "可推进：{tasks}",
+      "graph.waiting": "等待：{tasks}",
+      "graph.rootBlockers": "根阻塞：{tasks}",
+      "graph.unblocks": "完成可解锁：{edges}",
+      "graph.taskState": "图状态：{state}",
+      "graph.taskDependencies": "未完成直接依赖：{tasks}",
+      "graph.taskRootBlockers": "传递根阻塞：{tasks}",
+      "graph.taskUnblocks": "完成后直接解锁：{tasks}",
+      "graph.none": "无",
+      "graph.state.ready": "可推进",
+      "graph.state.waiting": "等待",
+      "graph.state.blocked": "阻塞",
+      "graph.state.done": "完成",
+      "graph.state.phase_blocked": "phase 阻塞",
+      "graph.blockedReason": "#{id}（{reason}）",
+      "graph.phaseBlockedReason": "phase #{phaseId}（{reason}）",
+      "graph.waitingItem": "#{id} ← {dependencies}",
+      "graph.edge": "#{from} → {targets}",
+      "graph.taskRef": "#{id}({status})",
+      "graph.contextReady": "ready: {tasks}",
+      "graph.contextWaiting": "waiting: {tasks}",
+      "graph.contextRootBlockers": "root_blockers: {tasks}",
+      "graph.contextUnblocks": "unblocks: {edges}",
+      "graph.contextNone": "none",
       "frontier.paused": "Plan 已暂停：{reason}",
       "frontier.pausedNext": "处理暂停原因后运行 /dgoal resume",
       "frontier.taskDependencies": "task #{taskId} 正在等待依赖 {dependencies} 完成",
@@ -658,6 +686,31 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "tool.plan.latestCheck": "Latest check: {value}",
       "tool.plan.latestFeedback": "Latest feedback: {value}",
       "tool.plan.latestClaim": "Latest completion claim: {value}",
+      "graph.heading": "Task DAG · current phase #{phaseId}",
+      "graph.ready": "Ready: {tasks}",
+      "graph.waiting": "Waiting: {tasks}",
+      "graph.rootBlockers": "Root blockers: {tasks}",
+      "graph.unblocks": "Completion unlocks: {edges}",
+      "graph.taskState": "Graph state: {state}",
+      "graph.taskDependencies": "Unfinished direct dependencies: {tasks}",
+      "graph.taskRootBlockers": "Transitive root blockers: {tasks}",
+      "graph.taskUnblocks": "Completion directly unlocks: {tasks}",
+      "graph.none": "none",
+      "graph.state.ready": "ready",
+      "graph.state.waiting": "waiting",
+      "graph.state.blocked": "blocked",
+      "graph.state.done": "done",
+      "graph.state.phase_blocked": "phase blocked",
+      "graph.blockedReason": "#{id} ({reason})",
+      "graph.phaseBlockedReason": "phase #{phaseId} ({reason})",
+      "graph.waitingItem": "#{id} ← {dependencies}",
+      "graph.edge": "#{from} → {targets}",
+      "graph.taskRef": "#{id}({status})",
+      "graph.contextReady": "ready: {tasks}",
+      "graph.contextWaiting": "waiting: {tasks}",
+      "graph.contextRootBlockers": "root_blockers: {tasks}",
+      "graph.contextUnblocks": "unblocks: {edges}",
+      "graph.contextNone": "none",
       "frontier.paused": "Plan is paused: {reason}",
       "frontier.pausedNext": "Resolve the pause reason, then run /dgoal resume",
       "frontier.taskDependencies": "task #{taskId} is waiting for dependencies {dependencies}",
@@ -2425,6 +2478,7 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
       ...(task.blockedReason ? [t("tool.plan.get.blockedReason", { blockedReason: task.blockedReason })] : []),
       ...(task.blockedBy?.length ? [t("tool.plan.get.blockedBy", { blockedBy: task.blockedBy.map((id) => `#${id}`).join(", ") })] : []),
       ...formatFrontierReadLines(goal, { kind: "task", id: task.id }),
+      ...buildTaskGraphTextLines(goal, { kind: "task", id: task.id }),
       ...formatLatestAuditReadLines(goal, { kind: "task", id: task.id }),
     ].join("\n");
   }
@@ -2436,6 +2490,7 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
       t("tool.plan.get.description", { description: phase.description ?? "" }),
       ...tasks.flatMap((task) => [formatTaskDisplay(task, `  └─ task #${task.id} · `), `     说明：${task.description}`]),
       ...formatFrontierReadLines(goal, { kind: "phase", id: phase.id }),
+      ...buildTaskGraphTextLines(goal, { kind: "phase", id: phase.id }),
       ...formatLatestAuditReadLines(goal, { kind: "phase", id: phase.id }),
     ].join("\n");
   }
@@ -2444,12 +2499,12 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
     ? `Task Plan · ${doneTasks}/${tasks.length} tasks`
     : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${phases.filter((phase) => phase.status === "done").length}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
   const goalDescription = typeof record.description === "string" ? record.description : "";
-  if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`, ...formatFrontierReadLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
-  if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `)), ...formatFrontierReadLines(goal)].join("\n");
+  if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`, ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
+  if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `)), ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal)].join("\n");
   return [title, `说明：${goalDescription}`, ...phases.flatMap((phase) => {
     const phaseTasks = tasksOf(phase);
     return [formatPhaseDisplay({ ...phase, tasks: phaseTasks }, `├─ phase #${phase.id} · `), ...phaseTasks.map((task) => formatTaskDisplay(task, `│    task #${task.id} · `))];
-  }), ...formatFrontierReadLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
+  }), ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
 }
 
 export const planUpdateTool = definePublicTool({
@@ -3345,6 +3400,104 @@ function formatLatestClaimValue(claim: FinalAuditHistoryEntry): string {
 function diagnosticPhaseTasks(phase: Phase): Task[] {
   return Array.isArray(phase.tasks) ? phase.tasks : [];
 }
+export function deriveCurrentTaskGraph(goal: GoalState): TaskGraphView | undefined {
+  if (!goal.plan) return undefined;
+  const phase = currentUncheckedPhase(goal);
+  return phase ? deriveTaskGraph(goal.plan, phase.id) : undefined;
+}
+
+function formatGraphTaskRef(task: Task): string {
+  return t("graph.taskRef", { id: task.id, status: task.status });
+}
+
+function formatGraphBlocker(task: Task): string {
+  return t("graph.blockedReason", {
+    id: task.id,
+    reason: task.blockedReason?.trim() || t("status.dialogNone"),
+  });
+}
+
+function formatGraphRootBlockers(view: TaskGraphView, taskRootBlockers = view.rootBlockers): string[] {
+  return [
+    ...(view.phaseBlocked ? [t("graph.phaseBlockedReason", {
+      phaseId: view.phaseId,
+      reason: view.phaseBlockedReason || t("status.dialogNone"),
+    })] : []),
+    ...taskRootBlockers.map(formatGraphBlocker),
+  ];
+}
+
+function formatTaskGraphSummary(view: TaskGraphView): string[] {
+  if (!view.nodes.length) return [];
+  const none = t("graph.none");
+  const unlocks = view.nodes.filter((node) => node.unblocks.length);
+  return [
+    t("graph.heading", { phaseId: view.phaseId }),
+    t("graph.ready", { tasks: view.ready.length ? view.ready.map((node) => formatGraphTaskRef(node.task)).join(", ") : none }),
+    ...(view.waiting.length ? [t("graph.waiting", {
+      tasks: view.waiting.map((node) => t("graph.waitingItem", {
+        id: node.task.id,
+        dependencies: node.unresolvedDependencies.map(formatGraphTaskRef).join(", "),
+      })).join("; "),
+    })] : []),
+    ...(formatGraphRootBlockers(view).length ? [t("graph.rootBlockers", { tasks: formatGraphRootBlockers(view).join(", ") })] : []),
+    ...(unlocks.length ? [t("graph.unblocks", {
+      edges: unlocks.map((node) => t("graph.edge", {
+        from: node.task.id,
+        targets: node.unblocks.map((task) => `#${task.id}`).join(", "),
+      })).join("; "),
+    })] : []),
+  ];
+}
+
+function formatTaskGraphDetail(view: TaskGraphView, node: TaskGraphNodeView): string[] {
+  const none = t("graph.none");
+  const rootBlockers = formatGraphRootBlockers(view, node.rootBlockers);
+  const state = t(`graph.state.${node.state}`);
+  return [
+    t("graph.taskState", { state }),
+    t("graph.taskDependencies", {
+      tasks: node.unresolvedDependencies.length ? node.unresolvedDependencies.map(formatGraphTaskRef).join(", ") : none,
+    }),
+    ...(rootBlockers.length ? [t("graph.taskRootBlockers", { tasks: rootBlockers.join(", ") })] : []),
+    t("graph.taskUnblocks", { tasks: node.unblocks.length ? node.unblocks.map(formatGraphTaskRef).join(", ") : none }),
+  ];
+}
+
+function buildTaskGraphTextLines(goal: GoalState, target?: { kind: "phase" | "task"; id: number }): string[] {
+  const view = deriveCurrentTaskGraph(goal);
+  if (!view) return [];
+  if (!target || (target.kind === "phase" && target.id === view.phaseId)) return formatTaskGraphSummary(view);
+  if (target.kind === "task") {
+    const node = view.nodes.find((item) => item.task.id === target.id);
+    return node ? formatTaskGraphDetail(view, node) : [];
+  }
+  return [];
+}
+
+export function buildTaskGraphContextBlock(goal: GoalState): string {
+  const view = deriveCurrentTaskGraph(goal);
+  if (!view?.nodes.length) return "";
+  const none = t("graph.contextNone");
+  const unlocks = view.nodes.filter((node) => node.unblocks.length);
+  const body = [
+    t("graph.contextReady", { tasks: view.ready.length ? view.ready.map((node) => formatGraphTaskRef(node.task)).join(", ") : none }),
+    t("graph.contextWaiting", {
+      tasks: view.waiting.length ? view.waiting.map((node) => t("graph.waitingItem", {
+        id: node.task.id,
+        dependencies: node.unresolvedDependencies.map(formatGraphTaskRef).join(", "),
+      })).join("; ") : none,
+    }),
+    t("graph.contextRootBlockers", { tasks: formatGraphRootBlockers(view).length ? formatGraphRootBlockers(view).join(", ") : none }),
+    t("graph.contextUnblocks", {
+      edges: unlocks.length ? unlocks.map((node) => t("graph.edge", {
+        from: node.task.id,
+        targets: node.unblocks.map((task) => `#${task.id}`).join(", "),
+      })).join("; ") : none,
+    }),
+  ];
+  return `\n\n<dgoal_task_graph phaseId="${view.phaseId}">\n${body.map(escapeXml).join("\n")}\n</dgoal_task_graph>`;
+}
 
 function unresolvedTaskDependencies(goal: GoalState, task: Task): Task[] {
   const tasksById = new Map((goal.plan?.phases ?? []).flatMap(diagnosticPhaseTasks).map((item) => [item.id, item]));
@@ -3555,6 +3708,7 @@ export function buildGoalBoundaryBlock(goal: Pick<GoalState, "nonGoals" | "guard
 export function buildSystemPrompt(goal: GoalState) {
   const planType = resolvePlanType(goal);
   const planBlock = buildPlanContextBlock(goal);
+  const taskGraphBlock = buildTaskGraphContextBlock(goal);
   const boundaryBlock = buildGoalBoundaryBlock(goal);
   const acceptanceContractBlock = planType === "task" ? "" : buildAcceptanceContractBlock(goal);
   const feedbackBlock = buildCheckFeedbackBlock(goal);
@@ -3563,7 +3717,7 @@ export function buildSystemPrompt(goal: GoalState) {
     : planType === "phase"
       ? "- 当前是 Phase Plan：每个 phase 的 task 全 done 后用 plan_update(target=phase,status=done) 推进；所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。不要调用 phase_check。"
       : "- 当前是 Goal Plan：每个 phase 的 task 全 done 后调用 phase_check；通过后用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。";
-  return `当前 Plan：${planType}\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>${acceptanceContractBlock}${boundaryBlock}${planBlock}${feedbackBlock}\n\n循环规则：\n- 持续工作直到当前 Plan 端到端完成，不要停在纸面计划或部分进度。\n- 用 plan_create 动态新增 task，用 plan_read 回查，用 plan_update 更新 task/phase/goal 状态和显示；task 先进入 in_progress，完成时带可复验 evidence 标 done。\n- phase 结构在启动后冻结，运行中不得新增 phase。\n- 按 phase 顺序推进，严禁跳过当前未完成 phase。\n- check 只记录独立审核结果；只有 plan_update 能写完成状态。\n- 以当前文件、命令输出、测试和外部状态为准；工具失败时先尝试合理替代方案。\n- 遇到必须由用户决策才能继续的死锁时，用 plan_update(target=goal,status=paused,reason=...) 主动暂停；一时困难不算死锁。\n${typeRule}`;
+  return `当前 Plan：${planType}\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>${acceptanceContractBlock}${boundaryBlock}${planBlock}${taskGraphBlock}${feedbackBlock}\n\n循环规则：\n- 持续工作直到当前 Plan 端到端完成，不要停在纸面计划或部分进度。\n- 用 plan_create 动态新增 task，用 plan_read 回查，用 plan_update 更新 task/phase/goal 状态和显示；task 先进入 in_progress，完成时带可复验 evidence 标 done。\n- phase 结构在启动后冻结，运行中不得新增 phase。\n- 按 phase 顺序推进，严禁跳过当前未完成 phase。\n- <dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界；waiting/blocked task 不推进。\n- ready 只表示依赖已满足，不代表 task 之间可安全并发；执行或委派前仍由主 agent 核对范围与冲突。\n- Plan 状态只由主 agent 写入；对任何执行结果核验证据后再调用 plan_update。\n- check 只记录独立审核结果；只有 plan_update 能写完成状态。\n- 以当前文件、命令输出、测试和外部状态为准；工具失败时先尝试合理替代方案。\n- 遇到必须由用户决策才能继续的死锁时，用 plan_update(target=goal,status=paused,reason=...) 主动暂停；一时困难不算死锁。\n${typeRule}`;
 }
 
 // 切片7：把当前 plan（三层，AI 全可见）格式化注入 system prompt。
@@ -6607,6 +6761,7 @@ export function buildPlanStatusListLines(goal: GoalState | undefined): RenderLin
   return [
     { type: "description", text: t("status.description", { description: goal.description }) },
     ...buildFrontierStatusLines(goal).map((text) => ({ type: "description" as const, text })),
+    ...buildTaskGraphTextLines(goal).map((text) => ({ type: "description" as const, text })),
     ...buildLatestAuditStatusLines(goal).map((text) => ({ type: "description" as const, text })),
     { type: "spacer", text: "" },
     ...buildBodyLinesNoHeading(goal),
@@ -6642,6 +6797,7 @@ export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: 
       t("status.dialogDetailProgress", { done: countDoneTasks(phase), total: phase.tasks.length }),
       t("status.dialogDetailBlockedReason", { value: phase.blockedReason?.trim() || none }),
       ...buildFrontierStatusLines(goal, target),
+      ...buildTaskGraphTextLines(goal, target),
       ...buildLatestAuditStatusLines(goal, target),
     ];
   }
@@ -6657,6 +6813,7 @@ export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: 
       t("status.dialogDetailEvidence", { value: task.evidence?.trim() || none }),
       t("status.dialogDetailBlockedReason", { value: task.blockedReason?.trim() || none }),
       ...buildFrontierStatusLines(goal, target),
+      ...buildTaskGraphTextLines(goal, target),
     ];
   }
   return [];
