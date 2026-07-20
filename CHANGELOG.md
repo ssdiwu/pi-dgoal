@@ -6,11 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.7.9] - 2026-07-20
+
 ### Changed
 
 - **审核状态收敛**：`phase_check` 改用所属 phase 的局部 revision；同 phase 的受审事实变更才使其批准失效，所有 Plan 写操作仍会使 `goal_check` 失效。审核逐工具 checkpoint 仅在内存中复用，持久化只保留稳定终态，避免 append-only session 随工具事件膨胀。
 - **终审与提案提示**：连续三次及以上 `goal_check` 拒绝会提示修复风险但保持 active；复杂目标可收到不阻塞的拆分建议。
-
 
 ## [0.7.8] - 2026-07-20
 
