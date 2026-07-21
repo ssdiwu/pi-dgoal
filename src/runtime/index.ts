@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext, ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { CONFIG_DIR_NAME, defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { Component, Focusable } from "@earendil-works/pi-tui";
-import { matchesKey, Text, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
+import type { Component } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import { streamSimple } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
@@ -27,6 +27,13 @@ import {
   type TaskPlan,
 } from "../plan/index.ts";
 import {
+  applyPlanMutation as applyPlanMutationWithTranslator,
+  coerceNumberArray,
+  isTaskTransitionValid,
+  type PlanAction,
+  type PlanOp,
+} from "../plan/reducer.ts";
+import {
   APPROVED_MARKER,
   extractUserReviewSuggestions as extractAuditUserReviewSuggestions,
   hasRejectedAuditorMarker,
@@ -44,12 +51,49 @@ import {
   type CheckLivenessState,
   type PendingProposalState,
 } from "../goal-runtime/state.ts";
+import { clearCurrentGoal, commitCurrentGoal } from "../goal-runtime/commit.ts";
+import type {
+  AuditorCandidateState,
+  AuditorScope,
+  CheckFeedback,
+  FinalAuditHistoryEntry,
+  FinalAuditMode,
+  FinalCheckFeedback,
+  GoalState,
+  GoalStatus,
+  PhaseCheckFeedback,
+  PlanProposal,
+  VerificationBundle,
+} from "../goal-runtime/types.ts";
+import {
+  assessProposalReadiness,
+  normalizeAcceptanceCriteria,
+  normalizeStringList,
+  proposalToPlan,
+  trimOptionalText,
+  validateProposalInputCore,
+  type ProposalValidationInput,
+} from "./proposal.ts";
+import { derivePlanView, formatCompactPlanProgress, formatPlanProgress } from "./plan-view.ts";
 import {
   ansiStrikethrough,
   computeScrollOffset,
   formatElapsed,
   truncateLine,
 } from "../tui/helpers.ts";
+import {
+  PlanOverlayComponent,
+  PlanStatusDialogComponent,
+  STATUS_GLYPH,
+  colorize,
+  computePlanStatusSelection,
+  getGoalElapsedMs,
+  type PlanOverlayUI,
+  type PlanStatusTarget,
+  type PlanTuiDependencies,
+  type RenderLine,
+  type RenderLineType,
+} from "../tui/plan-components.ts";
 import {
   __resetSpawnManagedSubprocessForTest as resetIsolatedSpawnForTest,
   __setSpawnManagedSubprocessForTest as setIsolatedSpawnForTest,
@@ -70,23 +114,10 @@ const DGOAL_CONFIG_TEMPLATE = `${JSON.stringify({
 }, null, 2)}\n`;
 const notifiedDgoalConfigKeys = new Set<string>();
 
-type GoalStatus = "pending" | "active" | "paused" | "done";
-
-// 三档 Plan 共用 goal / phase / task 状态机（见 doc/10-架构与运行/11-状态机.md）。
-// phase/task 统一四态：pending → in_progress → done | blocked。
-// phase/task 统一由 plan_update 写状态；check 只记录审核结果。
-// task：done 不回退（错了新建接续 task），blocked 可回退 in_progress。
-type PauseReason = "user_abort" | "model_error" | "audit_error" | "no_progress" | "agent_blocked";
-
-export interface VerificationBundle {
-  changes: string;
-  acceptanceEvidence: string;
-  selfTest: string;
-  risks: string;
-}
-export type FinalAuditMode = "diagnostic" | "narrow_confirmation";
 
 export { countDoneTasks, deriveTaskGraph, detectPlanCycle, findPhaseByTask, flattenTasks, isDonePlanStatus, recomputePhaseStatus } from "../plan/index.ts";
+export { colorize, computePlanStatusSelection } from "../tui/plan-components.ts";
+export type { PlanStatusTarget, RenderLine, RenderLineType } from "../tui/plan-components.ts";
 export { computeScrollOffset } from "../tui/helpers.ts";
 // Keep observable event parsing and abort binding tied to the isolated child that actually uses them.
 export {
@@ -96,6 +127,18 @@ export {
   consumeBufferedLines,
 } from "../isolated-pi/index.ts";
 export type { AcceptanceCriterion, CheckRecord, Phase, PlanStatus, PlanType, Task, TaskPlan } from "../plan/index.ts";
+export type {
+  AuditorCandidateState,
+  FinalAuditMode,
+  GoalState,
+  GoalStatus,
+  PauseReason,
+  PlanProposal,
+  VerificationBundle,
+} from "../goal-runtime/types.ts";
+export { derivePlanView } from "./plan-view.ts";
+export { assessProposalReadiness, proposalToPlan } from "./proposal.ts";
+export type { ProposalReadinessLevel } from "./proposal.ts";
 
 export interface DgoalConfig {
   // Legacy shared override for both audit scopes. Scoped keys take precedence within the same config source.
@@ -110,7 +153,6 @@ export interface DgoalConfig {
   proposalSemanticReviewIdleTimeoutSeconds?: number;
 }
 
-type AuditorScope = "phase" | "goal";
 
 export interface DgoalConfigIssue {
   key: string;
@@ -119,93 +161,6 @@ export interface DgoalConfigIssue {
 
 type StopReason = "stop" | "length" | "toolUse" | "error" | "aborted";
 
-export interface AuditorCandidateState {
-  selectedModelId?: string;
-  failedModelIds?: string[];
-}
-
-export interface GoalState {
-  id: string;
-  objective: string;
-  /** Why this goal exists, why this approach is chosen, and which method drift to avoid. */
-  description: string;
-  status: GoalStatus;
-  /** Three product forms: automatic Task Plan, explicit Phase Plan, explicit Goal Plan. */
-  planType?: PlanType;
-  startedAt: number;
-  updatedAt: number;
-  iteration: number;
-  // 0.2.0 Task Plan（phase + task 两层）。pending goal 尚未确认 proposal 时可暂时无 plan。
-  plan?: TaskPlan;
-  // goal 级验证：跨 phase 的全局完成说明（与 task 级 evidence 互补）。
-  verification?: string;
-  // Phase/Goal Plan 启动闸门冻结的 LLM 可独立验收条件。
-  acceptanceCriteria?: AcceptanceCriterion[];
-  // 完成后交给用户复核的体验/视觉/实际使用事项，不阻塞 done。
-  userReviewItems?: string[];
-  // 启动闸门确认过的边界声明。
-  nonGoals?: string[];
-  guardrails?: string[];
-  // 暂停原因；check rejected 保持 active，不复用 goal 状态表达。
-  pauseReason?: PauseReason;
-  // pauseReason 的人类可读补充：agent_blocked 时存 agent 声明的死锁原因，供通知/状态展示。
-  pauseReasonDetail?: string;
-  // audit_error 的审核范围；resume 只重置该范围的故障候选，旧 goal 缺失时兼容为全量重置。
-  auditErrorScope?: AuditorScope;
-  // 累计暂停时长（毫秒）。elapsed = now - startedAt - pausedTotalMs；旧 goal 缺失时视为 0。
-  pausedTotalMs?: number;
-  // 当前 pause 窗口的开始时间。paused 时冻结 elapsed；resume 时累计进 pausedTotalMs 后清空。
-  pauseStartedAt?: number;
-  // goal_check 未通过次数，仅用于反馈上下文；不会触发固定次数暂停。
-  rejectedCount?: number;
-  // v0.5.2 建检反馈持久化（ADR 0011）：阶段建检未通过的原始报告，按 phaseId 定位。
-  // 只存有结论的未通过报告；approved 时清除对应 key；不存运行时活性态。
-  phaseFeedbackById?: Record<string, PhaseCheckFeedback>;
-  // v0.5.2 终审反馈：最新原始报告，作为下一轮修复输入。
-  finalFeedback?: FinalCheckFeedback;
-  // vNext 终审修复账本：追加每轮失败的原始报告与完成声明，历史不进入 task/phase。
-  finalAuditHistory?: FinalAuditHistoryEntry[];
-  // 按当前 goal + 审核范围持久化候选健康状态；phase/goal 各自隔离。
-  auditorCandidates?: {
-    phase?: AuditorCandidateState;
-    goal?: AuditorCandidateState;
-  };
-  // 独立审核 child 的已完成工具事实；同一工作区可在候选切换/resume 后复用。
-  auditCheckpoints?: {
-    phase?: CheckpointState;
-    goal?: CheckpointState;
-  };
-  /** Phase/Goal Plan only: latest independent goal_check result. */
-  goalCheck?: CheckRecord;
-}
-
-// v0.5.2 建检反馈（ADR 0011）。检查 agent 给出的原始失败报告，agent-facing 修复输入。
-// 报告保存原文，不生成 summary、不压缩。
-interface CheckFeedback {
-  report: string;
-  createdAt: number;
-}
-
-interface PhaseCheckFeedback extends CheckFeedback {
-  phaseId: number;
-}
-
-interface FinalCheckFeedback extends CheckFeedback {
-  rejectedCount: number;
-}
-
-interface FinalAuditHistoryEntry {
-  attempt: number;
-  report: string;
-  summary: string;
-  verification: string;
-  whatChanged?: string[];
-  userReview?: string;
-  auditMode?: FinalAuditMode;
-  verificationBundle?: VerificationBundle;
-  workspaceFingerprint?: string;
-  createdAt: number;
-}
 
 interface DgoalStateEntryData {
   goal?: GoalState | null;
@@ -1046,39 +1001,7 @@ export function formatPlanResult(op: PlanOp): string {
 // 通过或改写后才把 proposal 存到 goalRuntimeState.pendingProposal，再由 startGoal 的 agent_end 检测后弹确认 UI。
 const INTERNAL_PLAN_PROPOSAL_TOOL_NAME = "plan_proposal_internal";
 
-// 主代理提交的计划提案。phases 可带初始 tasks。
-export interface PlanProposal {
-  objective: string;
-  description: string;
-  /** Explicit audited Plan form. Task Plans bypass proposal review entirely. */
-  planType?: Exclude<PlanType, "task">;
-  verification?: string;
-  // 新 proposal 的 goal 级独立验收条件；工具 schema 要求提供。
-  acceptanceCriteria?: AcceptanceCriterion[];
-  userReviewItems?: string[];
-  nonGoals?: string[];
-  guardrails?: string[];
-  phases: Array<{
-    subject: string;
-    description: string;
-    acceptanceCriteria?: AcceptanceCriterion[];
-    tasks?: Array<{ subject: string; description: string; blockedBy?: number[] }>;
-  }>;
-}
 
-export type ProposalReadinessLevel = "L0" | "L1" | "L2" | "L3";
-type ProposalReadinessGap = "objective" | "verification" | "acceptanceCriteria" | "phases" | "nonGoals" | "guardrails";
-
-interface ProposalReadinessAssessment {
-  level: ProposalReadinessLevel;
-  gaps: ProposalReadinessGap[];
-}
-
-function trimOptionalText(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed ? trimmed : undefined;
-}
 
 function normalizeVerificationBundle(value: unknown): VerificationBundle | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -1090,13 +1013,6 @@ function normalizeVerificationBundle(value: unknown): VerificationBundle | undef
   return changes && acceptanceEvidence && selfTest && risks ? { changes, acceptanceEvidence, selfTest, risks } : undefined;
 }
 
-function normalizeStringList(value: unknown): string[] | undefined {
-  if (!Array.isArray(value)) return undefined;
-  const normalized = value
-    .map((item) => (typeof item === "string" ? item.trim() : ""))
-    .filter(Boolean);
-  return normalized.length ? normalized : undefined;
-}
 
 function normalizeSemanticMigrations(value: unknown): ProposalSemanticMigration[] | undefined {
   if (!Array.isArray(value)) return undefined;
@@ -1131,52 +1047,6 @@ function normalizeProposalSemanticIssues(value: unknown): ProposalSemanticIssue[
   return normalized;
 }
 
-function normalizeAcceptanceCriteria(value: unknown): AcceptanceCriterion[] | undefined {
-  if (!Array.isArray(value) || value.length === 0) return undefined;
-  const normalized: AcceptanceCriterion[] = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") return undefined;
-    const criterion = trimOptionalText((item as Record<string, unknown>).criterion);
-    const evidence = trimOptionalText((item as Record<string, unknown>).evidence);
-    if (!criterion || !evidence) return undefined;
-    normalized.push({ criterion, evidence });
-  }
-  return normalized;
-}
-
-export function assessProposalReadiness(input: {
-  objective?: string;
-  verification?: string;
-  acceptanceCriteria?: AcceptanceCriterion[];
-  phaseCount?: number;
-  phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
-  planType?: Exclude<PlanType, "task">;
-  nonGoals?: string[];
-  guardrails?: string[];
-}): ProposalReadinessAssessment {
-  const gaps: ProposalReadinessGap[] = [];
-  const hasObjective = !!input.objective?.trim();
-  const hasVerification = !!input.verification?.trim();
-  const hasAcceptanceCriteria = Boolean(input.acceptanceCriteria?.length);
-  const hasPhases = (input.phaseCount ?? 0) > 0;
-  const hasPhaseAcceptanceCriteria = input.planType === "phase"
-    ? true
-    : hasPhases && (input.phaseAcceptanceCriteria ?? []).length === input.phaseCount && (input.phaseAcceptanceCriteria ?? []).every((criteria) => Boolean(criteria?.length));
-  const hasNonGoals = !!input.nonGoals?.length;
-  const hasGuardrails = !!input.guardrails?.length;
-
-  if (!hasObjective) gaps.push("objective");
-  if (!hasVerification) gaps.push("verification");
-  if (!hasAcceptanceCriteria || !hasPhaseAcceptanceCriteria) gaps.push("acceptanceCriteria");
-  if (!hasPhases) gaps.push("phases");
-  if (!hasNonGoals) gaps.push("nonGoals");
-  if (!hasGuardrails) gaps.push("guardrails");
-
-  if (!hasObjective) return { level: "L0", gaps };
-  if (!hasVerification || !hasPhases || !hasAcceptanceCriteria || !hasPhaseAcceptanceCriteria) return { level: "L1", gaps };
-  if (hasNonGoals && hasGuardrails) return { level: "L3", gaps };
-  return { level: "L2", gaps };
-}
 
 // 模块级 pending proposal：phase_plan / goal_plan 写入，启动确认流程消费。
 // goalRuntimeState.pendingProposal moved to goalRuntimeState
@@ -1187,79 +1057,10 @@ const MAX_PROPOSAL_RETRIES = 2;
 // 作用：此期间被中断 turn 的 agent_end 会看到 pending goal，不抑制会触发 handleStartupGate
 // 与 startGoal 自己的 propose 投递撞车（双发）。agent_end 的 pending 分支看到本标志即跳过。
 // goalRuntimeState.startGoalInProgress moved to goalRuntimeState
-// 把 proposal 转成 TaskPlan（分配 id，建 phase + 初始 task）。
-// v0.5.x 修复：先给所有 phase 预分配连续 id（1..N），task 再用全局唯一 id。
-// 这样用户阶段序号与 phaseId 一致，避免 task 占用 id 导致 #1/#4/#8/#12 的歧义。
-// 旧 plan 的 phase ID 保留原样，不做迁移。
-export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  let nextId = 1;
-  const phaseIds = proposal.phases.map((_, index) => index + 1);
-  const phases: Phase[] = proposal.phases.map((ph, phaseIndex) => {
-    const phaseId = phaseIds[phaseIndex];
-    const rawTasks = ph.tasks ?? [];
-    const taskGlobalIds = rawTasks.map(() => nextId++);
-    const tasks: Task[] = rawTasks.map((tt, idx) => {
-      const mappedBlockedBy = coerceNumberArray(tt.blockedBy)
-        .map((localOneBased) => taskGlobalIds[localOneBased - 1])
-        .filter((id): id is number => typeof id === "number");
-      return {
-        id: taskGlobalIds[idx],
-        subject: tt.subject,
-        description: tt.description,
-        status: "pending" as PlanStatus,
-        ...(mappedBlockedBy.length ? { blockedBy: mappedBlockedBy } : {}),
-      };
-    });
-    return {
-      id: phaseId,
-      subject: ph.subject,
-      description: ph.description,
-      status: "pending" as PlanStatus,
-      tasks,
-      ...(ph.acceptanceCriteria?.length ? { acceptanceCriteria: ph.acceptanceCriteria } : {}),
-    };
-  });
-  return { phases, nextId };
-}
 
-// 校验 Phase/Goal Plan 提案字段完整性。返回 { error, message } 或 null。
-// verification 必填：没有可验收完成口的 goal 不应进入启动闸门（ADR 0007）。
-// 代码层只做必填结构、状态与策略组合校验，不以 evidence 词形代替语义判断；
-// 当前会话 LLM 独占 proposal 语义预审，独立审核器只复核已冻结契约（ADR 0037/0038）。
-export function validateProposalInput(input: {
-  objective: string;
-  description?: string;
-  planType?: Exclude<PlanType, "task">;
-  verification?: string;
-  acceptanceCriteria?: AcceptanceCriterion[];
-  phaseCount: number;
-  phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
-}): { error: string; message: string } | null {
-  if (!input.objective.trim()) {
-    return { error: "no objective", message: t("proposal.validate.noObjective") };
-  }
-  if (!input.verification || !input.verification.trim()) {
-    return {
-      error: "no verification",
-      message: t("proposal.validate.noVerification"),
-    };
-  }
-  if (input.phaseCount === 0) {
-    return { error: "no phases", message: t("proposal.validate.noPhases") };
-  }
-  const hasValidCriteria = (criteria: AcceptanceCriterion[] | undefined) => Boolean(criteria?.length)
-    && criteria.every((item) => Boolean(item.criterion?.trim()) && Boolean(item.evidence?.trim()));
-  const hasGoalCriteria = hasValidCriteria(input.acceptanceCriteria);
-  const hasPhaseCriteria = input.phaseAcceptanceCriteria?.length === input.phaseCount
-    && input.phaseAcceptanceCriteria.every((criteria) => hasValidCriteria(criteria));
-  // Phase Plan deliberately has no phase-level independent acceptance gate.
-  if (!hasGoalCriteria || (input.planType !== "phase" && !hasPhaseCriteria)) {
-    return { error: "no acceptance criteria", message: t("proposal.validate.noAcceptanceCriteria") };
-  }
-  if (!input.description || !input.description.trim()) {
-    return { error: "no description", message: t("proposal.validate.noDescription") };
-  }
-  return null;
+// Runtime compatibility wrapper keeps translated public error messages unchanged.
+export function validateProposalInput(input: ProposalValidationInput): { error: string; message: string } | null {
+  return validateProposalInputCore(input, t);
 }
 
 export type ProposalSemanticDecision = "approve" | "rewrite" | "reject";
@@ -2494,10 +2295,10 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
       ...formatLatestAuditReadLines(goal, { kind: "phase", id: phase.id }),
     ].join("\n");
   }
-  const doneTasks = tasks.filter((task) => task.status === "done").length;
+  const view = derivePlanView(goal)!;
   const title = planType === "task"
-    ? `Task Plan · ${doneTasks}/${tasks.length} tasks`
-    : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${phases.filter((phase) => phase.status === "done").length}/${phases.length} phases · ${doneTasks}/${tasks.length} tasks`;
+    ? `Task Plan · ${view.doneTasks}/${view.totalTasks} tasks`
+    : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${view.donePhases}/${view.totalPhases} phases · ${view.doneTasks}/${view.totalTasks} tasks`;
   const goalDescription = typeof record.description === "string" ? record.description : "";
   if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`, ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
   if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `)), ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal)].join("\n");
@@ -2803,8 +2604,7 @@ export const phaseCheckTool = definePublicTool({
       const reason = formatError(error);
       const check: CheckRecord = { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision };
       const phases = latest.plan!.phases.map((item) => item.id === phase.id ? { ...item, check } : item);
-      goalRuntimeState.currentGoal = { ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() };
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal({ ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "phase");
       return { content: [{ type: "text", text: `phase_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
@@ -2815,8 +2615,7 @@ export const phaseCheckTool = definePublicTool({
       const reason = result.error ?? "aborted";
       const check: CheckRecord = { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision };
       const phases = latest.plan!.phases.map((item) => item.id === phase.id ? { ...item, check } : item);
-      goalRuntimeState.currentGoal = { ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() };
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal({ ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "phase");
       return { content: [{ type: "text", text: `phase_check paused after auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
@@ -2915,8 +2714,7 @@ export const goalCheckTool = definePublicTool({
       const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
       if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
       const reason = formatError(error);
-      goalRuntimeState.currentGoal = { ...latest, goalCheck: { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() };
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal({ ...latest, goalCheck: { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "goal");
       return { content: [{ type: "text", text: `goal_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
@@ -2925,8 +2723,7 @@ export const goalCheckTool = definePublicTool({
     if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
     if (result.liveness === "auditor_error" || result.aborted || result.error) {
       const reason = result.error ?? "aborted";
-      goalRuntimeState.currentGoal = { ...latest, goalCheck: { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() };
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal({ ...latest, goalCheck: { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "goal");
       return { content: [{ type: "text", text: `goal_check paused after auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
@@ -2953,8 +2750,7 @@ export const goalCheckTool = definePublicTool({
       }),
       updatedAt: Date.now(),
     };
-    goalRuntimeState.currentGoal = mergeUserReviewItems(goalRuntimeState.currentGoal, extractUserReviewSuggestions(report));
-    persistGoal(goalRuntimeState.currentGoal);
+    commitCurrentGoal(mergeUserReviewItems(goalRuntimeState.currentGoal, extractUserReviewSuggestions(report)), persistGoal);
     clearCurrentCheckSnapshot();
     safeUpdatePlanOverlay();
     return {
@@ -3070,8 +2866,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
     // 新 goal 启动时清除上一个 goal 遗留的 auditor workspace tracker，避免旧 worktree 路径泄漏到新 goal。
     resetAuditorWorkspaceTracker();
     const pendingGoal = createGoal(objective.trim());
-    goalRuntimeState.currentGoal = pendingGoal;
-    persistGoal(goalRuntimeState.currentGoal);
+    commitCurrentGoal(pendingGoal, persistGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
 
     // 启动闸门保持 pending，要求主代理用 phase_plan / goal_plan 提交。
@@ -3213,7 +3008,7 @@ function ensurePlanOverlay(ctx: DgoalContext): void {
   if (typeof ui.setWidget !== "function") return;
   try {
     planOverlay ??= new PlanOverlay();
-    planOverlay.setUI(ui as PlanOverlay["ui"]);
+    planOverlay.setUI(ui as PlanOverlayUI);
     planOverlay.update();
   } catch {
     // /dgoal s 只提供恢复入口；浮层渲染失败不得阻断状态查询。
@@ -4500,8 +4295,7 @@ function clearActiveGoal(ctx: DgoalContext) {
   goalRuntimeState.turnHadToolExecution = false;
   resetAuditorWorkspaceTracker();
   planOverlay?.clearDoneSnapshot();
-  goalRuntimeState.currentGoal = undefined;
-  persistGoal(null);
+  clearCurrentGoal(persistGoal);
   safeSetDgoalStatus(ctx, undefined);
   safeUpdatePlanOverlay();
 }
@@ -4511,11 +4305,9 @@ function finalizeGoal(ctx: DgoalContext) {
   const goal = goalRuntimeState.currentGoal;
   const completedSnapshot = goal ? { ...goal, status: "done" as GoalStatus, updatedAt: Date.now() } : undefined;
   if (completedSnapshot) {
-    goalRuntimeState.currentGoal = completedSnapshot;
-    persistGoal(goalRuntimeState.currentGoal);
+    commitCurrentGoal(completedSnapshot, persistGoal);
     // done 与 null 清理必须在任何完成 UI 之前落盘，UI 只是后效展示。
-    goalRuntimeState.currentGoal = undefined;
-    persistGoal(null);
+    clearCurrentGoal(persistGoal);
   }
   cancelPendingContinuation();
   resetAuditorWorkspaceTracker();
@@ -4536,11 +4328,10 @@ function finalizeGoal(ctx: DgoalContext) {
 // 审核器出错 / 被中断 / 无结论：安全暂停，避免 fail-open 或烧 token 死循环。
 function pauseOnAuditFailure(ctx: DgoalContext, reason: string, scope?: AuditorScope) {
   if (!goalRuntimeState.currentGoal) return;
-  goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), {
+  commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), {
     pauseReason: "audit_error",
     ...(scope ? { auditErrorScope: scope } : {}),
-  });
-  persistGoal(goalRuntimeState.currentGoal);
+  }), persistGoal);
   clearContinuation();
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
@@ -5146,15 +4937,14 @@ function recordAuditorCandidateResult(scope: AuditorScope, result: AuditorResult
     ...(selectedModelId ? { selectedModelId } : {}),
     ...(failed.size ? { failedModelIds: [...failed] } : {}),
   };
-  goalRuntimeState.currentGoal = {
+  commitCurrentGoal({
     ...goal,
     auditorCandidates: {
       ...(goal.auditorCandidates ?? {}),
       [scope]: nextState,
     },
     updatedAt: Date.now(),
-  };
-  persistGoal(goalRuntimeState.currentGoal);
+  }, persistGoal);
 }
 
 async function runAuditorWithCandidates(args: {
@@ -6082,8 +5872,8 @@ export function isGoalState(value: unknown): value is GoalState {
     || (isPersistedCheckRecord(goal.goalCheck, revision) && goal.goalCheck.revision === revision);
 }
 
-// 0.2.0 切片1：export 类型供工具/reducer/测试使用。
-export type { PauseReason, PlanAction, PlanOp };
+// 兼容公开类型导出；实现已迁入纯 Plan reducer 模块。
+export type { PlanAction, PlanOp } from "../plan/reducer.ts";
 
 // 测试专用：注入 mock api 测 persistGoal 往返。生产代码勿用。
 export function __setApiForTest(mockApi: { appendEntry: <T>(type: string, data: T) => void } | undefined) {
@@ -6285,249 +6075,13 @@ export function __setCompletionAuditorOverrideForTest(override: (() => Promise<A
   completionAuditorOverrideForTest = override;
 }
 
-// ============================================================================
-// Plan reducer（纯函数）+ phase 聚合 + blockedBy 环检测。
-// 平移 rpiv-todo reducer，适配 phase/task 两层 + blocked 状态（无 tombstone）。
-// 见 doc/10-架构与运行/12-工具命令与数据模型.md、ADR 0005/0006。
-// ============================================================================
-
-// reducer action 集合。
-type PlanAction = "create" | "update" | "list" | "get";
-
-// Reducer 结果的 closed union（rpiv-todo 风格）：加新分支要在 formatPlanContent 补 case（编译器不强制，但人工保持一致）。
-type PlanOp =
-  | { kind: "create"; taskId: number; phaseId: number }
-  | { kind: "update"; taskId: number; fromStatus: PlanStatus; toStatus: PlanStatus }
-  | { kind: "list"; tasks: Task[] }
-  | { kind: "get"; task: Task }
-  | { kind: "error"; message: string };
-
-interface PlanApplyResult {
-  goal: GoalState; // 新 goal（不可变更新）；error 时返回原 goal
-  op: PlanOp;
-}
-
-function planError(goal: GoalState, message: string): PlanApplyResult {
-  return { goal, op: { kind: "error", message } };
-}
-
-// task 状态合法转换表（见 11-状态机.md）。
-// pending → in_progress → done | blocked；pending 也可诚实标 blocked；blocked → in_progress；done 不回退。
-function isTaskTransitionValid(from: PlanStatus, to: PlanStatus): boolean {
-  if (from === to) return true;
-  if (from === "pending") return to === "in_progress" || to === "blocked";
-  if (from === "in_progress") return to === "done" || to === "blocked";
-  if (from === "blocked") return to === "in_progress";
-  return false;
-}
-
-// 阶段顺序执行防护：返回错误字符串（阻断操作）或 null（放行）。
-// 规则：必须按 phase 顺序推进——当前 phase 未 done 时，不允许 create/update 后续 phase 的 task。
-// list/get 是只读，不拦截。
-function enforcePhaseOrder(goal: GoalState, action: PlanAction, params: Record<string, unknown>): string | null {
-  if (!goal.plan || goal.plan.phases.length <= 1) return null;
-  if (action === "list" || action === "get") return null;
-
-  const firstIncompleteIdx = goal.plan.phases.findIndex((phase) => !isDonePlanStatus(phase.status));
-  if (firstIncompleteIdx < 0) return null;
-
-  let targetPhaseIdx = -1;
-  if (action === "create") {
-    const phaseId = Number(params.phaseId);
-    targetPhaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
-  } else if (action === "update") {
-    const taskId = Number(params.id);
-    for (let i = 0; i < goal.plan.phases.length; i++) {
-      if (goal.plan.phases[i].tasks.some((t) => t.id === taskId)) {
-        targetPhaseIdx = i;
-        break;
-      }
-    }
-  }
-  if (targetPhaseIdx < 0 || targetPhaseIdx === firstIncompleteIdx) return null;
-
-  const currentPh = goal.plan.phases[firstIncompleteIdx];
-  const targetPh = goal.plan.phases[targetPhaseIdx];
-  return `阶段顺序违规：phase #${currentPh.id}（${currentPh.subject}）尚未完成。必须先完成当前 phase，才能操作 phase #${targetPh.id}（${targetPh.subject}）。`;
-}
-
-// 把模型可能 stringify 的数组参数（blockedBy / addBlockedBy / removeBlockedBy）
-// 降级回 number[]。模型有时把空数组/数组序列化成 "[]"/"[1,2]" 字符串；
-// prepareArguments 钩子在校验前调用本函数，reducer 入口也作为防御性二次清洗。
-// 非数组/无法解析 → []，保证不丢依赖也不误造依赖。
-function coerceNumberArray(value: unknown): number[] {
-  if (value == null) return [];
-  if (typeof value === "number") return Number.isFinite(value) ? [value] : [];
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (trimmed === "") return [];
-    try {
-      const parsed = JSON.parse(trimmed);
-      return Array.isArray(parsed) ? parsed.map((v) => Number(v)).filter((n): n is number => Number.isFinite(n)) : [];
-    } catch {
-      return [];
-    }
-  }
-  if (Array.isArray(value)) {
-    return value.map((v) => Number(v)).filter((n): n is number => Number.isFinite(n));
-  }
-  return [];
-}
-
-// 纯 reducer：(goal, action, params) → (goal, op)。不 mutate 入参 goal。
-// Public plan tools call this reducer and then commit through Goal Runtime.
+// Public compatibility wrapper: Plan owns pure mutation rules; runtime injects i18n.
 export function applyPlanMutation(
   goal: GoalState,
   action: PlanAction,
   params: Record<string, unknown>,
-): PlanApplyResult {
-  if (!goal.plan) return planError(goal, t("plan.error.noPlan"));
-  const phaseOrderError = enforcePhaseOrder(goal, action, params);
-  if (phaseOrderError) return planError(goal, phaseOrderError);
-
-  switch (action) {
-    case "create": {
-      const subject = String(params.subject ?? "").trim();
-      if (!subject) return planError(goal, t("plan.error.subjectRequiredForCreate"));
-      const description = String(params.description ?? "").trim();
-      if (!description) return planError(goal, t("plan.error.descriptionRequiredForCreate"));
-      const phaseId = Number(params.phaseId);
-      const phaseIdx = goal.plan.phases.findIndex((ph) => ph.id === phaseId);
-      if (phaseIdx === -1) return planError(goal, t("plan.error.phaseNotFound", { phaseId }));
-      const initialBlockedBy = coerceNumberArray(params.blockedBy);
-      const allTasks = flattenTasks(goal.plan);
-      for (const dep of initialBlockedBy) {
-        const depTask = allTasks.find((t) => t.id === dep);
-        if (!depTask) return planError(goal, t("plan.error.blockedByTaskNotFound", { taskId: dep }));
-        if (findPhaseByTask(goal.plan, dep) > phaseIdx) return planError(goal, t("plan.error.futurePhaseDependency", { taskId: dep }));
-      }
-      if (initialBlockedBy.length && detectPlanCycle(allTasks, -1, initialBlockedBy)) {
-        return planError(goal, t("plan.error.blockedByCycle"));
-      }
-      const newTask: Task = { id: goal.plan.nextId, subject, description, status: "pending" };
-      if (initialBlockedBy.length) newTask.blockedBy = [...initialBlockedBy];
-      const phases = goal.plan.phases.map((ph, i) =>
-        i === phaseIdx ? { ...ph, tasks: [...ph.tasks, newTask] } : ph,
-      );
-      return {
-        goal: { ...goal, plan: { ...goal.plan, phases, nextId: goal.plan.nextId + 1 }, updatedAt: Date.now() },
-        op: { kind: "create", taskId: newTask.id, phaseId },
-      };
-    }
-    case "update": {
-      const id = Number(params.id);
-      if (!Number.isFinite(id)) return planError(goal, t("plan.error.idRequiredForUpdate"));
-      const phaseIdx = findPhaseByTask(goal.plan, id);
-      if (phaseIdx === -1) return planError(goal, t("plan.error.taskNotFound", { taskId: id }));
-      const phase = goal.plan.phases[phaseIdx];
-      const taskIdx = phase.tasks.findIndex((t) => t.id === id);
-      const current = phase.tasks[taskIdx];
-
-      const addList = coerceNumberArray(params.addBlockedBy);
-      const removeList = coerceNumberArray(params.removeBlockedBy);
-      if (params.subject !== undefined && !String(params.subject).trim()) {
-        return planError(goal, t("plan.error.subjectCannotBeBlank"));
-      }
-      if (params.description !== undefined && !String(params.description).trim()) {
-        return planError(goal, t("plan.error.descriptionCannotBeBlank"));
-      }
-      const hasMutation =
-        params.subject !== undefined ||
-        params.description !== undefined ||
-        params.status !== undefined ||
-        params.evidence !== undefined ||
-        params.blockedReason !== undefined ||
-        addList.length > 0 ||
-        removeList.length > 0;
-      if (!hasMutation) return planError(goal, t("plan.error.updateRequiresMutableField"));
-
-      let newStatus = current.status;
-      if (params.status !== undefined) {
-        const target = String(params.status) as PlanStatus;
-        if (!isTaskTransitionValid(current.status, target)) {
-          return planError(goal, t("plan.error.illegalTransition", { from: current.status, to: target }));
-        }
-        newStatus = target;
-      }
-      const requestedBlockedReason = params.blockedReason === undefined ? undefined : String(params.blockedReason).trim();
-      const requestedEvidence = params.evidence === undefined ? undefined : String(params.evidence).trim();
-      if (newStatus === "blocked" && !(requestedBlockedReason ?? current.blockedReason?.trim())) {
-        return planError(goal, t("plan.error.blockedNeedsReason"));
-      }
-      if (isDonePlanStatus(newStatus) && !(requestedEvidence ?? current.evidence?.trim())) {
-        return planError(goal, t("plan.error.doneNeedsEvidence"));
-      }
-
-      let newBlockedBy = current.blockedBy ? [...current.blockedBy] : [];
-      const removeSet = new Set<number>(removeList);
-      if (removeSet.size) newBlockedBy = newBlockedBy.filter((d) => !removeSet.has(d));
-      if (addList.length) {
-        const allTasks = flattenTasks(goal.plan);
-        for (const dep of addList) {
-          if (dep === current.id) return planError(goal, t("plan.error.cannotBlockSelf", { taskId: current.id }));
-          const depTask = allTasks.find((t) => t.id === dep);
-          if (!depTask) return planError(goal, t("plan.error.addBlockedByTaskNotFound", { taskId: dep }));
-          if (findPhaseByTask(goal.plan, dep) > phaseIdx) return planError(goal, t("plan.error.futurePhaseDependency", { taskId: dep }));
-          if (!newBlockedBy.includes(dep)) newBlockedBy.push(dep);
-        }
-        if (detectPlanCycle(flattenTasks(goal.plan), current.id, newBlockedBy)) {
-          return planError(goal, t("plan.error.addBlockedByCycle"));
-        }
-      }
-      if ((newStatus === "in_progress" || isDonePlanStatus(newStatus)) && newBlockedBy.length) {
-        const allTasks = flattenTasks(goal.plan);
-        const unresolved = newBlockedBy.find((dep) => {
-          const dependency = allTasks.find((task) => task.id === dep);
-          return !dependency || !isDonePlanStatus(dependency.status);
-        });
-        if (unresolved !== undefined) return planError(goal, t("plan.error.blockedByUnresolved", { taskId: unresolved }));
-      }
-
-      const updated: Task = { ...current, status: newStatus };
-      if (params.subject !== undefined) updated.subject = String(params.subject).trim();
-      if (params.description !== undefined) updated.description = String(params.description).trim();
-      if (params.evidence !== undefined) {
-        if (requestedEvidence) updated.evidence = requestedEvidence;
-        else delete updated.evidence;
-      }
-      if (newStatus === "blocked") updated.blockedReason = requestedBlockedReason ?? current.blockedReason?.trim();
-      else delete updated.blockedReason;
-      if (newBlockedBy.length) updated.blockedBy = newBlockedBy;
-      else delete updated.blockedBy;
-
-      const tasks = [...phase.tasks];
-      tasks[taskIdx] = updated;
-      const newPhase: Phase = { ...phase, tasks };
-      newPhase.status = recomputePhaseStatus(newPhase);
-      if (newPhase.status !== "blocked") delete newPhase.blockedReason;
-      const phases = goal.plan.phases.map((ph, i) => (i === phaseIdx ? newPhase : ph));
-
-      return {
-        goal: { ...goal, plan: { ...goal.plan, phases }, updatedAt: Date.now() },
-        op: { kind: "update", taskId: id, fromStatus: current.status, toStatus: newStatus },
-      };
-    }
-    case "list": {
-      let tasks = flattenTasks(goal.plan);
-      if (params.phaseId !== undefined) {
-        const phaseIdx = goal.plan.phases.findIndex((ph) => ph.id === Number(params.phaseId));
-        if (phaseIdx === -1) return planError(goal, t("plan.error.phaseNotFound", { phaseId: Number(params.phaseId) }));
-        tasks = goal.plan.phases[phaseIdx].tasks;
-      }
-      if (params.status !== undefined) {
-        const st = String(params.status) as PlanStatus;
-        tasks = tasks.filter((t) => t.status === st);
-      }
-      return { goal, op: { kind: "list", tasks } };
-    }
-    case "get": {
-      const id = Number(params.id);
-      if (!Number.isFinite(id)) return planError(goal, t("plan.error.idRequiredForGet"));
-      const task = flattenTasks(goal.plan).find((t) => t.id === id);
-      if (!task) return planError(goal, t("plan.error.taskNotFound", { taskId: id }));
-      return { goal, op: { kind: "get", task } };
-    }
-  }
+) {
+  return applyPlanMutationWithTranslator(goal, action, params, t);
 }
 
 // ============================================================================
@@ -6628,25 +6182,16 @@ function buildOverlayHeading(
 }
 
 export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOptions, width?: number): string[] {
-  if (!goal || !goal.plan || goal.plan.phases.length === 0) return [];
-  if (goal.status === "pending") return [];
+  if (!goal || goal.status === "pending") return [];
+  const view = derivePlanView(goal);
+  if (!view) return [];
 
-  const planType = resolvePlanType(goal);
-  const visiblePhases = goal.plan.phases;
-  const phaseDone = (phase: Phase) => isDonePlanStatus(phase.status);
+  const { planType, phases: visiblePhases, taskPlanTasks } = view;
   const elapsedMs = getGoalElapsedMs(goal);
   const elapsed = formatElapsed(elapsedMs);
   const compactElapsed = formatCompactElapsed(elapsedMs);
-  const taskPlanPhase = visiblePhases[0];
-  const doneTasks = visiblePhases.reduce((sum, phase) => sum + countDoneTasks(phase), 0);
-  const totalTasks = visiblePhases.reduce((sum, phase) => sum + phase.tasks.length, 0);
-  const donePhases = visiblePhases.filter(phaseDone).length;
-  const progress = planType === "task"
-    ? `${doneTasks}/${totalTasks} tasks`
-    : `${donePhases}/${visiblePhases.length} phases · ${doneTasks}/${totalTasks} tasks`;
-  const compactProgress = planType === "task"
-    ? `${doneTasks}/${totalTasks}`
-    : `${donePhases}/${visiblePhases.length}p ${doneTasks}/${totalTasks}t`;
+  const progress = formatPlanProgress(view);
+  const compactProgress = formatCompactPlanProgress(view);
   const heading = buildOverlayHeading(goal, progress, compactProgress, elapsed, compactElapsed, width);
   const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
   const activitySuffix = formatActivitySuffix(opts.activityFrame);
@@ -6655,7 +6200,7 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
   const bodyLines: string[] = [];
   if (showExpandedDetails && activityLine) bodyLines.push(`│ ${truncateLine(activityLine, 72)}`);
   if (planType === "task") {
-    for (const task of taskPlanPhase.tasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52, activitySuffix));
+    for (const task of taskPlanTasks) bodyLines.push(formatTaskDisplay(task, "├─ ", 52, activitySuffix));
   } else {
     for (const phase of visiblePhases) {
       bodyLines.push(formatPhaseDisplay(phase, "├─ ", 44));
@@ -6684,43 +6229,23 @@ export function renderPlanLines(goal: GoalState | undefined, opts: RenderPlanOpt
 // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 1。
 // =============================================================================
 
-// 状态字符（Status Glyph，ADR 0009）：phase/task 统一用同一套 ○/◐/✓/⚠，只靠缩进和层级基色区分。
-// goal 继续保留 🎯 作为标题锚点。
-const STATUS_GLYPH: Record<PlanStatus, string> = {
-  pending: "○",
-  in_progress: "◐",
-  done: "✓",
-  blocked: "⚠",
-};
-
-// RenderLine 是 modal 渲染的统一结构：type + 可选 status + text。
-// colorize 按 line.type 分配层级基色（ADR 0009），不再按 status 染色。
-export type PlanStatusTarget = { kind: "phase" | "task"; id: number };
-export type RenderLineType = "heading" | "spacer" | "description" | "phase" | "task";
-export interface RenderLine {
-  type: RenderLineType;
-  status?: PlanStatus;
-  text: string;
-  target?: PlanStatusTarget;
-  selected?: boolean;
-}
 
 /** Build full body as RenderLine[]（heading + spacer + phases + tasks）。供 modal scroll 用。 */
 export function buildBodyLines(goal: GoalState | undefined): RenderLine[] {
-  if (!goal || !goal.plan || goal.plan.phases.length === 0) return [];
-  if (goal.status === "pending") return [];
+  if (!goal || goal.status === "pending") return [];
+  const view = derivePlanView(goal);
+  if (!view) return [];
 
   const lines: RenderLine[] = [];
   lines.push({ type: "heading", text: buildHeadingLine(goal) });
   lines.push({ type: "spacer", text: "" });
 
-  const planType = resolvePlanType(goal);
-  if (planType === "task") {
-    for (const task of goal.plan.phases[0].tasks) {
+  if (view.planType === "task") {
+    for (const task of view.taskPlanTasks) {
       lines.push({ type: "task", status: task.status, text: formatTaskDisplay(task, "├─ "), target: { kind: "task", id: task.id } });
     }
   } else {
-    for (const phase of goal.plan.phases) {
+    for (const phase of view.phases) {
       lines.push({ type: "phase", status: phase.status, text: formatPhaseDisplay(phase, "├─ "), target: { kind: "phase", id: phase.id } });
       for (const task of phase.tasks) {
         lines.push({ type: "task", status: task.status, text: formatTaskDisplay(task, "│    "), target: { kind: "task", id: task.id } });
@@ -6772,16 +6297,6 @@ export function getPlanStatusTargets(goal: GoalState | undefined): PlanStatusTar
   return buildPlanStatusListLines(goal).flatMap((line) => line.target ? [line.target] : []);
 }
 
-export function computePlanStatusSelection(data: string, current: number, count: number): number | null {
-  if (count <= 0) return 0;
-  const last = count - 1;
-  const selected = Math.max(0, Math.min(current, last));
-  if (matchesKey(data, "down") || data === "j") return Math.min(selected + 1, last);
-  if (matchesKey(data, "up") || data === "k") return Math.max(selected - 1, 0);
-  if (data === "G") return last;
-  if (data === "g") return 0;
-  return null;
-}
 
 /** `/dgoal s` 详情页：显示所选 phase/task 的完整执行说明和运行字段。 */
 export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: PlanStatusTarget | undefined): string[] {
@@ -6821,10 +6336,7 @@ export function buildPlanStatusDetailLines(goal: GoalState | undefined, target: 
 
 /** Build heading only — for pinned top of scrollable modal. 量化到秒避免 elapsed 跳变导致每行失效。 */
 export function buildHeadingLine(goal: Pick<GoalState, "objective" | "plan" | "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt"> & Partial<Pick<GoalState, "planType" | "pauseReason" | "pauseReasonDetail">>): string {
-  const planType = resolvePlanType(goal);
-  const progress = planType === "task"
-    ? `${countDoneTasks(goal.plan.phases[0])}/${goal.plan.phases[0].tasks.length} tasks`
-    : `${goal.plan.phases.filter((phase) => isDonePlanStatus(phase.status)).length}/${goal.plan.phases.length} phases · ${goal.plan.phases.reduce((sum, phase) => sum + countDoneTasks(phase), 0)}/${goal.plan.phases.reduce((sum, phase) => sum + phase.tasks.length, 0)} tasks`;
+  const progress = formatPlanProgress(derivePlanView(goal)!);
   const elapsed = formatElapsed(getGoalElapsedMs(goal));
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
   const pauseReason = formatPauseReasonLabel(goal);
@@ -6832,207 +6344,6 @@ export function buildHeadingLine(goal: Pick<GoalState, "objective" | "plan" | "s
   return `🎯 ${objectiveFirstLine} · ${progress} ⏱️ ${elapsed}${labels ? ` · ${labels}` : ""}`;
 }
 
-/** Colorize a RenderLine based on its type only (layer base color, ADR 0009).
- *  层级靠颜色：heading→accent+bold / phase→text / task→dim / spacer→原样。
- *  状态只靠 STATUS_GLYPH 字符表达，颜色和粗体都不再承担状态语义。
- *  纯函数：无副作用，不读模块状态；仅依输入 (line, theme)。 */
-export function colorize(line: RenderLine, theme: Theme): string {
-  if (line.selected) return theme.fg("accent", theme.bold(line.text));
-  if (line.type === "heading") return theme.fg("accent", theme.bold(line.text));
-  if (line.type === "spacer") return line.text;
-  if (line.type === "description") return theme.fg("muted", line.text);
-  if (line.type === "phase") return theme.fg("text", line.text);
-  return theme.fg("dim", line.text); // task
-}
-
-/** 把单行文本按 width 自动换行；continuation 行前面补 contIndentWidth 个空格。
- *  用于 modal 内 heading / hint 等无树形前缀的内容。 */
-function wrapModalText(text: string, width: number, contIndentWidth: number): string[] {
-  if (visibleWidth(text) <= width) return [text];
-  const wrapped = wrapTextWithAnsi(text, width);
-  if (wrapped.length <= 1) return wrapped;
-  const indent = " ".repeat(contIndentWidth);
-  const continuationWidth = Math.max(1, width - contIndentWidth);
-  return [wrapped[0], ...wrapped.slice(1).flatMap((line) => wrapTextWithAnsi(line, continuationWidth).map((part) => indent + part))];
-}
-
-/** 把 RenderLine 按 width 自动换行，并保证 phase/task 的续行与内容对齐。
- *  phase 前缀 " ├─ ○ " 占 6 列，task 前缀 " │    ○ " 占 8 列。 */
-function wrapModalLine(line: RenderLine, width: number, theme: Theme): string[] {
-  const leftPad = line.target ? (line.selected ? "› " : "  ") : " ";
-  const colored = colorize(line, theme);
-  if (line.type === "spacer") return [leftPad + colored];
-
-  const prefixWidth = line.type === "phase"
-    ? visibleWidth(`${leftPad}├─ ${line.status ? STATUS_GLYPH[line.status] : "○"} `)
-    : line.type === "task"
-      ? visibleWidth(`${leftPad}│    ${line.status ? STATUS_GLYPH[line.status] : "○"} `)
-      : visibleWidth(leftPad);
-
-  const fullText = leftPad + colored;
-  if (visibleWidth(fullText) <= width) return [fullText];
-
-  const wrapped = wrapTextWithAnsi(fullText, width);
-  if (wrapped.length <= 1) return wrapped;
-
-  const indent = " ".repeat(prefixWidth);
-  const continuationWidth = Math.max(1, width - prefixWidth);
-  return [wrapped[0], ...wrapped.slice(1).flatMap((line) => wrapTextWithAnsi(line, continuationWidth).map((part) => indent + part))];
-}
-
-function getGoalElapsedMs(goal: Pick<GoalState, "status" | "startedAt" | "updatedAt" | "pausedTotalMs" | "pauseStartedAt">): number {
-  const pausedTotalMs = goal.pausedTotalMs ?? 0;
-  if (goal.status === "paused") {
-    const frozenAt = goal.pauseStartedAt ?? goal.updatedAt;
-    return Math.max(0, frozenAt - goal.startedAt - pausedTotalMs);
-  }
-  if (goal.status === "done") return Math.max(0, goal.updatedAt - goal.startedAt - pausedTotalMs);
-  return Math.max(0, Date.now() - goal.startedAt - pausedTotalMs);
-}
-
-// PlanOverlay：管理 done 闪现状态 + 接入 setWidget。
-// 生命周期：session_start 构造，tool_execution_end/agent_end 刷新，agent_start 隐藏上一轮 done。
-const DONE_HIDE_DELAY_MS = 10_000; // 全部完成后显示 10 秒再隐藏
-
-type PlanOverlayUI = Pick<ExtensionUIContext, "setWidget" | "getToolsExpanded" | "onTerminalInput">;
-
-export class PlanOverlay {
-  private ui: PlanOverlayUI | undefined;
-  private expandTasks = false;
-  private terminalInputUnsubscribe: (() => void) | undefined;
-  // 延迟隐藏：goal done 后保留最终状态展示的定时器
-  private doneHideTimer: ReturnType<typeof setTimeout> | undefined;
-  // 快照：goal done 前的最后状态（用于 done 后继续渲染）
-  private doneSnapshot: GoalState | undefined;
-  // 实时计时器：每秒刷新 TUI 显示 ⏱ 时间
-  private tickTimer: ReturnType<typeof setInterval> | undefined;
-
-  setUI(ui: PlanOverlay["ui"]): void {
-    if (this.terminalInputUnsubscribe) {
-      try { this.terminalInputUnsubscribe(); } catch { /* UI cleanup is best effort */ }
-      this.terminalInputUnsubscribe = undefined;
-    }
-    this.ui = ui;
-    this.syncExpandTasksFromToolsState();
-    if (this.ui?.onTerminalInput) {
-      try {
-        this.terminalInputUnsubscribe = this.ui.onTerminalInput(() => {
-          setTimeout(() => {
-            if (this.syncExpandTasksFromToolsState()) this.update();
-          }, 0);
-          return undefined;
-        });
-      } catch {
-        this.terminalInputUnsubscribe = undefined;
-      }
-    }
-    this.startTick();
-  }
-
-  private syncExpandTasksFromToolsState(): boolean {
-    try {
-      const expanded = this.ui?.getToolsExpanded?.();
-      if (typeof expanded !== "boolean" || expanded === this.expandTasks) return false;
-      this.expandTasks = expanded;
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // 启动实时计时器（每秒刷新 TUI）
-  private startTick(): void {
-    if (this.tickTimer) return; // 已在运行
-    this.tickTimer = setInterval(() => {
-      this.update();
-    }, 1000);
-  }
-
-  // 停止实时计时器
-  private stopTick(): void {
-    if (this.tickTimer) {
-      clearInterval(this.tickTimer);
-      this.tickTimer = undefined;
-    }
-  }
-
-  // 手动切换 task 展开（测试/兜底）；正常交互跟随 Pi 的 app.tools.expand（默认 Ctrl+O）。
-  toggleExpand(): void {
-    this.expandTasks = !this.expandTasks;
-    this.update();
-  }
-
-  // 渲染并推送 widget。无可见内容时注销 widget。
-  // 优先使用 doneSnapshot（goal done 后 goalRuntimeState.currentGoal 已清空但需继续展示）。
-  update(): void {
-    try {
-      if (!this.ui) return;
-      this.syncExpandTasksFromToolsState();
-      const goal = this.doneSnapshot ?? goalRuntimeState.currentGoal;
-      if (goal && isGoalRunning(goal.status)) this.startTick();
-      else this.stopTick();
-      const renderOptions = { expandTasks: this.expandTasks };
-      const preview = renderPlanLines(goal, renderOptions);
-      if (preview.length === 0) {
-        this.ui.setWidget(PLAN_WIDGET_KEY, undefined);
-        return;
-      }
-      this.ui.setWidget(PLAN_WIDGET_KEY, () => ({
-        render: (width: number) => renderPlanLines(goal, renderOptions, width),
-        invalidate: () => {},
-      }), { placement: "aboveEditor" });
-    } catch {
-      // 异步/同步 TUI 渲染失败不能形成未捕获异常或阻断状态机。
-    }
-  }
-
-  // goal done 时调用：快照最终状态，展示全 ✓ + 计时器，延迟后自动隐藏。
-  showDoneThenHide(goal: GoalState | undefined = goalRuntimeState.currentGoal): void {
-    if (this.doneHideTimer) clearTimeout(this.doneHideTimer);
-    // finalizeGoal 先清理 goalRuntimeState.currentGoal，因此优先使用调用方传入的完成快照。
-    this.doneSnapshot = goal ? { ...goal, status: "done" as GoalStatus } : undefined;
-    this.update();
-    // 延迟隐藏
-    this.doneHideTimer = setTimeout(() => {
-      this.dispose();
-    }, DONE_HIDE_DELAY_MS);
-  }
-
-  // 新 goal、session 切换或显式 clear 时丢弃旧 goal 的完成快照，但保留现有 UI 绑定。
-  clearDoneSnapshot(): void {
-    if (this.doneHideTimer) {
-      clearTimeout(this.doneHideTimer);
-      this.doneHideTimer = undefined;
-    }
-    this.doneSnapshot = undefined;
-  }
-
-  // goal 清除/重置时清理闪现状态
-  reset(): void {
-    this.clearDoneSnapshot();
-    if (this.terminalInputUnsubscribe) {
-      try { this.terminalInputUnsubscribe(); } catch { /* UI cleanup is best effort */ }
-      this.terminalInputUnsubscribe = undefined;
-    }
-    this.stopTick();
-    this.doneSnapshot = undefined;
-  }
-
-  dispose(): void {
-    if (this.doneHideTimer) {
-      clearTimeout(this.doneHideTimer);
-      this.doneHideTimer = undefined;
-    }
-    this.stopTick();
-    try {
-      this.ui?.setWidget(PLAN_WIDGET_KEY, undefined);
-    } catch {
-      // 延迟隐藏/会话清理时的 TUI 失败也必须 fail-soft。
-    }
-    this.ui = undefined;
-    this.reset();
-  }
-}
 
 // 模块级 overlay 实例（dgoal() 内 session_start 构造）
 let planOverlay: PlanOverlay | undefined;
@@ -7079,229 +6390,33 @@ export function truncate(value: string, max = 160) {
 }
 
 // =============================================================================
-// 切片 4：PlanStatusDialog Component（顶部 overlay modal + heading 钉顶 + scroll）。
-// 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 4。
-// =============================================================================
+function createPlanTuiDependencies(): PlanTuiDependencies {
+  return {
+    t,
+    widgetKey: PLAN_WIDGET_KEY,
+    doneHideDelayMs: 10_000,
+    getCurrentGoal: () => goalRuntimeState.currentGoal,
+    getCurrentCheckSnapshot: () => goalRuntimeState.currentCheckSnapshot,
+    isGoalRunning,
+    renderPlanLines,
+    buildHeadingLine,
+    buildPlanStatusListLines,
+    buildPlanStatusDetailLines,
+    getPlanStatusTargets,
+    computePlanStatusSelection,
+    getGoalElapsedMs,
+    formatCheckActivityLine,
+  };
+}
 
-/** /dgoal s 唤起 center overlay modal。用 Component + Focusable 接口，
- *  focus 由 Pi 的 overlay 系统设到 true，handleInput 只接收键事件。
- *  使用 ctx.ui.custom 调，render 输出会被 Pi 渲染到 overlay 容器内。
- */
-export class PlanStatusDialog implements Component, Focusable {
-  focused = false;
-  private cachedWidth?: number;
-  private cachedLines?: string[];
-  /** 量化到秒的 elapsed；同一秒内 elapsed 相同 → cache 命中，避免每秒全量重渲。 */
-  private cachedElapsedSec?: number;
-  private cachedCheckSnapshotKey?: string;
-  /** 当前页换行后的物理 body 行，供列表选中窗口或详情滚动复用。 */
-  private cachedWrappedBody?: string[];
-  private cachedWrappedBodyWidth?: number;
-  private cachedSelectedPhysicalStart?: number;
-  private view: "list" | "detail" = "list";
-  private selectedIndex = 0;
-  private detailTarget?: PlanStatusTarget;
-  private listScrollOffset = 0;
-  private detailScrollOffset = 0;
-  private followSelection = false;
-  private readonly maxVisible = 20;
-
-  constructor(
-    private readonly goal: GoalState | undefined,
-    private readonly theme: Theme,
-    private readonly done: () => void,
-  ) {}
-
-  handleInput(data: string): void {
-    if (matchesKey(data, "ctrl+c")) {
-      this.done();
-      return;
-    }
-    if (!this.goal?.plan) {
-      if (matchesKey(data, "escape")) this.done();
-      return;
-    }
-
-    if (this.view === "detail") {
-      if (matchesKey(data, "escape")) {
-        this.view = "list";
-        this.detailTarget = undefined;
-        this.detailScrollOffset = 0;
-        this.invalidate();
-        return;
-      }
-      const total = this.cachedWrappedBody?.length
-        ?? buildPlanStatusDetailLines(this.goal, this.detailTarget).length;
-      const result = computeScrollOffset(data, this.detailScrollOffset, total, this.maxVisible);
-      if (result !== null && result !== "exit" && result !== this.detailScrollOffset) {
-        this.detailScrollOffset = result;
-        this.invalidate();
-      }
-      return;
-    }
-
-    if (matchesKey(data, "escape")) {
-      this.done();
-      return;
-    }
-
-    const listScrollKey = matchesKey(data, "pageDown") || matchesKey(data, "pageUp")
-      || matchesKey(data, "ctrl+d") || matchesKey(data, "ctrl+u")
-      || matchesKey(data, "home") || matchesKey(data, "end");
-    if (listScrollKey) {
-      const total = this.cachedWrappedBody?.length ?? buildPlanStatusListLines(this.goal).length;
-      const result = computeScrollOffset(data, this.listScrollOffset, total, this.maxVisible);
-      if (result !== null && result !== "exit" && result !== this.listScrollOffset) {
-        this.listScrollOffset = result;
-        this.followSelection = false;
-        this.invalidate();
-      }
-      return;
-    }
-
-    const targets = getPlanStatusTargets(this.goal);
-    if ((data === "\r" || data === "\n") && targets[this.selectedIndex]) {
-      this.detailTarget = targets[this.selectedIndex];
-      this.view = "detail";
-      this.detailScrollOffset = 0;
-      this.invalidate();
-      return;
-    }
-
-    const selected = computePlanStatusSelection(data, this.selectedIndex, targets.length);
-    if (selected !== null) {
-      this.selectedIndex = selected;
-      this.followSelection = true;
-      this.invalidate();
-    }
+export class PlanOverlay extends PlanOverlayComponent {
+  constructor() {
+    super(createPlanTuiDependencies());
   }
+}
 
-  invalidate(): void {
-    this.cachedWidth = undefined;
-    this.cachedLines = undefined;
-    this.cachedElapsedSec = undefined;
-    this.cachedCheckSnapshotKey = undefined;
-    this.cachedWrappedBody = undefined;
-    this.cachedWrappedBodyWidth = undefined;
-    this.cachedSelectedPhysicalStart = undefined;
-  }
-
-  private renderListBody(width: number): string[] {
-    if (this.cachedWrappedBody && this.cachedWrappedBodyWidth === width) return this.cachedWrappedBody;
-    const targets = getPlanStatusTargets(this.goal);
-    this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, targets.length - 1)));
-    const body = buildPlanStatusListLines(this.goal);
-    const wrapped: string[] = [];
-    let selectableIndex = 0;
-    let selectedPhysicalStart: number | undefined;
-    for (const line of body) {
-      const selected = Boolean(line.target) && selectableIndex === this.selectedIndex;
-      if (selected) selectedPhysicalStart = wrapped.length;
-      wrapped.push(...wrapModalLine(selected ? { ...line, selected: true } : line, width, this.theme));
-      if (line.target) selectableIndex += 1;
-    }
-    this.cachedWrappedBody = wrapped;
-    this.cachedWrappedBodyWidth = width;
-    this.cachedSelectedPhysicalStart = selectedPhysicalStart;
-    return wrapped;
-  }
-
-  private renderDetailBody(width: number): string[] {
-    if (this.cachedWrappedBody && this.cachedWrappedBodyWidth === width) return this.cachedWrappedBody;
-    const detail = buildPlanStatusDetailLines(this.goal, this.detailTarget);
-    const wrapped = detail.flatMap((line, index) => {
-      const colored = index === 0
-        ? this.theme.fg("accent", this.theme.bold(line))
-        : this.theme.fg(index === 3 ? "text" : "dim", line);
-      return wrapModalText(" " + colored, width, 1);
-    });
-    this.cachedWrappedBody = wrapped;
-    this.cachedWrappedBodyWidth = width;
-    return wrapped;
-  }
-
-  private cacheRenderedLines(lines: string[], width: number, elapsedSec: number, checkSnapshotKey: string): string[] {
-    this.cachedWidth = width;
-    this.cachedElapsedSec = elapsedSec;
-    this.cachedCheckSnapshotKey = checkSnapshotKey;
-    this.cachedLines = lines;
-    return lines;
-  }
-
-  render(availableWidth: number): string[] {
-    if (!Number.isFinite(availableWidth) || availableWidth <= 0) return [];
-    const renderWidth = Math.floor(availableWidth);
-    if (renderWidth < 20) return [truncateToWidth("dgoal", renderWidth)];
-
-    const elapsedSec = this.goal ? Math.floor(getGoalElapsedMs(this.goal) / 1000) : 0;
-    const checkSnapshot = goalRuntimeState.currentCheckSnapshot;
-    const checkSnapshotKey = JSON.stringify(checkSnapshot ?? null);
-    if (
-      this.cachedLines && this.cachedWidth === renderWidth && this.cachedElapsedSec === elapsedSec
-      && this.cachedCheckSnapshotKey === checkSnapshotKey
-    ) return this.cachedLines;
-
-    const width = renderWidth;
-    const th = this.theme;
-    const lines: string[] = [];
-    const titleKey = this.view === "detail" ? "status.dialogDetailTitle" : "status.dialogTitle";
-    const title = truncateToWidth(` ${t(titleKey)} `, Math.max(0, width - 2));
-    const padLen = Math.max(0, width - visibleWidth(title) - 2);
-    const padLeft = Math.floor(padLen / 2);
-    const padRight = padLen - padLeft;
-    lines.push(
-      th.fg("border", "╭" + "─".repeat(padLeft)) +
-        th.fg("accent", th.bold(title)) +
-        th.fg("border", "─".repeat(padRight) + "╮"),
-    );
-
-    if (!this.goal) {
-      lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogNoGoal")), width));
-      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogStartCommand")), width));
-      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogCloseHint")), width));
-      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
-      return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);
-    }
-
-    if (!this.goal.plan || this.goal.plan.phases.length === 0) {
-      lines.push(truncateToWidth(" " + th.fg("muted", t("status.dialogEmpty")), width));
-      lines.push(truncateToWidth(" " + th.fg("dim", t("status.dialogCloseHint")), width));
-      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
-      return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);
-    }
-
-    const heading = " " + th.fg("accent", th.bold(buildHeadingLine(this.goal)));
-    lines.push(...wrapModalText(heading, width, 1));
-
-    const activityLine = formatCheckActivityLine(checkSnapshot);
-    if (activityLine) lines.push(...wrapModalText(" " + th.fg("dim", activityLine), width, 1));
-
-    const wrappedBody = this.view === "detail" ? this.renderDetailBody(width) : this.renderListBody(width);
-    const total = wrappedBody.length;
-    let start: number;
-    if (this.view === "detail") {
-      start = Math.min(this.detailScrollOffset, Math.max(0, total - this.maxVisible));
-      this.detailScrollOffset = start;
-    } else {
-      start = Math.min(this.listScrollOffset, Math.max(0, total - this.maxVisible));
-      const selectedStart = this.cachedSelectedPhysicalStart;
-      if (this.followSelection && selectedStart !== undefined) {
-        if (selectedStart < start) start = selectedStart;
-        else if (selectedStart >= start + this.maxVisible) start = selectedStart - this.maxVisible + 1;
-      }
-      start = Math.max(0, Math.min(start, Math.max(0, total - this.maxVisible)));
-      this.listScrollOffset = start;
-      this.followSelection = false;
-    }
-    const end = Math.min(start + this.maxVisible, total);
-    lines.push(...wrappedBody.slice(start, end));
-
-    const shown = total === 0 ? "0-0 / 0" : `${start + 1}-${end} / ${total}`;
-    const hint = this.view === "detail"
-      ? t("status.dialogDetailHint", { shown })
-      : t("status.dialogListHint");
-    lines.push(truncateToWidth(th.fg("dim", " " + hint), width));
-    lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
-    return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);
+export class PlanStatusDialog extends PlanStatusDialogComponent {
+  constructor(goal: GoalState | undefined, theme: Theme, done: () => void) {
+    super(goal, theme, done, createPlanTuiDependencies());
   }
 }

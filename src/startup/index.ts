@@ -54,6 +54,7 @@ import {
   clearNaturalLanguageStartAuthorization,
   goalRuntimeState,
 } from "../goal-runtime/state.ts";
+import { clearCurrentGoal, commitCurrentGoal } from "../goal-runtime/commit.ts";
 
 const DGOAL_TOKEN_SOURCE = String.raw`(?<![A-Za-z0-9_])\/?dgoal\b`;
 const DGOAL_TOKEN_PATTERN = new RegExp(DGOAL_TOKEN_SOURCE, "i");
@@ -170,8 +171,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     // 说明旧 Plan 不再拥有 session；清除它而非错误地恢复旧上下文。
     const staleTaskPlan = goalRuntimeState.currentGoal;
     if (staleTaskPlan?.status === "paused" && staleTaskPlan.pauseReason === "model_error" && resolvePlanType(staleTaskPlan) === "task") {
-      goalRuntimeState.currentGoal = undefined;
-      persistGoal(null);
+      clearCurrentGoal(persistGoal);
       clearContinuation();
       clearCurrentCheckSnapshot();
       resetAuditorWorkspaceTracker();
@@ -261,8 +261,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (finalAssistant?.stopReason === "aborted") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;
-      goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" });
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" }), persistGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
@@ -292,8 +291,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       goalRuntimeState.pendingProposal = undefined;
       const retryCount = Math.max(0, goalRuntimeState.consecutiveErrors - 1);
       goalRuntimeState.consecutiveErrors = 0;
-      goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "model_error" });
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "model_error" }), persistGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
@@ -309,8 +307,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
       goalRuntimeState.consecutiveNoProgressTurns = 0;
-      goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() };
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
       return;
@@ -324,16 +321,14 @@ export function registerDgoal(pi: ExtensionAPI) {
     });
     goalRuntimeState.consecutiveNoProgressTurns = progress.newCount;
     if (progress.pause) {
-      goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "no_progress" });
-      persistGoal(goalRuntimeState.currentGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "no_progress" }), persistGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
       safeNotify(ctx, t("notify.noProgressPaused", { max: MAX_NO_PROGRESS_TURNS, detail: buildNoProgressDetail(goalRuntimeState.currentGoal) }), "warning");
       return;
     }
-    goalRuntimeState.currentGoal = { ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() };
-    persistGoal(goalRuntimeState.currentGoal);
+    commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
 
     await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
