@@ -1,6 +1,6 @@
 # doc 文档导航
 
-> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）；当前 phase 的 `blockedBy` 还会纯派生 Task DAG 读模型供 `plan_read`、`/dgoal s` 与 prompt 共用，ready 仅声明通用执行/委派边界，不新增持久态或调度器。
+> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）；自动续跑由 LLM 负责继续/暂停的语义选择，运行时只观察结构化活性并以双层熔断兜底（ADR 0045）；当前 phase 的 `blockedBy` 还会纯派生 Task DAG 读模型供 `plan_read`、`/dgoal s` 与 prompt 共用，ready 仅声明通用执行/委派边界，不新增持久态或调度器。
 
 ## 阅读顺序
 
@@ -59,3 +59,4 @@
 5. **惰性创建**：目录和文件按需建立，不预建空结构。
 6. **外部参考只借轻动作**：借 UI/reducer/状态边界/理论依据，不照搬完整平台。
 7. **轻提案、硬执行**：Phase/Goal proposal 由代码校验结构、状态、Plan 类型与授权，LLM 负责语义与人工依赖分流，真实动作受执行边界约束，审核器只核冻结结果；Task Plan 不走 proposal（ADR 0037/0038）。
+8. **语义选择与活性观测分层**：自动续跑时 LLM 决定继续实际推进或在真实用户决策死锁时结构化暂停；运行时不解析 assistant / `bash` 语义，只观察 activity 与 durable progress，并在双层阈值后强制 `paused(no_progress)`（ADR 0045）。

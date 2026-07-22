@@ -51,8 +51,13 @@ export interface GoalRuntimeState {
   /** Exact observed input, used to reject later input-transform changes before agent start. Never persisted. */
   naturalLanguageStartInput: string | undefined;
   consecutiveErrors: number;
+  /** Consecutive normal turns with no tool execution at all. */
   consecutiveNoProgressTurns: number;
+  /** Consecutive normal turns with no durable file/Plan progress, including pure idle turns. */
+  consecutiveNoDurableProgressTurns: number;
   turnHadToolExecution: boolean;
+  turnHadDurableProgress: boolean;
+  turnStartProgressFingerprint: string | undefined;
   pendingContinuation: ContinuationState | undefined;
   continuationDeliveryTimer: ReturnType<typeof setTimeout> | undefined;
   cancelledMarkers: Set<string>;
@@ -74,7 +79,10 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     naturalLanguageStartInput: undefined,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
+    consecutiveNoDurableProgressTurns: 0,
     turnHadToolExecution: false,
+    turnHadDurableProgress: false,
+    turnStartProgressFingerprint: undefined,
     pendingContinuation: undefined,
     continuationDeliveryTimer: undefined,
     cancelledMarkers: new Set(),

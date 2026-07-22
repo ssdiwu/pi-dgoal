@@ -125,7 +125,7 @@ Phase/Goal Plan 的 proposal 采用“轻提案、硬执行”（ADR 0037）：
 - 真实动作权限由宿主工具和执行边界决定，不靠 proposal 关键词猜测；
 - 独立审核器只核用户确认的冻结条件，不在执行中扩张完成门。
 
-隐式 proposal、`implicitFinalOnlyStart`、`implicitFinalOnlyBudget`、bounded/unbounded runtime budget 与 verification policy 已删除。仍保留固定技术熔断：模型错误、连续无进展、审核器错误与审核 timeout；用户中断会暂停显式 Phase/Goal Plan，而 Task Plan 保持 active，等待下一条用户输入继续。agent 需要用户决策时用：
+隐式 proposal、`implicitFinalOnlyStart`、`implicitFinalOnlyBudget`、bounded/unbounded runtime budget 与 verification policy 已删除。仍保留固定技术熔断：模型错误、连续无进展、审核器错误与审核 timeout。无进展采用 ADR 0045 的职责分层：LLM 判断继续实际推进还是在真实用户决策死锁时结构化暂停；运行时不解析 assistant 文本或 `bash` 命令语义，只观察结构化 activity。连续 3 轮无工具会暂停；连续 8 轮虽有工具活动、但没有观察到文件、Plan 或独立 check 终态也会暂停。用户中断会暂停显式 Phase/Goal Plan，而 Task Plan 保持 active，等待下一条用户输入继续。agent 需要用户决策时用：
 
 ```text
 plan_update(target=goal, status=paused, reason="具体 blocker")
@@ -197,7 +197,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md) 与 [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md) 与 [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md)。
 
 ## 协议
 

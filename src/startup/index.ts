@@ -31,7 +31,6 @@ import {
   markGoalPaused,
   persistGoal,
   sendContinuation,
-  decideNoProgressPause,
   buildNoProgressDetail,
   setupI18n,
   setApi,
@@ -47,8 +46,16 @@ import {
   MAX_ERROR_RETRIES,
   MODEL_ERROR_WARNING_THRESHOLD,
   MAX_NO_PROGRESS_TURNS,
+  MAX_STALLED_PROGRESS_TURNS,
   type DgoalContext,
 } from "../runtime/index.ts";
+import {
+  beginProgressTurn,
+  completeProgressTurn,
+  recordDurableProgress,
+  recordToolActivity,
+  resetProgressStreaks,
+} from "../runtime/liveness.ts";
 import {
   authorizeNaturalLanguageStart,
   clearNaturalLanguageStartAuthorization,
@@ -183,8 +190,8 @@ export function registerDgoal(pi: ExtensionAPI) {
       && event.prompt !== goalRuntimeState.naturalLanguageStartInput) {
       clearNaturalLanguageStartAuthorization();
     }
-    // 新 agent turn 重置本轮工具调用标记。
-    goalRuntimeState.turnHadToolExecution = false;
+    // 新 agent turn 重置本轮事件标记，并冻结仅含可交付结构的起始指纹。
+    beginProgressTurn(goalRuntimeState, goalRuntimeState.currentGoal);
     // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
     if (goalRuntimeState.currentGoal) {
       if (isGoalRunning(goalRuntimeState.currentGoal.status)) {
@@ -211,15 +218,24 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("tool_execution_start", (event, ctx) => {
     trackFileToolExecutionStart(event.toolCallId, event.toolName, event.args, ctx.cwd);
-    // 本轮有工具调用，说明有实际推进，不计入空转。
-    goalRuntimeState.turnHadToolExecution = true;
+    // 任意工具只证明有 activity；是否产生 durable progress 在成功结束或 agent_end 状态差中判断。
+    recordToolActivity(goalRuntimeState);
   });
 
   // Plan/check tools refresh the persistent projection after successful state changes.
   pi.on("tool_execution_end", (event) => {
     trackFileToolExecutionEnd(event.toolCallId, event.isError);
     if (event.isError) return;
-    // 成功工具推进证明模型仍在有效工作；不把短暂 fetch 失败跨进展累计。
+    // edit/write 与真正写出 approved/rejected 的独立 check 终态是明确持久结果；bash/未知工具不解析语义。
+    const details = event.result && typeof event.result === "object"
+      ? (event.result as { details?: unknown }).details
+      : undefined;
+    const hasCheckTerminal = (event.toolName === PHASE_CHECK_TOOL_NAME || event.toolName === GOAL_CHECK_TOOL_NAME)
+      && Boolean(details && typeof details === "object" && typeof (details as { approved?: unknown }).approved === "boolean");
+    if (event.toolName === "edit" || event.toolName === "write" || hasCheckTerminal) {
+      recordDurableProgress(goalRuntimeState);
+    }
+    // 成功工具推进证明模型仍可调用工具；不把短暂 fetch 失败跨进展累计。
     goalRuntimeState.consecutiveErrors = 0;
     const refreshTools = new Set([
       TASK_PLAN_TOOL_NAME,
@@ -252,7 +268,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     // 只能显式 resume 的状态。清掉旧 continuation 后，下一条用户输入会带着 active Plan 继续。
     if (finalAssistant?.stopReason === "aborted" && resolvePlanType(goalRuntimeState.currentGoal) === "task") {
       goalRuntimeState.consecutiveErrors = 0;
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      resetProgressStreaks(goalRuntimeState);
       clearContinuation();
       return;
     }
@@ -260,7 +276,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     // 显式 dgoal 的用户中断：不重试，直接暂停，保留用户对高保障 Plan 的停止权。
     if (finalAssistant?.stopReason === "aborted") {
       goalRuntimeState.consecutiveErrors = 0;
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      resetProgressStreaks(goalRuntimeState);
       commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" }), persistGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
@@ -274,8 +290,8 @@ export function registerDgoal(pi: ExtensionAPI) {
     // sendContinuation 本身的 guard（goalRuntimeState.pendingContinuation?.goalId === goal.id）会去重。
     if (finalAssistant?.stopReason === "error") {
       goalRuntimeState.consecutiveErrors += 1;
-      // 模型错误打断“连续正常空转”序列：不是正常结束，重置无进展计数。
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      // 模型错误打断“连续正常空转”序列：不是正常结束，重置两类无进展计数。
+      resetProgressStreaks(goalRuntimeState);
       if (goalRuntimeState.consecutiveErrors < MAX_ERROR_RETRIES) {
         if (goalRuntimeState.consecutiveErrors >= MODEL_ERROR_WARNING_THRESHOLD) {
           safeNotify(
@@ -306,26 +322,26 @@ export function registerDgoal(pi: ExtensionAPI) {
     // length/toolUse/缺失原因保留原有续跑行为，继续下一次模型执行。
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      resetProgressStreaks(goalRuntimeState);
       commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
       return;
     }
 
-    // 正常完成一轮：先判是否真正有推进。
+    // 正常完成一轮：仅依据成功文件副作用与 Plan 结构差判断 durable progress。
     goalRuntimeState.consecutiveErrors = 0;
-    const progress = decideNoProgressPause({
-      hadToolExecution: goalRuntimeState.turnHadToolExecution,
-      consecutiveNoProgress: goalRuntimeState.consecutiveNoProgressTurns,
-    });
-    goalRuntimeState.consecutiveNoProgressTurns = progress.newCount;
+    const progress = completeProgressTurn(goalRuntimeState, goalRuntimeState.currentGoal);
     if (progress.pause) {
       commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "no_progress" }), persistGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
-      safeNotify(ctx, t("notify.noProgressPaused", { max: MAX_NO_PROGRESS_TURNS, detail: buildNoProgressDetail(goalRuntimeState.currentGoal) }), "warning");
+      const activityOnly = progress.pauseKind === "activity_only";
+      safeNotify(ctx, t(activityOnly ? "notify.stalledProgressPaused" : "notify.noProgressPaused", {
+        max: activityOnly ? MAX_STALLED_PROGRESS_TURNS : MAX_NO_PROGRESS_TURNS,
+        detail: buildNoProgressDetail(goalRuntimeState.currentGoal),
+      }), "warning");
       return;
     }
     commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);

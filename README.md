@@ -125,7 +125,7 @@ Phase/Goal proposals follow “thin proposal, hard execution” (ADR 0037):
 - actual action permissions remain governed by host tools and execution boundaries, not proposal keywords;
 - independent auditors verify only the user-confirmed frozen contract.
 
-Implicit proposals, `implicitFinalOnlyStart`, `implicitFinalOnlyBudget`, bounded/unbounded runtime budgets, and verification-policy switches are removed. Fixed technical circuit breakers remain: model error, no progress, auditor failure, and audit timeouts; user interruption pauses explicit Phase/Goal Plans, while a Task Plan remains active for the next user turn. When a user decision is required, the agent calls:
+Implicit proposals, `implicitFinalOnlyStart`, `implicitFinalOnlyBudget`, bounded/unbounded runtime budgets, and verification-policy switches are removed. Fixed technical circuit breakers remain: model error, no progress, auditor failure, and audit timeouts. No-progress detection is deterministic (ADR 0045): the LLM chooses whether to keep advancing or to pause for a true user-decision blocker, while the runtime never parses assistant prose or `bash` command text and observes only structured activity. Three consecutive turns with no tools pause immediately; eight consecutive turns with tool activity but no observable file, Plan, or independent-check result also pause. User interruption pauses explicit Phase/Goal Plans, while a Task Plan remains active for the next user turn. When a user decision is required, the agent calls:
 
 ```text
 plan_update(target=goal, status=paused, reason="specific blocker")
@@ -197,7 +197,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), and [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md), and [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md).
 
 ## License
 

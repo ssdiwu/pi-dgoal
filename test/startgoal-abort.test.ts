@@ -8,10 +8,12 @@ import {
   __executePlanProposalForTest,
   __getGoalForTest,
   __getPendingProposalForTest,
+  __getRuntimeStateForTest,
   __isStartGoalInProgressForTest,
   __resetGoalForTest,
   __resumeGoalForTest,
   __setGoalForTest,
+  __setRuntimeStateForTest,
   __startGoalForTest,
   type GoalState,
 } from "../index.ts";
@@ -104,9 +106,10 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     expect(__getPendingProposalForTest()).toBeUndefined();
   });
 
-  test("resumeGoal 的 status/overlay 抛错时仍投递 resume prompt", async () => {
+  test("resumeGoal 清零两类无进展计数，status/overlay 抛错时仍投递 resume prompt", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "resume-ui-throw", objective: "恢复 UI 容错", status: "paused", pauseReason: "user_abort", startedAt: 1, updatedAt: 1, iteration: 0 });
+    __setRuntimeStateForTest({ consecutiveNoProgressTurns: 2, consecutiveNoDurableProgressTurns: 7 });
     const sent: string[] = [];
     const pi = { sendUserMessage: async (msg: string) => void sent.push(msg) } as never;
     const ctx = {
@@ -118,6 +121,8 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
     };
     await __resumeGoalForTest(pi, ctx as never);
     expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
     expect(sent).toHaveLength(1);
     expect(sent[0]).toContain("恢复当前 goal Plan");
   });

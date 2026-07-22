@@ -7,7 +7,7 @@
 1. `README.md`（功能、安装、使用、完成审核机制、设计边界——必读）
 2. `doc/术语表.md`（含建检循环第一性原理 + 全部术语定义）
 3. `doc/10-架构与运行/`（建检循环与三层结构、状态机、工具命令、启动闸门——当前实现权威）
-4. `doc/决策档案/README.md`（决策档案索引；0038 是三档 Plan 当前权威，0039 补充 phase/task ID 语义，0016 是独立验收条件与用户复核边界，0037 是轻提案/硬执行的语义职责分层，其他历史决策按索引与“被覆盖”状态按需深入）
+4. `doc/决策档案/README.md`（决策档案索引；0038 是三档 Plan 当前权威，0039 补充 phase/task ID 语义，0016 是独立验收条件与用户复核边界，0037 是轻提案/硬执行的语义职责分层，0045 是自动续跑期间 LLM 语义选择与运行时结构化活性熔断边界，其他历史决策按索引与“被覆盖”状态按需深入）
 5. `doc/30-路线图/30-项目路线图.md`（实现切片排期）
 6. `index.ts`（扩展组合根；运行时职责位于 `src/`）
 
@@ -54,6 +54,14 @@ pi-dgoal/
 - **先校验后落状态**：显式 proposal 在授权、结构和语义预审成功前不得留下半激活 Plan；错误结果必须说明当前状态和重试方式。
 - **审核不建自指完成门**：审核器只审冻结条件与调用前工件；`phase_check` / `goal_check` 先生成审核记录，再由后续 `plan_update` 写完成。不得要求后置 done 状态预先存在。
 - 修改 proposal/check/finalize 时，回归测试至少覆盖：人工条件三分流、失败 proposal 状态原子性、check 与 update 分离、plan revision 使旧批准失效，以及 update→persist→UI 的因果时序。
+
+## 续跑语义与活性熔断准则
+
+- **LLM 管语义选择**：自动续跑时，主 LLM 根据目标与上下文决定继续实际执行/委派并写入结构化结果，或在真实用户决策死锁时调用 `plan_update(target=goal,status=paused,reason=...)`；正常完成是继续推进后的合法收口。纯文字“继续”“已完成”“被阻塞”都不改变活性或 Plan 状态。
+- **运行时管结构化活性**：不得解析 assistant 文本、`bash` 命令字符串、源码含义或工具参数来猜动作价值；只观察工具 activity 与文件、Plan、独立 check 终态等 durable progress。新增工具若要影响活性，必须提供明确、可测试的结构化结果，不能追加语义关键词规则。
+- **双层熔断**：连续无工具走硬熔断；持续有 activity 但无 durable progress 走软熔断。当前阈值 3/8 是可由回归证据调整的实现参数；双层观测、结构化信号与达到阈值后强制 `paused(no_progress)` 是固定边界，不新增调度器、预算状态或 pauseReason。
+- **保守归类**：成功 `edit` / `write`、结构化 Plan 状态/evidence/blocked/任务集合变化与独立 check 的 `approved` / `rejected` 终态可算 durable；`read` / `plan_read` / `bash` / 未知工具、失败写入、无终态 check、仅修改 `objective` / `subject` / `description` 的文本更新与 no-op 只算 activity。LLM 认为测试等结果已构成进展时，应把判断写入 Plan evidence/status，而不是依赖自由文本。
+- 修改 continuation、`agent_end`、工具事件分类或 Plan 生命周期重置时，回归测试至少覆盖：3 轮无工具、8 轮仅 activity、真实 durable progress 清零、仅文本/no-op 和失败/无终态 check 不清零，以及 start/resume/resync/clear/finalize 的计数隔离。详见 ADR 0045。
 
 ## TUI 边界防护
 

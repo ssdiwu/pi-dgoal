@@ -9,9 +9,13 @@ import dgoal, {
   __getRuntimeStateForTest,
   __resetGoalForTest,
   __setGoalForTest,
+  __setPhaseCheckOverrideForTest,
   __setRuntimeStateForTest,
   __startGoalForTest,
+  phaseCheckTool,
+  planUpdateTool,
   resyncGoalFromSession,
+  taskPlanTool,
   type DgoalContext,
   type ExtensionAPI,
   type GoalState,
@@ -20,22 +24,45 @@ import dgoal, {
 } from "../index.ts";
 
 function task(id: number, subject: string, status: Task["status"] = "pending"): Task {
-  return { id, subject, status };
+  return { id, subject, description: `${subject}的执行说明`, status };
 }
 function phase(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase {
-  return { id, subject, tasks, status };
+  return { id, subject, description: `${subject}的执行说明`, tasks, status };
 }
 
 function makeActiveGoal(): GoalState {
   return {
     id: "g-no-progress",
     objective: "测无进展熔断",
+    description: "验证自动续跑的双层活性保护。",
+    planType: "goal",
     status: "active",
     startedAt: 1,
     updatedAt: 1,
     iteration: 0,
     plan: {
       phases: [phase(1, "阶段一", [task(1, "任务一", "in_progress")], "in_progress")],
+      nextId: 2,
+    },
+  };
+}
+
+function makeGoalPlanForCheck(taskStatus: Task["status"]): GoalState {
+  const checkTask = {
+    ...task(1, "任务一", taskStatus),
+    ...(taskStatus === "done" ? { evidence: "bun test" } : {}),
+  };
+  return {
+    ...makeActiveGoal(),
+    verification: "bun test",
+    acceptanceCriteria: [{ criterion: "目标可复验", evidence: "bun test" }],
+    plan: {
+      revision: 0,
+      phases: [{
+        ...phase(1, "阶段一", [checkTask], "in_progress"),
+        revision: 0,
+        acceptanceCriteria: [{ criterion: "阶段可复验", evidence: "bun test" }],
+      }],
       nextId: 2,
     },
   };
@@ -106,14 +133,196 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
   });
 
-  // 模拟真实一轮：before_agent_start（重置工具标记）→ [可选工具] → agent_end。
-  async function runTurn(handlers: Record<string, (event: unknown, ctx?: unknown) => unknown>, ctx: DgoalContext, opts: { tools?: boolean; stopReason?: string } = {}) {
+  // 统一驱动生产事件顺序；dgoal 工具可把真实 execute 结果直接送入 tool_execution_end。
+  async function runTurn(
+    handlers: Record<string, (event: unknown, ctx?: unknown) => unknown>,
+    ctx: DgoalContext,
+    opts: {
+      tools?: boolean;
+      toolName?: string;
+      toolError?: boolean;
+      toolArgs?: Record<string, unknown>;
+      executeTool?: () => Promise<unknown>;
+      stopReason?: string;
+    } = {},
+  ) {
     handlers["before_agent_start"]({ prompt: "", systemPrompt: "" }, ctx);
-    if (opts.tools) {
-      handlers["tool_execution_start"]({ toolCallId: "c1", toolName: "bash", args: {} }, { cwd: "/tmp" });
+    let toolResult: unknown;
+    if (opts.tools || opts.toolName) {
+      const toolName = opts.toolName ?? "bash";
+      const args = opts.toolArgs ?? (toolName === "read" || toolName === "write" || toolName === "edit"
+        ? { path: "README.md" }
+        : {});
+      handlers["tool_execution_start"]({ toolCallId: "c1", toolName, args }, { cwd: "/tmp" });
+      toolResult = opts.executeTool
+        ? await opts.executeTool()
+        : { content: [], details: {} };
+      const resultIsError = Boolean(toolResult && typeof toolResult === "object" && (toolResult as { isError?: unknown }).isError);
+      handlers["tool_execution_end"]({
+        toolCallId: "c1",
+        toolName,
+        args,
+        result: toolResult,
+        isError: opts.toolError ?? resultIsError,
+      });
     }
     await handlers["agent_end"]({ messages: [{ role: "assistant", stopReason: opts.stopReason ?? "stop", content: [] }] }, ctx);
+    return toolResult;
   }
+
+  test("连续只读工具活动不能无限掩盖无持久进展", async () => {
+    const notifications: string[] = [];
+    __setGoalForTest(makeActiveGoal());
+    const ctx = {
+      ...mockCtx(),
+      ui: { ...mockCtx().ui, notify: (message: string) => { notifications.push(message); } },
+    } as DgoalContext;
+
+    for (let turn = 0; turn < 7; turn += 1) {
+      await runTurn(handlers, ctx, { toolName: "read" });
+    }
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(7);
+
+    await runTurn(handlers, ctx, { toolName: "read" });
+    expect(__getGoalForTest()?.status).toBe("paused");
+    expect(__getGoalForTest()?.pauseReason).toBe("no_progress");
+    expect(notifications.at(-1)).toContain("只有工具活动");
+  });
+
+  test("成功 write 清零活动型停滞，read 与 bash 不清零", async () => {
+    __setGoalForTest(makeActiveGoal());
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, { toolName: "write" });
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
+
+    for (let turn = 0; turn < 6; turn += 1) await runTurn(handlers, ctx, { toolName: "bash" });
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(6);
+  });
+
+  test("失败的 write 只算 activity，第 8 轮触发软熔断", async () => {
+    __setGoalForTest(makeActiveGoal());
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, { toolName: "write", toolError: true });
+    expect(__getGoalForTest()?.status).toBe("paused");
+  });
+
+  test("description-only Plan 更新不算持久进展", async () => {
+    __setGoalForTest(makeActiveGoal());
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "plan_read" });
+    await runTurn(handlers, ctx, {
+      toolName: "plan_update",
+      toolArgs: { target: "task", id: 1, description: "只改执行说明" },
+      executeTool: () => planUpdateTool.execute("description-only", {
+        target: "task",
+        id: 1,
+        description: "只改执行说明",
+      }, undefined, undefined, ctx),
+    });
+    expect(__getGoalForTest()?.status).toBe("paused");
+  });
+
+  test("Task Plan 仅改 description 不能绕过软熔断", async () => {
+    __resetGoalForTest();
+    const ctx = mockCtx();
+    const initial = {
+      objective: "稳定目标",
+      description: "初始执行说明",
+      tasks: [{ subject: "同一任务", description: "初始任务说明" }],
+    };
+    await taskPlanTool.execute("initial", initial, undefined, undefined, ctx);
+    __setRuntimeStateForTest({ consecutiveNoDurableProgressTurns: 7 });
+    const replacement = {
+      ...initial,
+      description: "只修改 goal description",
+      tasks: [{ subject: "同一任务", description: "只修改 task description" }],
+    };
+
+    await runTurn(handlers, ctx, {
+      toolName: "task_plan",
+      toolArgs: replacement,
+      executeTool: () => taskPlanTool.execute("replace", replacement, undefined, undefined, ctx),
+    });
+
+    expect(__getGoalForTest()?.status).toBe("paused");
+  });
+
+  test("Task Plan 仅改 objective 不能绕过软熔断", async () => {
+    __resetGoalForTest();
+    const ctx = mockCtx();
+    const initial = {
+      objective: "初始目标文案",
+      description: "稳定执行说明",
+      tasks: [{ subject: "同一任务", description: "稳定任务说明" }],
+    };
+    await taskPlanTool.execute("initial-objective", initial, undefined, undefined, ctx);
+    __setRuntimeStateForTest({ consecutiveNoDurableProgressTurns: 7 });
+    const replacement = { ...initial, objective: "只修改目标文案" };
+
+    await runTurn(handlers, ctx, {
+      toolName: "task_plan",
+      toolArgs: replacement,
+      executeTool: () => taskPlanTool.execute("replace-objective", replacement, undefined, undefined, ctx),
+    });
+
+    expect(__getGoalForTest()?.status).toBe("paused");
+  });
+
+  test("没有独立 check 终态的真实 check 结果只算 activity", async () => {
+    __setGoalForTest(makeGoalPlanForCheck("in_progress"));
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "read" });
+    const result = await runTurn(handlers, ctx, {
+      toolName: "phase_check",
+      toolArgs: { phaseId: 1 },
+      executeTool: () => phaseCheckTool.execute("precondition", { phaseId: 1 }, undefined, undefined, ctx),
+    }) as { details?: Record<string, unknown> };
+    expect(result.details?.error).toBe("tasks not done");
+    expect(__getGoalForTest()?.status).toBe("paused");
+  });
+
+  test("独立 check 真实终态清零活动型停滞", async () => {
+    __setGoalForTest(makeGoalPlanForCheck("done"));
+    __setPhaseCheckOverrideForTest(async () => ({ approved: false, output: "缺少回归", liveness: "rejected" }));
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "read" });
+    const result = await runTurn(handlers, ctx, {
+      toolName: "phase_check",
+      toolArgs: { phaseId: 1 },
+      executeTool: () => phaseCheckTool.execute("terminal", { phaseId: 1 }, undefined, undefined, ctx),
+    }) as { details?: Record<string, unknown> };
+    expect(result.details?.approved).toBe(false);
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
+  });
+
+  test("结构化 task 状态变化清零活动型停滞", async () => {
+    __setGoalForTest(makeActiveGoal());
+    const ctx = mockCtx();
+
+    for (let turn = 0; turn < 7; turn += 1) await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, {
+      toolName: "plan_update",
+      toolArgs: { target: "task", id: 1, status: "blocked", blockedReason: "可复验阻塞" },
+      executeTool: () => planUpdateTool.execute("block-task", {
+        target: "task",
+        id: 1,
+        status: "blocked",
+        blockedReason: "可复验阻塞",
+      }, undefined, undefined, ctx),
+    });
+    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
+  });
 
   test("连续 3 轮无工具调用：goal 暂停且 pauseReason=no_progress", async () => {
     __setGoalForTest(makeActiveGoal());
@@ -256,21 +465,21 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect((lastWrite?.goal as GoalState | undefined)?.pauseReason).toBe("no_progress");
   });
 
-  test("resyncGoalFromSession 清零错误与无进展计数，新 goal 不继承旧计数", async () => {
+  test("resyncGoalFromSession 清零错误与两类无进展计数，新 goal 不继承旧计数", async () => {
     __setGoalForTest(makeActiveGoal());
     __setRuntimeStateForTest({ consecutiveErrors: 4 });
     const ctx = mockCtx();
-    // 累计 2 轮无进展
     await runTurn(handlers, ctx);
     await runTurn(handlers, ctx);
-    expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(2);
 
-    // 模拟 session 切换：resyncGoalFromSession 应清零计数。
+    // 模拟 session 切换：resyncGoalFromSession 应清零全部运行态计数。
     const emptyCtx = { sessionManager: { getBranch: () => [] }, cwd: "/tmp", ui: { setStatus: () => {}, notify: () => {} } } as unknown as DgoalContext;
     resyncGoalFromSession(emptyCtx);
     expect(__getGoalForTest()).toBeUndefined();
     expect(__getRuntimeStateForTest().consecutiveErrors).toBe(0);
-
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
     // 设置新 goal，模拟新 session 的首轮——不应因旧计数被立即暂停。
     __setGoalForTest(makeActiveGoal());
     await runTurn(handlers, ctx);
@@ -278,72 +487,76 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.status).toBe("active"); // 旧计数已清零
   });
 
-  test("clearActiveGoal 清零无进展计数", async () => {
+  test("clearActiveGoal 清零两类无进展计数", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
-    await runTurn(handlers, ctx);
-    await runTurn(handlers, ctx);
-    // 清除 goal
+    await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, { toolName: "read" });
     __clearActiveGoalForTest(mockCtx());
     expect(__getGoalForTest()).toBeUndefined();
-    // 新 goal 不继承旧计数
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
     __setGoalForTest(makeActiveGoal());
     await runTurn(handlers, ctx);
     await runTurn(handlers, ctx);
     expect(__getGoalForTest()?.status).toBe("active");
   });
 
-  test("finalizeGoal 清零无进展计数", async () => {
+  test("finalizeGoal 清零两类无进展计数", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
-    await runTurn(handlers, ctx);
-    await runTurn(handlers, ctx);
-    // 完成 goal（finalizeGoal 最终清空 currentGoal）
+    await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, { toolName: "read" });
     __finalizeGoalForTest(mockCtx());
     expect(__getGoalForTest()).toBeUndefined();
-    // 新 goal 不继承旧计数
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
     __setGoalForTest(makeActiveGoal());
     await runTurn(handlers, ctx);
     await runTurn(handlers, ctx);
     expect(__getGoalForTest()?.status).toBe("active");
   });
 
-  test("startGoal 自身清零无进展计数", async () => {
+  test("startGoal 自身清零两类无进展计数", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
-    await runTurn(handlers, ctx);
-    await runTurn(handlers, ctx);
-    // 不先 clear：直接替换当前 goal，验证 startGoal 自身的清零逻辑。
+    await runTurn(handlers, ctx, { toolName: "read" });
+    await runTurn(handlers, ctx, { toolName: "read" });
     const startCtx = {
       ui: { setStatus: () => {}, notify: () => {}, custom: () => {}, confirm: () => Promise.resolve(true) },
       cwd: "/tmp",
       sessionManager: { getBranch: () => [], getEntries: () => [] },
     } as unknown as DgoalContext;
     await __startGoalForTest("新目标", mockPi, startCtx);
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
     __setGoalForTest(makeActiveGoal());
     await runTurn(handlers, ctx);
     await runTurn(handlers, ctx);
     expect(__getGoalForTest()?.status).toBe("active");
   });
 
-  test("中间发生模型错误重置无进展计数（stop→stop→error→stop）", async () => {
+  test("中间发生模型错误重置两类无进展计数（stop→stop→error→stop）", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
-    await runTurn(handlers, ctx); // stop, count 1
-    await runTurn(handlers, ctx); // stop, count 2
-    await runTurn(handlers, ctx, { stopReason: "error" }); // error 重置计数，自动重试
-    await runTurn(handlers, ctx); // stop, count 1，不应暂停
+    await runTurn(handlers, ctx);
+    await runTurn(handlers, ctx);
+    await runTurn(handlers, ctx, { stopReason: "error" });
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
+    await runTurn(handlers, ctx);
     expect(__getGoalForTest()?.status).toBe("active");
-    expect(__getGoalForTest()?.pauseReason).toBeUndefined();
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(1);
   });
 
-  test("length/toolUse/缺失 stopReason 不计入正常空转", async () => {
+  test("length/toolUse/缺失 stopReason 重置两类正常空转计数", async () => {
     __setGoalForTest(makeActiveGoal());
     const ctx = mockCtx();
     await runTurn(handlers, ctx, { stopReason: "length" });
     await runTurn(handlers, ctx, { stopReason: "toolUse" });
     await runTurn(handlers, ctx, { stopReason: "" });
     expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
+    expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);
   });
 
   test("无 in_progress task 时暂停提示仍包含当前 phase/task 与 resume", async () => {

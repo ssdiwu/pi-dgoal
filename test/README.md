@@ -36,7 +36,7 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | `audit-usage*.test.ts` | 审核 usage ledger 与跨仓库聚合 |
 | `auditor-workspace-cwd.test.ts` | 审核工作目录与 worktree 推断 |
 | `subprocess-supervision.test.ts` | detached process group 整体收尸 |
-| `no-progress-stall.test.ts` / `no-progress-agent-end.test.ts` | 连续无进展熔断、工具调用重置、user_abort / model_error |
+| `no-progress-stall.test.ts` / `no-progress-agent-end.test.ts` | 连续 3 轮无工具硬熔断、连续 8 轮仅活动无持久进展软熔断、结构化进展分类、动态续跑提示，以及 start/resume/clear/finalize/resync 生命周期重置；集成夹具按生产事件顺序驱动，并把真实 Task Plan、Plan update 与 check 工具结果送入 `tool_execution_end` 分类 |
 | `show-status.test.ts` | 状态查询与 TUI fail-soft |
 
 ## Reducer 与参数边界

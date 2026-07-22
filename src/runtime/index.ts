@@ -76,6 +76,15 @@ import {
 } from "./proposal.ts";
 import { derivePlanView, formatCompactPlanProgress, formatPlanProgress } from "./plan-view.ts";
 import {
+  buildContinuationProgressNudge,
+  buildDurableProgressFingerprint,
+  recordGoalProgressSince,
+  recordToolActivity,
+  resetNoToolProgressStreak,
+  resetProgressStreaks,
+  resetProgressTracking,
+} from "./liveness.ts";
+import {
   ansiStrikethrough,
   computeScrollOffset,
   formatElapsed,
@@ -139,6 +148,14 @@ export type {
 export { derivePlanView } from "./plan-view.ts";
 export { assessProposalReadiness, proposalToPlan } from "./proposal.ts";
 export type { ProposalReadinessLevel } from "./proposal.ts";
+export {
+  MAX_NO_PROGRESS_TURNS,
+  MAX_STALLED_PROGRESS_TURNS,
+  buildContinuationProgressNudge,
+  buildDurableProgressFingerprint,
+  decideNoProgressPause,
+} from "./liveness.ts";
+export type { NoProgressPauseKind } from "./liveness.ts";
 
 export interface DgoalConfig {
   // Legacy shared override for both audit scopes. Scoped keys take precedence within the same config source.
@@ -331,6 +348,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.modelRetry": "模型错误，自动重试（{count}/{max}）{detail}",
       "notify.modelPaused": "模型错误，已重试 {count} 次仍失败，dgoal 已暂停{detail}。运行 /dgoal resume 继续。",
       "notify.noProgressPaused": "连续 {max} 轮无工具调用，dgoal 已暂停以避免空转{detail}。运行 /dgoal resume 继续。",
+      "notify.stalledProgressPaused": "连续 {max} 轮只有工具活动、没有观察到文件或 Plan 持久进展，dgoal 已暂停以避免假推进{detail}。运行 /dgoal resume 继续。",
       "notify.agentPaused": "Agent 声明遇到需要你决策的死锁，已主动暂停：{detail}。处理后运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
       "notify.noPriorDiscussionForBareStart": "无前文共识可承接。请用 /dgoal <objective> 提供目标，或先对齐后再裸 /dgoal。",
@@ -584,6 +602,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.modelRetry": "Model error; auto-retrying ({count}/{max}){detail}",
       "notify.modelPaused": "Model error persisted after {count} retries; dgoal paused{detail}. Run /dgoal resume to continue.",
       "notify.noProgressPaused": "No tool calls for {max} consecutive turns; dgoal paused to avoid spinning{detail}. Run /dgoal resume to continue.",
+      "notify.stalledProgressPaused": "Only tool activity, with no observable file or Plan progress, occurred for {max} consecutive turns; dgoal paused to avoid false progress{detail}. Run /dgoal resume to continue.",
       "notify.agentPaused": "Agent reported a deadlock needing your decision; paused: {detail}. Run /dgoal resume after you resolve it.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
       "notify.noPriorDiscussionForBareStart": "There is no prior aligned discussion to carry. Use /dgoal <objective>, or align first and then run bare /dgoal.",
@@ -924,13 +943,7 @@ const MIN_AUDIT_CANDIDATE_START_REMAINING_MS = 1_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
 const CONTINUATION_POLL_INTERVAL_MS = 250;
 
-// goalRuntimeState.currentGoal moved to goalRuntimeState
-// 连续模型错误计数：正常完成或成功工具推进后重置；第 MAX_ERROR_RETRIES 次暂停并清零。
-// goalRuntimeState.consecutiveErrors moved to goalRuntimeState
-// 连续无进展计数：正常结束一轮后若本轮没有任何工具调用，则加一；达到阈值暂停。
-export const MAX_NO_PROGRESS_TURNS = 3;
-// goalRuntimeState.consecutiveNoProgressTurns moved to goalRuntimeState
-// goalRuntimeState.turnHadToolExecution moved to goalRuntimeState
+// Goal Runtime stores mutable session state; liveness policy and transitions live in ./liveness.ts.
 let api: ExtensionAPI | undefined;
 
 export function setApi(pi: ExtensionAPI): void {
@@ -941,21 +954,6 @@ export function getApi(): ExtensionAPI | undefined {
   return api;
 }
 
-// 纯函数：判定本轮正常结束后是否因无进展而应暂停。
-export function decideNoProgressPause(state: {
-  hadToolExecution: boolean;
-  consecutiveNoProgress: number;
-}): { continue_: boolean; newCount: number; pause: boolean } {
-  if (state.hadToolExecution) {
-    return { continue_: true, newCount: 0, pause: false };
-  }
-  const newCount = state.consecutiveNoProgress + 1;
-  return {
-    continue_: newCount < MAX_NO_PROGRESS_TURNS,
-    newCount,
-    pause: newCount >= MAX_NO_PROGRESS_TURNS,
-  };
-}
 // goalRuntimeState.pendingContinuation moved to goalRuntimeState
 // goalRuntimeState.continuationDeliveryTimer moved to goalRuntimeState
 // cancelledMarkers moved to goalRuntimeState
@@ -1804,8 +1802,7 @@ const auditedPlanProposalTool = defineTool({
       goalRuntimeState.pendingProposal = undefined;
       goalRuntimeState.proposalRetryCount = 0;
       goalRuntimeState.consecutiveErrors = 0;
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
-      goalRuntimeState.turnHadToolExecution = false;
+      resetProgressTracking(goalRuntimeState);
       clearContinuation();
       resetAuditorWorkspaceTracker();
       planOverlay?.clearDoneSnapshot();
@@ -1976,6 +1973,7 @@ export const taskPlanTool = definePublicTool({
       const error = built.error ?? (!description ? "Task Plan requires a non-empty description." : "Task Plan requires a non-empty objective and at least one task.");
       return { content: [{ type: "text", text: error }], details: { error: error === "Task Plan requires a non-empty description." ? "no description" : built.error ?? "invalid task plan" }, isError: true };
     }
+    const beforeProgressFingerprint = buildDurableProgressFingerprint(goalRuntimeState.currentGoal);
     const now = Date.now();
     // 替换旧 Task Plan 前清除完成闪现，避免新目标短暂渲染旧 done 快照。
     planOverlay?.clearDoneSnapshot();
@@ -2015,8 +2013,9 @@ export const taskPlanTool = definePublicTool({
       pauseStartedAt: undefined,
     };
     goalRuntimeState.consecutiveErrors = 0;
-    goalRuntimeState.consecutiveNoProgressTurns = 0;
-    goalRuntimeState.turnHadToolExecution = true;
+    resetNoToolProgressStreak(goalRuntimeState);
+    recordToolActivity(goalRuntimeState);
+    recordGoalProgressSince(goalRuntimeState, beforeProgressFingerprint, goalRuntimeState.currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
     resetAuditorWorkspaceTracker();
@@ -2483,7 +2482,7 @@ export const planUpdateTool = definePublicTool({
       if (!reason) return { content: [{ type: "text", text: "Pausing a Plan requires a concrete user decision or authorization reason." }], details: { error: "missing pause reason" } };
       if (reason.length > MAX_PAUSE_REASON_DETAIL_LENGTH) return { content: [{ type: "text", text: `Pause reason is too long (${reason.length}/${MAX_PAUSE_REASON_DETAIL_LENGTH}).` }], details: { error: "pause reason too long" }, isError: true };
       cancelPendingContinuation();
-      goalRuntimeState.consecutiveNoProgressTurns = 0;
+      resetProgressStreaks(goalRuntimeState);
       goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), { pauseReason: "agent_blocked", pauseReasonDetail: reason });
       clearCurrentCheckSnapshot();
       persistGoal(goalRuntimeState.currentGoal);
@@ -2852,8 +2851,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   }
 
   goalRuntimeState.consecutiveErrors = 0;
-  goalRuntimeState.consecutiveNoProgressTurns = 0;
-  goalRuntimeState.turnHadToolExecution = false;
+  resetProgressTracking(goalRuntimeState);
   clearContinuation();
   // 暂停当前 LLM 工作，专注开启 dgoal（用户期望 /dgoal 立即接管，而非等当前 turn 跑完）。
   // 必须在设置 pending goal 前后用 goalRuntimeState.startGoalInProgress 标志包住：被中断 turn 的 agent_end
@@ -2923,8 +2921,7 @@ async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   if (!goalRuntimeState.currentGoal || goalRuntimeState.currentGoal.status !== "paused") return;
   const pausedGoal = goalRuntimeState.currentGoal;
   goalRuntimeState.consecutiveErrors = 0;
-  goalRuntimeState.consecutiveNoProgressTurns = 0;
-  goalRuntimeState.turnHadToolExecution = false;
+  resetProgressTracking(goalRuntimeState);
   // audit_error 恢复时重置对应审核范围的故障候选，允许重试整条候选链。
   const pauseReason = goalRuntimeState.currentGoal.pauseReason;
   const resetAuditorCandidates = pauseReason === "audit_error";
@@ -3838,7 +3835,11 @@ function buildContinuePrompt(goal: GoalState, marker: string) {
   const completionInstruction = resolvePlanType(goal) === "task"
     ? "保持 plan_update 与实际进度同步；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal。"
     : "保持 plan_update 与实际进度同步，满足对应 check 后最终更新 goal 为 done。";
-  return `继续当前 ${resolvePlanType(goal)} Plan 直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n自动续跑 #${goal.iteration}。从当前状态继续；${completionInstruction}\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
+  const progressNudge = buildContinuationProgressNudge(
+    goalRuntimeState.consecutiveNoProgressTurns,
+    goalRuntimeState.consecutiveNoDurableProgressTurns,
+  );
+  return `继续当前 ${resolvePlanType(goal)} Plan 直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n自动续跑 #${goal.iteration}。从当前状态继续；${completionInstruction}${progressNudge}\n\n<!-- ${CONTINUATION_MARKER_PREFIX}${marker} -->`;
 }
 
 export async function sendContinuation(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState) {
@@ -4017,8 +4018,7 @@ export function resyncGoalFromSession(ctx: DgoalContext) {
   resetAuditorWorkspaceTracker();
   // 加载新 goal 前清空错误与无进展计数，避免跨 goal/session 继承旧计数。
   goalRuntimeState.consecutiveErrors = 0;
-  goalRuntimeState.consecutiveNoProgressTurns = 0;
-  goalRuntimeState.turnHadToolExecution = false;
+  resetProgressTracking(goalRuntimeState);
   goalRuntimeState.currentGoal = nextGoal;
   try {
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
@@ -4291,8 +4291,7 @@ export function safeNotify(ctx: DgoalContext, message: string, level: "info" | "
 function clearActiveGoal(ctx: DgoalContext) {
   cancelPendingContinuation();
   goalRuntimeState.consecutiveErrors = 0;
-  goalRuntimeState.consecutiveNoProgressTurns = 0;
-  goalRuntimeState.turnHadToolExecution = false;
+  resetProgressTracking(goalRuntimeState);
   resetAuditorWorkspaceTracker();
   planOverlay?.clearDoneSnapshot();
   clearCurrentGoal(persistGoal);
@@ -4311,8 +4310,7 @@ function finalizeGoal(ctx: DgoalContext) {
   }
   cancelPendingContinuation();
   resetAuditorWorkspaceTracker();
-  goalRuntimeState.consecutiveNoProgressTurns = 0;
-  goalRuntimeState.turnHadToolExecution = false;
+  resetProgressTracking(goalRuntimeState);
   // 显示最终完成状态（全 ✓ + 计时器），延迟后自动消失。
   // UI 边界容错：planOverlay / ctx.ui 由主程序实现，TUI 渲染异常（如主程序 0.79.4 的
   // Spacer is not defined）不得阻断 goal 状态清空——状态机一致性优先于最终 UI 展示。
@@ -5934,7 +5932,10 @@ export function __getRuntimeStateForTest() {
     naturalLanguageStartInput: goalRuntimeState.naturalLanguageStartInput,
     consecutiveErrors: goalRuntimeState.consecutiveErrors,
     consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
+    consecutiveNoDurableProgressTurns: goalRuntimeState.consecutiveNoDurableProgressTurns,
     turnHadToolExecution: goalRuntimeState.turnHadToolExecution,
+    turnHadDurableProgress: goalRuntimeState.turnHadDurableProgress,
+    turnStartProgressFingerprint: goalRuntimeState.turnStartProgressFingerprint,
     pendingContinuation: goalRuntimeState.pendingContinuation ? { ...goalRuntimeState.pendingContinuation } : undefined,
     cancelledMarkers: [...goalRuntimeState.cancelledMarkers],
     latestSuccessfulModifiedFilePath: goalRuntimeState.latestSuccessfulModifiedFilePath,

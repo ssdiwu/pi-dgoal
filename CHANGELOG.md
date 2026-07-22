@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Task DAG 可解释读模型**：当前未完成 phase 现在从既有 `blockedBy` 与 task status 纯派生 ready、waiting、传递根阻塞和立即解锁关系，并同步投影到 `plan_read`、`/dgoal s` 与主 agent prompt；不新增持久字段或调度状态。ready 只声明主 agent 当前合法执行或委派的 task，不绑定具体执行扩展，也不代替并发冲突判断；结果经主 agent 核验后仍由 `plan_update` 写 Plan。
 
+### Fixed
+
+- **自动续跑假进展熔断**：无进展判定现在区分工具活动与持久进展；连续 3 轮无工具或连续 8 轮只有读取、状态查询等活动而没有成功文件写入、独立 check 或 Plan 状态/evidence/阻塞结构变化时都会暂停。判定只使用结构化工具事件与 Plan 状态差，不解析 LLM 文本或 `bash` 命令语义；续跑提示会在暂停前要求直接执行、委派或结构化报告真实用户决策阻塞。
+
 ## [0.7.9] - 2026-07-20
 
 ### Changed

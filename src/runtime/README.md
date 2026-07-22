@@ -2,7 +2,7 @@
 
 三档 Plan 的运行时承载层：八个公共工具、`/dgoal` 命令、proposal 语义预审、独立审核编排、持久化、prompt 和浮层投影。
 
-内部模块按职责拆分：`proposal.ts` 负责 proposal 输入规范化与确定性校验，`plan-view.ts` 负责工具、持续浮层和 Modal 共用的 Plan 进度只读投影；`index.ts` 保留公共工具注册、命令与跨边界编排。
+内部模块按职责拆分：`proposal.ts` 负责 proposal 输入规范化与确定性校验，`plan-view.ts` 负责工具、持续浮层和 Modal 共用的 Plan 进度只读投影，`liveness.ts` 负责双层活性的阈值、结构化指纹、纯判定与 begin/activity/durable/complete/reset 状态迁移语义；`index.ts` 保留公共工具注册、命令与跨边界编排，并按原名称转导既有活性公共 helper。
 
 ## 公共工具
 

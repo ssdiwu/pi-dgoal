@@ -7,7 +7,7 @@ pi-dgoal 的运行时代码，按职责拆分为计划数据、Goal Runtime、Pi
 | 目录 | 职责 | 边界 |
 |---|---|---|
 | `plan/` | `PlanType`、`Phase`、`Task`、`TaskPlan`、`CheckRecord`、依赖校验与 Task DAG 纯派生读模型 | 无 Pi、TUI、session 或持久化副作用 |
-| `runtime/` | 三档 Plan 的八工具、命令、prompt、Task DAG/frontier 投影、审核编排、持久化与 Goal Runtime 协调 | 主运行时编排层；check 只记录，状态写入统一守卫；派生图不写状态；不把 TUI 当业务状态源 |
+| `runtime/` | 三档 Plan 的八工具、命令、prompt、Task DAG/frontier 投影、结构化活性协议、审核编排、持久化与 Goal Runtime 协调 | 主运行时编排层；check 只记录，状态写入统一守卫；活性状态迁移由语义操作集中封装；派生图不写状态；不把 TUI 当业务状态源 |
 | `startup/` | Pi 扩展注册、工具/命令注册、事件订阅与启动闸门 wiring | 由根 `index.ts` 间接调用 `registerDgoal` |
 | `goal-runtime/` | 当前 session 的可变 goal、proposal、续跑与审核运行态单例 | 只提供状态容器，不负责工具或 UI 编排 |
 | `audit/` | 审核结论解析、进度摘要、用户复核建议与脱敏检查点/用量账本 | 不负责启动审核子进程或推进 Goal Runtime |
@@ -18,7 +18,7 @@ pi-dgoal 的运行时代码，按职责拆分为计划数据、Goal Runtime、Pi
 
 - 根 `index.ts` 是 Pi 扩展 composition root（组装根），导出 runtime API 并暴露 `registerDgoal`。
 - `startup/index.ts` 实现 `registerDgoal`，注册工具、`/dgoal` 命令和生命周期事件。
-- `runtime/index.ts` 是当前最大的运行时协调模块；它调用 `plan`、`audit`、`isolated-pi`、`tui` 和 `goal-runtime`，但状态事实仍归 `goal-runtime/state.ts`。
+- `runtime/index.ts` 是当前最大的运行时协调模块；`runtime/liveness.ts` 集中双层活性的阈值、指纹、纯判定与状态迁移语义；二者调用 `plan`、`audit`、`isolated-pi`、`tui` 和 `goal-runtime`，但状态事实仍归 `goal-runtime/state.ts`。
 - 审核子进程、TUI 渲染和计划 reducer 都不能绕过 Goal Runtime 的状态边界。
 
 各子目录的文件级说明见对应目录内的 `README.md`。
