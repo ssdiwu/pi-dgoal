@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-c
 import { CONFIG_DIR_NAME, defineTool, getAgentDir } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { streamSimple } from "@earendil-works/pi-ai";
+import { streamSimple } from "@earendil-works/pi-ai/compat";
 import { Type } from "typebox";
 import {
   countDoneTasks,

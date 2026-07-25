@@ -119,10 +119,17 @@ def assert_commands(session: RpcSession) -> dict[str, Any]:
         raise AssertionError(f"get_commands failed: {response}")
     entries = command_entries(response)
     names = {str(command.get("name")) for command in entries}
-    extension_names = {str(command.get("name")) for command in entries if command.get("source") == "extension"}
-    if extension_names != {"dgoal"}:
-        raise AssertionError(f"expected only the dgoal extension command; got={sorted(extension_names)}")
-    return {"extension": sorted(extension_names), "total_commands": len(names)}
+    # 0.82 宿主会把 llama.cpp 等内置能力作为 inline extension 注入（sourceInfo.path 形如 "<inline:...>"），
+    # 它们不属于本扩展；断言只关心 dgoal 正确注册，且本扩展没有注册额外命令。
+    own_extension_names = {
+        str(command.get("name"))
+        for command in entries
+        if command.get("source") == "extension"
+        and not str(command.get("sourceInfo", {}).get("path", "")).startswith("<inline:")
+    }
+    if own_extension_names != {"dgoal"}:
+        raise AssertionError(f"expected only the dgoal extension command; got={sorted(own_extension_names)}")
+    return {"extension": sorted(own_extension_names), "total_commands": len(names)}
 
 
 def assert_tools(session: RpcSession) -> dict[str, Any]:
