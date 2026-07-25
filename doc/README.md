@@ -1,6 +1,6 @@
 # doc 文档导航
 
-> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）；自动续跑由 LLM 负责继续/暂停的语义选择，运行时只观察结构化活性并以双层熔断兜底（ADR 0045）；当前 phase 的 `blockedBy` 还会纯派生 Task DAG 读模型供 `plan_read`、`/dgoal s` 与 prompt 共用，ready 仅声明通用执行/委派边界，不新增持久态或调度器。
+> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——Task Plan 是日常自动规划入口，Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）；Task Plan 可按需声明交付物、以逐项证据和末任务同会话自检收口，压缩摘要不得覆盖持久 Plan（ADR 0046）；自动续跑由 LLM 负责继续/暂停的语义选择，运行时只观察结构化活性并以双层熔断兜底（ADR 0045）；当前 phase 的 `blockedBy` 还会纯派生 Task DAG 读模型供 `plan_read`、`/dgoal s` 与 prompt 共用，ready 仅声明通用执行/委派边界，不新增持久态或调度器。
 
 ## 阅读顺序
 

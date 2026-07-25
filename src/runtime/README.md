@@ -10,7 +10,7 @@
 - 管理：`plan_create` / `plan_read` / `plan_update`
 - 审核：`phase_check` / `goal_check`
 
-Task Plan 可直接建立和整份替换 objective、goal description 与全部 task，隐藏内部单 phase。Phase/Goal Plan 复用显式启动闸门；三层 Description 必填，goal description 随确认冻结，phase/task 可显式修订；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。Description 进入主 agent 执行上下文，但不是独立审核完成门。新 Plan 的 phase 与 plan-global task 使用各自从 `1` 开始的 ID namespace，`nextId` 仅分配 task；v1 持久态不迁移。
+Task Plan 可直接建立和整份替换 objective、goal description 与全部 task，隐藏内部单 phase。task 可选声明 named deliverables，并在完成时保存逐项证据；最后一个 task 还要求主 agent 在同一 `plan_update` 提供 completion review，才原子关闭 goal。Phase/Goal Plan 复用显式启动闸门；三层 Description 必填，goal description 随确认冻结，phase/task 可显式修订；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。Description 进入主 agent 执行上下文，但不是独立审核完成门。新 Plan 的 phase 与 plan-global task 使用各自从 `1` 开始的 ID namespace，`nextId` 仅分配 task；v1 持久态不迁移。
 
 `phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。全局 Plan revision 保护 goal check；task/phase 的受审事实变化只递增所属 phase revision 并使该 phase check 失效。用户命令与技术熔断仍可暂停/恢复。
 
@@ -30,4 +30,4 @@ phase/goal check 复用 `src/audit/` 与 `src/isolated-pi/`。业务 rejection �
 
 ## 持久化与 UI 边界
 
-新状态写入 `dgoal-plan-v2`；`dgoal-plan-v1` 与更早 entry 不迁移，`contextSummary` 不再属于状态或 proposal。恢复时按 Plan 类型严格复验 goal/plan 的 Description、验收契约、状态与依赖，以及 pending proposal 的完整结构；任一脏字段使整条 entry 失效。`plan_read` 与 `/dgoal s` 共享纯派生的当前 frontier 诊断与 Task DAG 读模型：共同展示直接原因、下一合法动作，以及当前 phase 的 ready/waiting、根阻塞与立即解锁关系；二者还会组合现有 `CheckRecord`、最新 feedback、task evidence 与最新完成声明。所有诊断均不展示内部历史索引，也不新增持久字段。`/dgoal s` 使用列表/详情两层 Modal，返回保留选择；持续浮层不显示 Description 或诊断。持久化必须先于 UI 更新，`setWidget` / status / notify / Modal 异常不能阻断状态机。
+新状态写入 `dgoal-plan-v2`；`dgoal-plan-v1` 与更早 entry 不迁移，`contextSummary` 不再属于状态或 proposal。恢复时按 Plan 类型严格复验 goal/plan 的 Description、可选交付物/逐项证据、验收契约、状态与依赖，以及 pending proposal 的完整结构；任一脏字段使整条 entry 失效。`session_compact` 原样恢复结构化 Plan，下一轮后置注入的 `<dgoal_plan>` 是执行与收口权威，压缩摘要仅作背景，不能覆盖 task Description 或交付物。`plan_read` 与 `/dgoal s` 共享纯派生的当前 frontier 诊断与 Task DAG 读模型：共同展示直接原因、下一合法动作，以及当前 phase 的 ready/waiting、根阻塞与立即解锁关系；任务详情还展示声明交付物与证据；二者还会组合现有 `CheckRecord`、最新 feedback、task evidence 与最新完成声明。所有诊断均不展示内部历史索引，也不新增持久字段。`/dgoal s` 使用列表/详情两层 Modal，返回保留选择；持续浮层不显示 Description 或诊断。持久化必须先于 UI 更新，`setWidget` / status / notify / Modal 异常不能阻断状态机。

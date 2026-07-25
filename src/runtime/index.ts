@@ -30,6 +30,7 @@ import {
   applyPlanMutation as applyPlanMutationWithTranslator,
   coerceNumberArray,
   isTaskTransitionValid,
+  normalizeDeliverables,
   type PlanAction,
   type PlanOp,
 } from "../plan/reducer.ts";
@@ -880,12 +881,12 @@ function invalidatePhaseAndGoalCheck(goal: GoalState, phaseId: number): GoalStat
 }
 
 function allTasksDoneWithEvidence(phase: Phase): boolean {
-  return phase.tasks.length > 0 && phase.tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()));
+  return phase.tasks.length > 0 && phase.tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()) && hasPersistedEvidenceForEveryDeliverable(task));
 }
 
 function allPlanTasksDoneWithEvidence(plan: TaskPlan): boolean {
   const tasks = flattenTasks(plan);
-  return tasks.length > 0 && tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()));
+  return tasks.length > 0 && tasks.every((task) => isDonePlanStatus(task.status) && Boolean(task.evidence?.trim()) && hasPersistedEvidenceForEveryDeliverable(task));
 }
 
 // 工具结果：goal 存在但暂停，返回结构化 paused 信息而非 noGoal。
@@ -1869,17 +1870,43 @@ function renderPublicToolResult(result: PublicToolRenderResult, options: { expan
   return new Text(theme.fg(context.isError ? "error" : "success", `${summary} (Ctrl+O to expand)`), 0, 0);
 }
 
-function definePublicTool(definition: any): any {
-  return defineTool({ ...definition, renderResult: renderPublicToolResult });
+function strictSchemaObject(properties: Record<string, unknown>) {
+  return Type.Object(properties as never, { additionalProperties: false });
 }
 
-const entryTaskSchema = Type.Object({
+function definePublicTool(definition: any): any {
+  // Pi 0.82+: 在支持的 provider/model 上请求 JSON Schema strict 模式，让工具参数严格匹配 TypeBox schema；
+  // 不支持时宿主自动回退为普通工具调用，跨 provider 行为不变。见 ADR 0038 八工具边界。
+  return defineTool({
+    ...definition,
+    constrainedSampling: definition.constrainedSampling ?? { type: "json_schema", strict: "prefer" },
+    renderResult: renderPublicToolResult,
+  });
+}
+
+const taskDeliverableSchema = strictSchemaObject({
+  target: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "必须交付的文件、命令结果或外部可观察状态" }),
+  description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "该交付物完成时必须成立的事实" }),
+});
+
+const taskDeliverableEvidenceSchema = strictSchemaObject({
+  target: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "对应已声明 deliverable 的 target" }),
+  evidence: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "该交付物的可复验证据" }),
+});
+
+const taskCompletionReviewSchema = strictSchemaObject({
+  summary: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "末任务收口前对全部 task 与交付物的核对结论" }),
+  verification: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "核对所依据的文件、命令、测试或外部状态" }),
+});
+
+const entryTaskSchema = strictSchemaObject({
   subject: Type.String({ minLength: 1, description: "task 简述" }),
   description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "为什么需要此 task、它如何服务目标，以及采用什么方法边界" }),
+  deliverables: Type.Optional(Type.Array(taskDeliverableSchema, { minItems: 1, description: "可选的显式交付物；声明后完成时必须逐项给出证据" })),
   blockedBy: Type.Optional(Type.Array(Type.Number(), { description: "同一初始 task 列表中的 1-based 依赖序号" })),
 });
 
-const acceptanceCriterionSchema = Type.Object({
+const acceptanceCriterionSchema = strictSchemaObject({
   criterion: Type.String({ minLength: 1, description: "可由 LLM 独立判定的完成条件" }),
   evidence: Type.String({ minLength: 1, description: "可通过命令、文件、测试或外部只读状态复验的证据" }),
 });
@@ -1914,7 +1941,7 @@ function prepareEntryTaskArrays(args: unknown): unknown {
   return changed ? out : args;
 }
 
-function makeInitialTasks(rawTasks: Array<{ subject: string; description?: string; blockedBy?: number[] }>, firstId: number): { tasks?: Task[]; error?: string } {
+function makeInitialTasks(rawTasks: Array<{ subject: string; description?: string; deliverables?: unknown; blockedBy?: number[] }>, firstId: number): { tasks?: Task[]; error?: string } {
   const ids = rawTasks.map((_task, index) => firstId + index);
   const tasks: Task[] = [];
   for (const [index, raw] of rawTasks.entries()) {
@@ -1922,6 +1949,8 @@ function makeInitialTasks(rawTasks: Array<{ subject: string; description?: strin
     if (!subject) return { error: `task #${index + 1} subject is required` };
     const description = String(raw.description ?? "").trim();
     if (!description) return { error: `task #${index + 1} description is required` };
+    const normalizedDeliverables = normalizeDeliverables(raw.deliverables);
+    if (normalizedDeliverables.error) return { error: `task #${index + 1} ${normalizedDeliverables.error}` };
     const dependencies = coerceNumberArray(raw.blockedBy);
     const blockedBy: number[] = [];
     for (const localIndex of dependencies) {
@@ -1930,6 +1959,7 @@ function makeInitialTasks(rawTasks: Array<{ subject: string; description?: strin
       blockedBy.push(resolved);
     }
     const task: Task = { id: ids[index], subject, description, status: "pending" };
+    if (normalizedDeliverables.deliverables) task.deliverables = normalizedDeliverables.deliverables;
     if (blockedBy.length) task.blockedBy = blockedBy;
     tasks.push(task);
   }
@@ -1947,11 +1977,12 @@ export const taskPlanTool = definePublicTool({
   promptGuidelines: [
     "普通明确的多步执行，或 AFK、有界、低风险且有停止条件的探索，应主动使用 task_plan，不要要求用户先输入 /dgoal；单步回答不建计划。",
     "task_plan 接收 objective + description + tasks；description 说明理由、作用与方法边界，不复述标题或写运行态文案；单 phase 是内部结构，不要提交或展示。",
+    "任务跨文件、命令或外部状态交付时，在 task 的可选 deliverables 中逐项声明 target 与完成事实；未声明的普通 task 保持轻量。",
     "稳定用户意图与最终效果；当前 frontier 变化时重新调用 task_plan，原子替换 objective、description 与全部 task，不保留旧 Plan 历史。",
     "必须由用户决定的意图、偏好或范围问题继续讨论，不要伪装成探索 task。提交前轻量自检目标相关性、必要性、依赖和证据路径，直接修正，不输出独立自检报告。",
     "若任务需要冻结验收契约、独立终审或阶段建检，只能说明理由并推荐用户使用 /dgoal；不要自行调用 phase_plan 或 goal_plan。",
   ],
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     objective: Type.String({ minLength: 1, maxLength: MAX_OBJECTIVE_LENGTH, description: "当前可执行目标" }),
     description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "为什么推进此目标、为什么采用当前方法，以及要避免什么方法偏移" }),
     tasks: Type.Array(entryTaskSchema, { minItems: 1, description: "按执行顺序排列的 task" }),
@@ -2051,13 +2082,13 @@ const sharedAuditedPlanProperties = {
   guardrails: Type.Optional(Type.Array(Type.String())),
 };
 
-const phasePlanPhaseSchema = Type.Object({
+const phasePlanPhaseSchema = strictSchemaObject({
   subject: Type.String({ minLength: 1 }),
   description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH }),
   tasks: Type.Optional(Type.Array(entryTaskSchema)),
 });
 
-const goalPlanPhaseSchema = Type.Object({
+const goalPlanPhaseSchema = strictSchemaObject({
   subject: Type.String({ minLength: 1 }),
   description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH }),
   acceptanceCriteria: Type.Array(acceptanceCriterionSchema, { minItems: 1 }),
@@ -2087,7 +2118,7 @@ export const phasePlanTool = definePublicTool({
     "phase 是进度主干，不设置 phase 独立验收条件；所有 phase 完成后调用 goal_check。",
     "若用户在确认 UI 切换为 Goal Plan，改用 goal_plan 重新提交。",
   ],
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     ...sharedAuditedPlanProperties,
     phases: Type.Array(phasePlanPhaseSchema, { minItems: 1 }),
   }),
@@ -2108,7 +2139,7 @@ export const goalPlanTool = definePublicTool({
     "每个 phase 必须有独立验收价值和 acceptanceCriteria；不要按代码/测试/文档机械拆 phase。",
     "若用户在确认 UI 切换为 Phase Plan，改用 phase_plan 重新提交。",
   ],
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     ...sharedAuditedPlanProperties,
     phases: Type.Array(goalPlanPhaseSchema, { minItems: 1 }),
   }),
@@ -2144,13 +2175,14 @@ export const planCreateTool = definePublicTool({
   label: "Plan Create",
   description: "向 Task Plan 的 task 列表或 Phase/Goal Plan 的现有 phase 动态新增 task。运行中不能新增 goal 或 phase。",
   promptSnippet: "给当前 Plan 新增 task",
-  promptGuidelines: ["只创建完成当前目标所需的新 task；不要创建 phase。", "每个新 task 必须提供非空 description，说明它为何存在、如何服务目标与采用什么方法边界；创建前轻量检查必要性、依赖和证据路径。", "Task Plan 调用 plan_create 时省略 phaseId/phaseNumber；其结构性 phase 不可见。", "blockedBy 使用现有 task 的真实 ID。"],
-  parameters: Type.Object({
+  promptGuidelines: ["只创建完成当前目标所需的新 task；不要创建 phase。", "每个新 task 必须提供非空 description，说明它为何存在、如何服务目标与采用什么方法边界；创建前轻量检查必要性、依赖和证据路径。", "任务跨文件、命令或外部状态交付时，用可选 deliverables 显式声明 target 与完成事实。", "Task Plan 调用 plan_create 时省略 phaseId/phaseNumber；其结构性 phase 不可见。", "blockedBy 使用现有 task 的真实 ID。"],
+  parameters: strictSchemaObject({
     target: Type.Optional(Type.Literal("task", { description: "唯一允许的创建目标" })),
     phaseId: Type.Optional(Type.Number()),
     phaseNumber: Type.Optional(Type.Number()),
     subject: Type.String({ minLength: 1 }),
     description: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH }),
+    deliverables: Type.Optional(Type.Array(taskDeliverableSchema, { minItems: 1, description: "可选的显式交付物；声明后完成时必须逐项给出证据" })),
     blockedBy: Type.Optional(Type.Array(Type.Number())),
   }),
   prepareArguments: prepareEntryTaskArrays as never,
@@ -2198,7 +2230,7 @@ export const planReadTool = definePublicTool({
   label: "Plan Read",
   description: "只读查询当前 Plan，可读取 plan/goal 的全 Plan 聚合摘要，或单个 phase/task；paused 状态仍可使用。",
   promptSnippet: "读取当前 Plan 状态",
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     target: Type.Optional(Type.Union([Type.Literal("plan"), Type.Literal("goal"), Type.Literal("phase"), Type.Literal("task")])),
     id: Type.Optional(Type.Number({ description: "phase/task ID" })),
     phaseNumber: Type.Optional(Type.Number()),
@@ -2264,6 +2296,19 @@ function formatLatestAuditReadLines(goal: GoalState, target?: { kind: "phase" | 
   ];
 }
 
+function formatTaskDeliverables(task: Task, indent = ""): string[] {
+  const deliverables = task.deliverables ?? [];
+  if (!deliverables.length) return [];
+  const evidenceByTarget = new Map((task.deliverableEvidence ?? []).map((item) => [item.target, item.evidence]));
+  return [
+    `${indent}交付物：`,
+    ...deliverables.flatMap((deliverable) => [
+      `${indent}- ${deliverable.target}：${deliverable.description}`,
+      ...(evidenceByTarget.get(deliverable.target) ? [`${indent}  证据：${evidenceByTarget.get(deliverable.target)}`] : []),
+    ]),
+  ];
+}
+
 function formatPlanReadSummary(value: unknown, target: string, planType: PlanType, goal: GoalState): string {
   const record = value as Record<string, unknown>;
   const phases = Array.isArray(record.phases) ? record.phases as Phase[] : [];
@@ -2274,6 +2319,7 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
     return [
       formatTaskDisplay(task, `task #${task.id} · `),
       t("tool.plan.get.description", { description: task.description }),
+      ...formatTaskDeliverables(task),
       ...(task.evidence ? [t("tool.plan.get.evidence", { evidence: task.evidence })] : []),
       ...(task.blockedReason ? [t("tool.plan.get.blockedReason", { blockedReason: task.blockedReason })] : []),
       ...(task.blockedBy?.length ? [t("tool.plan.get.blockedBy", { blockedBy: task.blockedBy.map((id) => `#${id}`).join(", ") })] : []),
@@ -2313,13 +2359,13 @@ export const planUpdateTool = definePublicTool({
   description: "更新当前 Plan 的 task、phase 或 goal 状态。Task Plan 在最后一个 task 完成时自动收口；Phase/Goal Plan 的 check 只写审核结果，由本工具显式完成 phase/goal。",
   promptSnippet: "更新 Plan 状态与显示",
   promptGuidelines: [
-    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence 且不回退，blocked 必须说明原因。description 可显式修订但不能为空；Task Plan 的最后一个 task done 后会自动完成并关闭 goal。",
+    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence，已声明 deliverables 时还须逐项提供 deliverableEvidence，且不回退。最后一个 Task Plan task 完成前，重读所有 task description 与交付物；确认无遗漏后随本次更新提供 completionReview，才会自动关闭 goal。",
     "target=phase 只能更新当前 phase；description 可显式修订并留痕但不能为空。Phase Plan 要求 task 全 done，Goal Plan 还要求 phase_check approved。goal_check rejected 后可把受影响的 done phase 重开，再新增 follow-up task 修复。",
     "goal 的 objective 与 description 在 Phase/Goal Plan 确认后冻结；Task Plan 要改变它们必须重新调用 task_plan 整份替换。",
     "Phase/Goal Plan 用 target=goal status=done 最终收口，并要求 goal_check approved；Task Plan 通常无需另行更新 goal。",
     "只有确实需要用户决定的死锁才能把 goal 更新为 paused，且 reason 必填；agent 不得自行 resume。",
   ],
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     target: Type.Union([Type.Literal("task"), Type.Literal("phase"), Type.Literal("goal")]),
     id: Type.Optional(Type.Number({ description: "task/phase ID" })),
     phaseNumber: Type.Optional(Type.Number()),
@@ -2331,6 +2377,8 @@ export const planUpdateTool = definePublicTool({
     addBlockedBy: Type.Optional(Type.Array(Type.Number())),
     removeBlockedBy: Type.Optional(Type.Array(Type.Number())),
     evidence: Type.Optional(Type.String()),
+    deliverableEvidence: Type.Optional(Type.Array(taskDeliverableEvidenceSchema, { description: "已声明 deliverables 的逐项可复验证据" })),
+    completionReview: Type.Optional(taskCompletionReviewSchema),
     blockedReason: Type.Optional(Type.String()),
     reason: Type.Optional(Type.String({ maxLength: MAX_PAUSE_REASON_DETAIL_LENGTH })),
     summary: Type.Optional(Type.String({ description: "goal done 时的完成总结" })),
@@ -2368,30 +2416,41 @@ export const planUpdateTool = definePublicTool({
         ...(params.description !== undefined ? { description: String(params.description).trim() } : {}),
       });
       if (result.op.kind === "error") return { content: [{ type: "text", text: formatPlanResult(result.op) }], details: { error: result.op.message } };
-      goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
-      clearCurrentCheckSnapshot();
-      const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
-      if (planType === "task" && allPlanTasksDoneWithEvidence(goalRuntimeState.currentGoal.plan)) {
+      const completionReviewValue = params.completionReview;
+      const completionReview = completionReviewValue && typeof completionReviewValue === "object" && !Array.isArray(completionReviewValue)
+        ? {
+          summary: String((completionReviewValue as Record<string, unknown>).summary ?? "").trim(),
+          verification: String((completionReviewValue as Record<string, unknown>).verification ?? "").trim(),
+        }
+        : undefined;
+      if (planType === "task" && allPlanTasksDoneWithEvidence(result.goal.plan!)) {
+        if (!completionReview?.summary || !completionReview.verification) {
+          return {
+            content: [{ type: "text", text: "Final Task Plan completion requires completionReview.summary and completionReview.verification after checking every task description and declared deliverable." }],
+            details: { error: "completion review required", taskId },
+            isError: true,
+          };
+        }
+        goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
+        clearCurrentCheckSnapshot();
         const completionGoal = goalRuntimeState.currentGoal;
-        const tasks = flattenTasks(completionGoal.plan);
-        const summary = `Task Plan 的全部 ${tasks.length} 个 task 已完成。`;
-        const verification = tasks
-          .map((task) => `task #${task.id} ${task.subject}：${task.evidence?.trim()}`)
-          .join("\n");
         finalizeGoal(ctx);
         return {
-          content: [{ type: "text", text: buildCompletionReplySignal({ goal: completionGoal, summary, verification, audited: false }) }],
+          content: [{ type: "text", text: buildCompletionReplySignal({ goal: completionGoal, summary: completionReview.summary, verification: completionReview.verification, audited: false }) }],
           details: {
             target: "task",
             taskId,
             status: params.status,
-            revision: completionGoal.plan.revision,
+            revision: completionGoal.plan?.revision,
             completed: true,
             planType: "task",
-            display: [`完成总结：${summary}`, `验证：${verification}`].join("\n"),
+            display: [`完成总结：${completionReview.summary}`, `验证：${completionReview.verification}`].join("\n"),
           },
         };
       }
+      goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
+      clearCurrentCheckSnapshot();
+      const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
       persistGoal(goalRuntimeState.currentGoal);
       safeUpdatePlanOverlay();
       return {
@@ -2568,7 +2627,7 @@ export const phaseCheckTool = definePublicTool({
   label: "Phase Check",
   description: "独立审核 Goal Plan 的当前 phase。审核只记录 approved/rejected/audit_error；通过后仍需 plan_update(target=phase,status=done) 才改变完成显示。",
   promptSnippet: "独立审核当前 Goal Plan phase",
-  parameters: Type.Object({ phaseId: Type.Optional(Type.Number()), phaseNumber: Type.Optional(Type.Number()) }),
+  parameters: strictSchemaObject({ phaseId: Type.Optional(Type.Number()), phaseNumber: Type.Optional(Type.Number()) }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
     if (!goal || !goal.plan) return { content: [{ type: "text", text: "No Goal Plan." }], details: { error: "no goal plan" } };
@@ -2653,12 +2712,12 @@ export const goalCheckTool = definePublicTool({
   label: "Goal Check",
   description: "独立审核 Phase Plan 或 Goal Plan 的完整 goal。审核只记录 approved/rejected/audit_error；通过后仍需 plan_update(target=goal,status=done) 才最终收口。",
   promptSnippet: "独立审核完整 goal",
-  parameters: Type.Object({
+  parameters: strictSchemaObject({
     summary: Type.String({ minLength: 1, description: "本轮完成了什么及原因" }),
     verification: Type.String({ minLength: 1, description: "最后自测与证据" }),
     whatChanged: Type.Optional(Type.Array(Type.String())),
     userReview: Type.Optional(Type.String()),
-    verificationBundle: Type.Optional(Type.Object({
+    verificationBundle: Type.Optional(strictSchemaObject({
       changes: Type.String({ minLength: 1 }),
       acceptanceEvidence: Type.String({ minLength: 1 }),
       selfTest: Type.String({ minLength: 1 }),
@@ -3505,11 +3564,11 @@ export function buildSystemPrompt(goal: GoalState) {
   const acceptanceContractBlock = planType === "task" ? "" : buildAcceptanceContractBlock(goal);
   const feedbackBlock = buildCheckFeedbackBlock(goal);
   const typeRule = planType === "task"
-    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal，不要再调用 plan_update(target=goal,status=done)。用户改变目标时重新调用 task_plan，原子替换 objective 与全部 task。"
+    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；已声明 deliverables 的 task 必须逐项记录 deliverableEvidence。最后一个 task 完成前必须重读全部 task description 与交付物，并随 done 更新提供 completionReview；核对通过后才自动关闭 goal，不要再调用 plan_update(target=goal,status=done)。用户改变目标时重新调用 task_plan，原子替换 objective 与全部 task。"
     : planType === "phase"
       ? "- 当前是 Phase Plan：每个 phase 的 task 全 done 后用 plan_update(target=phase,status=done) 推进；所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。不要调用 phase_check。"
       : "- 当前是 Goal Plan：每个 phase 的 task 全 done 后调用 phase_check；通过后用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。";
-  return `当前 Plan：${planType}\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>${acceptanceContractBlock}${boundaryBlock}${planBlock}${taskGraphBlock}${feedbackBlock}\n\n循环规则：\n- 持续工作直到当前 Plan 端到端完成，不要停在纸面计划或部分进度。\n- 用 plan_create 动态新增 task，用 plan_read 回查，用 plan_update 更新 task/phase/goal 状态和显示；task 先进入 in_progress，完成时带可复验 evidence 标 done。\n- phase 结构在启动后冻结，运行中不得新增 phase。\n- 按 phase 顺序推进，严禁跳过当前未完成 phase。\n- <dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界；waiting/blocked task 不推进。\n- ready 只表示依赖已满足，不代表 task 之间可安全并发；执行或委派前仍由主 agent 核对范围与冲突。\n- Plan 状态只由主 agent 写入；对任何执行结果核验证据后再调用 plan_update。\n- check 只记录独立审核结果；只有 plan_update 能写完成状态。\n- 以当前文件、命令输出、测试和外部状态为准；工具失败时先尝试合理替代方案。\n- 遇到必须由用户决策才能继续的死锁时，用 plan_update(target=goal,status=paused,reason=...) 主动暂停；一时困难不算死锁。\n${typeRule}`;
+  return `当前 Plan：${planType}\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>${acceptanceContractBlock}${boundaryBlock}${planBlock}${taskGraphBlock}${feedbackBlock}\n\n循环规则：\n- 当前 <dgoal_plan> 是执行与收口的唯一结构化权威；会话压缩、摘要和普通对话只能提供背景，不得覆盖 task description 或已声明 deliverables。冲突时不得标记 done：用户改变目标才用 task_plan 原子替换，否则创建 follow-up task。\n- 持续工作直到当前 Plan 端到端完成，不要停在纸面计划或部分进度。\n- 用 plan_create 动态新增 task，用 plan_read 回查，用 plan_update 更新 task/phase/goal 状态和显示；task 先进入 in_progress，完成时带可复验 evidence 标 done。\n- phase 结构在启动后冻结，运行中不得新增 phase。\n- 按 phase 顺序推进，严禁跳过当前未完成 phase。\n- <dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界；waiting/blocked task 不推进。\n- ready 只表示依赖已满足，不代表 task 之间可安全并发；执行或委派前仍由主 agent 核对范围与冲突。\n- Plan 状态只由主 agent 写入；对任何执行结果核验证据后再调用 plan_update。\n- check 只记录独立审核结果；只有 plan_update 能写完成状态。\n- 以当前文件、命令输出、测试和外部状态为准；工具失败时先尝试合理替代方案。\n- 遇到必须由用户决策才能继续的死锁时，用 plan_update(target=goal,status=paused,reason=...) 主动暂停；一时困难不算死锁。\n${typeRule}`;
 }
 
 // 切片7：把当前 plan（三层，AI 全可见）格式化注入 system prompt。
@@ -3536,6 +3595,10 @@ export function buildPlanContextBlock(goal: GoalState): string {
       const indent = planType === "task" ? "  " : "    ";
       lines.push(`${indent}[${task.status}] task #${task.id}: ${escapeXml(task.subject)}${evidence}${blocked}`);
       lines.push(`${indent}  description: ${escapeXml(task.description)}`);
+      for (const deliverable of task.deliverables ?? []) {
+        const deliverableEvidence = task.deliverableEvidence?.find((item) => item.target === deliverable.target)?.evidence;
+        lines.push(`${indent}  deliverable: ${escapeXml(deliverable.target)} | ${escapeXml(deliverable.description)}${deliverableEvidence ? ` | ev: ${escapeXml(deliverableEvidence)}` : ""}`);
+      }
     }
   }
   lines.push("</dgoal_plan>");
@@ -5788,6 +5851,47 @@ function isPersistedFinalAuditHistory(value: unknown): value is FinalAuditHistor
   });
 }
 
+function isPersistedTaskDeliverables(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length === 0) return false;
+  const targets = new Set<string>();
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const record = item as Record<string, unknown>;
+    if (!hasOnlyKeys(record, ["target", "description"])) return false;
+    const target = typeof record.target === "string" ? record.target.trim() : "";
+    const description = typeof record.description === "string" ? record.description.trim() : "";
+    if (!target || !description || targets.has(target)) return false;
+    targets.add(target);
+    return true;
+  });
+}
+
+function isPersistedDeliverableEvidence(value: unknown, deliverables: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || !Array.isArray(deliverables)) return false;
+  const deliverableTargets = new Set(deliverables.map((item) => (item as { target?: unknown }).target));
+  const targets = new Set<string>();
+  return value.every((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const record = item as Record<string, unknown>;
+    if (!hasOnlyKeys(record, ["target", "evidence"])) return false;
+    const target = typeof record.target === "string" ? record.target.trim() : "";
+    const evidence = typeof record.evidence === "string" ? record.evidence.trim() : "";
+    if (!target || !evidence || !deliverableTargets.has(target) || targets.has(target)) return false;
+    targets.add(target);
+    return true;
+  });
+}
+
+function hasPersistedEvidenceForEveryDeliverable(task: Task): boolean {
+  const deliverables = task.deliverables ?? [];
+  if (!deliverables.length) return true;
+  const evidence = task.deliverableEvidence ?? [];
+  return evidence.length === deliverables.length
+    && evidence.every((item) => deliverables.some((deliverable) => deliverable.target === item.target));
+}
+
 function isPersistedPlanValid(plan: TaskPlan, planType: PlanType): boolean {
   if (!Array.isArray(plan.phases) || plan.phases.length === 0 || !isPositiveInteger(plan.nextId)) return false;
   if (plan.revision !== undefined && (!Number.isInteger(plan.revision) || plan.revision < 0)) return false;
@@ -5821,7 +5925,9 @@ function isPersistedPlanValid(plan: TaskPlan, planType: PlanType): boolean {
         !PERSISTED_PLAN_STATUSES.has(task.status) ||
         !hasValidBlockedReason(task.status, task.blockedReason) ||
         (task.evidence !== undefined && typeof task.evidence !== "string") ||
-        (task.status === "done" && !task.evidence?.trim()) ||
+        !isPersistedTaskDeliverables(task.deliverables) ||
+        !isPersistedDeliverableEvidence(task.deliverableEvidence, task.deliverables) ||
+        (task.status === "done" && (!task.evidence?.trim() || !hasPersistedEvidenceForEveryDeliverable(task))) ||
         (task.blockedBy !== undefined && (!Array.isArray(task.blockedBy) || !task.blockedBy.every(isPositiveInteger)))
       ) return false;
       taskIds.add(task.id);

@@ -2,6 +2,8 @@
 
 > Status：已实现，待下一版本发布。
 
+> 当前收口前提由 ADR 0046 补充：末任务除通用 evidence 外，须满足已声明交付物的逐项证据并提供同会话 completion review；本 ADR 保留“同一 `plan_update` 原子收口、不新增独立审核或 goal done 调用”的结论。
+
 ## 背景
 
 Task Plan 是不含独立审核的轻量执行路径。此前它复用了 Phase/Goal Plan 的两步完成方式：所有 task 都进入 `done` 后，仍要求 agent 再调用一次 `plan_update(target=goal,status=done)`。

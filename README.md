@@ -53,10 +53,11 @@ Ask for a concrete multi-step task normally. When tracking adds value, the agent
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ last task done (with evidence) automatically closes the goal
+→ final task: evidence + declared-deliverable evidence + completion review
+→ automatic goal closure
 ```
 
-Task Plan has no startup review, confirmation dialog, or independent auditor, and it grants no extra tool permissions.
+Task Plan has no startup review, confirmation dialog, or independent auditor, and it grants no extra tool permissions. A task may optionally declare named deliverables—files, command results, or observable external states—with a required completion fact. Declared deliverables need one-to-one evidence before that task can be done. Before the final update closes a Task Plan, the main agent supplies a same-session structured review of every task description and declared deliverable; this is a self-check, not an independent audit.
 
 ### Explicit dgoal: Phase Plan / Goal Plan
 
@@ -94,12 +95,12 @@ A `check` records an audit result only; it never marks a phase or goal done. Onl
 
 | Tool | Responsibility |
 |---|---|
-| `task_plan` | Create or fully replace a Task Plan, including goal/task descriptions |
+| `task_plan` | Create or fully replace a Task Plan, including goal/task descriptions and optional task deliverables |
 | `phase_plan` | Submit an explicitly activated Phase Plan with required goal/phase descriptions and a frozen goal contract |
 | `goal_plan` | Submit an explicitly activated Goal Plan with required descriptions and frozen phase/goal contracts |
-| `plan_create` | Add a task with a required description; never add a phase |
-| `plan_read` | Read a plan, goal, phase, or task; pure read: aggregate/item output includes the current frontier reason, next legal action, and current-phase Task DAG projection (ready/waiting/root blockers/immediate unlocks), plus only the latest applicable check/feedback/completion claim from existing evidence; no raw Plan payload (Task Plan hides its phase) |
-| `plan_update` | Sole agent-facing writer for task/phase/goal progress, phase/task description revisions, completion, and agent pause |
+| `plan_create` | Add a task with a required description and optional declared deliverables; never add a phase |
+| `plan_read` | Read a plan, goal, phase, or task; pure read: aggregate/item output includes the current frontier reason, next legal action, and current-phase Task DAG projection (ready/waiting/root blockers/immediate unlocks), plus only the latest applicable check/feedback/completion claim from existing evidence; task detail includes declared deliverables and their evidence; no raw Plan payload (Task Plan hides its phase) |
+| `plan_update` | Sole agent-facing writer for task/phase/goal progress, phase/task description revisions, completion, and agent pause; final Task Plan completion also requires a structured self-review |
 | `phase_check` | Independently audit a Goal Plan phase; write a CheckRecord only |
 | `goal_check` | Independently audit the whole Phase/Goal Plan; write a CheckRecord only |
 
@@ -111,7 +112,7 @@ Every goal, visible phase, and task carries a required **Description**: why it e
 
 ## Completion Guards
 
-- **Task Plan:** every task must carry reproducible evidence and be done; the final task update atomically closes the goal. Blocked tasks do not count as complete.
+- **Task Plan:** every task must carry reproducible evidence and be done; a task with declared deliverables also needs one-to-one deliverable evidence. The final update additionally carries a same-session completion review, then atomically closes the goal. Blocked tasks do not count as complete.
 - **Phase Plan:** a phase may be marked done only after every task is done; blocked still means incomplete. The goal requires all phases done plus a current-revision approved `goal_check`.
 - **Goal Plan:** each phase additionally requires a current-revision approved `phase_check`; the goal likewise requires `goal_check` approval.
 - Check results are `approved | rejected | audit_error`. Rejection keeps work active for repair; audit errors pause safely.
@@ -135,7 +136,7 @@ plan_update(target=goal, status=paused, reason="specific blocker")
 
 - **Persistent widget:** Task Plan lists tasks; Phase/Goal Plan lists phases; headings preserve aggregate progress while truncating the objective to the current terminal width.
 - **`Ctrl+O`:** expands tasks and audit activity under Phase/Goal Plan phases; the ten-second completion snapshot shows every phase and task.
-- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description, current-frontier reason/next legal action, current-phase Task DAG projection, latest applicable audit projection, and selectable phase/tasks; Enter opens item details (description, status, dependencies, evidence, blocked reason, scoped frontier/graph state, and latest phase check/feedback), and Esc returns without losing the selection. Only the latest feedback/completion claim is exposed; the internal repair index stays hidden. Task Plan never exposes its hidden phase.
+- **`/dgoal s` modal:** a two-level browser. The list shows the full goal description, current-frontier reason/next legal action, current-phase Task DAG projection, latest applicable audit projection, and selectable phase/tasks; Enter opens item details (description, declared deliverables and their evidence, status, dependencies, evidence, blocked reason, scoped frontier/graph state, and latest phase check/feedback), and Esc returns without losing the selection. Only the latest feedback/completion claim is exposed; the internal repair index stays hidden. Task Plan never exposes its hidden phase.
 - **Status bar:** shows starting / active / paused / done.
 
 State and persistence never depend on successful rendering. Widget, modal, status, or notification errors may degrade presentation but cannot block completion or recovery.
@@ -158,7 +159,7 @@ Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and `auditorMod
 
 ## Persistence
 
-Current plans use the `dgoal-plan-v2` custom entry. Old `dgoal-state`, `dgoal-goal-vnext`, and `dgoal-plan-v1` entries are intentionally ignored and not migrated. Reload strictly revalidates required descriptions, the Plan-specific frozen acceptance contract, IDs, statuses, dependencies, removed fields, and any pending proposal; one invalid part rejects the whole entry. A Pi session owns at most one current plan.
+Current plans use the `dgoal-plan-v2` custom entry. Old `dgoal-state`, `dgoal-goal-vnext`, and `dgoal-plan-v1` entries are intentionally ignored and not migrated. Reload strictly revalidates required descriptions, optional declared deliverables and their evidence, the Plan-specific frozen acceptance contract, IDs, statuses, dependencies, removed fields, and any pending proposal; one invalid part rejects the whole entry. A Pi session owns at most one current plan. On `session_compact`, the persisted structural Plan is restored unchanged and re-injected as the execution authority; the compacted summary remains background only and cannot override task descriptions or declared deliverables.
 
 ## Design Boundaries
 
@@ -197,7 +198,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md), and [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md), [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md), and [ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md).
 
 ## License
 

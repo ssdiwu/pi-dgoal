@@ -2,17 +2,23 @@
 
 All notable changes to `pi-dgoal` will be documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的基本格式；已打 tag 的版本以 Git tag（Git 标签）为准，未打 tag 的 Build 候选以 App target 构建号为准。
+
+版本段使用 `## [x.x.x] - YYYY-MM-DD`；能明确回链到 GitHub issue 的条目在句尾标 `(#xx)`。
 
 ## [Unreleased]
+### Added
+
+- **工具约束采样**：八个公共 Plan 工具（`task_plan` / `phase_plan` / `goal_plan` / `plan_create` / `plan_read` / `plan_update` / `phase_check` / `goal_check`）现在在支持的 provider/model 上请求 JSON Schema strict 模式，让工具参数严格匹配 TypeBox schema；模型不支持时宿主自动回退普通工具调用，跨 provider 行为不变。开发依赖同步升级到 Pi 0.82。
 
 ### Changed
 
 - **Task DAG 可解释读模型**：当前未完成 phase 现在从既有 `blockedBy` 与 task status 纯派生 ready、waiting、传递根阻塞和立即解锁关系，并同步投影到 `plan_read`、`/dgoal s` 与主 agent prompt；不新增持久字段或调度状态。ready 只声明主 agent 当前合法执行或委派的 task，不绑定具体执行扩展，也不代替并发冲突判断；结果经主 agent 核验后仍由 `plan_update` 写 Plan。
+- **Task Plan 交付物与安全收口**：task 可按需声明文件、命令结果或可观察外部状态交付物；声明后必须逐项提供结构化证据。最后一个 task 额外要求主 agent 同会话回读全部任务说明与交付物并提交 completion review，才原子关闭 Plan。`session_compact` 后持久 Plan 原样恢复并作为执行权威，压缩摘要不能覆盖 task 说明或声明交付物。
 
 ### Fixed
 
+- **Codex strict schema 兼容**：公共工具参数及嵌套对象现在均显式关闭额外属性，避免支持 strict JSON Schema 的 OpenAI/Codex 模型因缺少 `additionalProperties: false` 拒绝 `task_plan` 等调用。
 - **自动续跑假进展熔断**：无进展判定现在区分工具活动与持久进展；连续 3 轮无工具或连续 8 轮只有读取、状态查询等活动而没有成功文件写入、独立 check 或 Plan 状态/evidence/阻塞结构变化时都会暂停。判定只使用结构化工具事件与 Plan 状态差，不解析 LLM 文本或 `bash` 命令语义；续跑提示会在暂停前要求直接执行、委派或结构化报告真实用户决策阻塞。
 
 ## [0.7.9] - 2026-07-20
@@ -171,6 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **预审技术失败与语义打回分离**：技术失败以 `isError:true` 返回 `semantic review technical error`，明确提示“这不是计划内容问题；可稍后重试 /dgoal，或检查模型/网络可用性”；语义打回保持 `isError:false` 返回 `semantic review rejected` 与可修正原因。旧测试接缝 `__setProposalSemanticCompletionForTest` 保留向后兼容，新增 `__setProposalSemanticStreamForTest` 注入流式事件序列。
 - **预审配置加载类型安全**：`loadDgoalConfig` 的 `isProjectTrusted` 改为可选并防御性可选链，`DgoalContext` 补 `isProjectTrusted?` 字段；`dgoal_propose` 调用点去掉 `as unknown as ExtensionContext` cast 与过宽的 `.catch(() => null)`，改为按 `ctx.cwd` 存在性加载配置，缺失时回退默认 60s 不阻断预审。清理 `raceWithIdle` 死参数、`emitProposeUpdate` 纯透传包装与 `SemanticReviewLiveness` 的 `"done"` 死分支（终态前显式置 `done`）。
+
 ## [0.6.2] - 2026-07-13
 
 ### Fixed
@@ -178,6 +185,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **审核结论仲裁**：有效 `<APPROVED>` / `<REJECTED>` 优先于尾部 WebSocket/网络错误，不再误暂停为 `audit_error`。
 - **审核候选切换**：每候选单次故障切换，健康 fallback 按 goal 与审核范围持久复用；`audit_error` resume 重置故障候选状态，phase/goal 拒绝回环分层。
 - **状态查询浮层恢复**：`/dgoal s` 在持续浮层丢失或首次渲染失败后可幂等重绑并重绘 `dgoal-plan`，且不修改运行态。
+
 ## [0.6.1] - 2026-07-13
 
 ### Fixed
@@ -224,7 +232,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **审核模型候选链与预检**：新增 `phaseAuditorModels` / `goalAuditorModels`，每个审核范围最多 3 个有序 `provider/model[:thinking]` 候选。项目级链整体优先于全局链、同来源复数 > 对应单值 > 旧 `auditorModel`，`null` 明确继承当前会话模型并阻断继续降级；旧单值配置不自动改写。解析会逐项告警非法/重复/超限项，并以审核 child 同隔离边界的 Pi `get_available_models` 结构化结果预检（完整模型 ID 优先、再识别末尾 thinking）；成功结果缓存到当前 Pi 进程，预检失败保留候选交给运行时。详见 ADR 0015。
+- **审核模型候选链与预检**：新增 `phaseAuditorModels` / `goalAuditorModels`，每个审核范围最多 3 个有序 `provider/model[:thinking]` 候选。项目级链整体优先于全局链、同来源复数 &gt; 对应单值 &gt; 旧 `auditorModel`，`null` 明确继承当前会话模型并阻断继续降级；旧单值配置不自动改写。解析会逐项告警非法/重复/超限项，并以审核 child 同隔离边界的 Pi `get_available_models` 结构化结果预检（完整模型 ID 优先、再识别末尾 thinking）；成功结果缓存到当前 Pi 进程，预检失败保留候选交给运行时。详见 ADR 0015。
 - **审核器选模模板初始化**：首次实际独立审核发现全局和受信任项目级的 `pi-dgoal.json` 文件都不存在时，原子创建只含两个复数字段 `null` 的全局模板；不会覆盖已有文件。已有坏 JSON 或不可读文件只告警降级，写入失败仍回退当前会话模型并不中断审核。
 - **审核器候选链运行时回退与部分输出续审**：审核器发生结构化技术异常（HTTP 401/403/404/408/429/5xx、网络错误、零输出超时）或明确纯文本配额耗尽时按候选顺序切换下一模型；HTTP 400、用户中断与明确 `<APPROVED>` / `<REJECTED>` 不切换。有部分输出但缺终止标记时，同模型最多重试 3 次，把已有文本作为受限的 `<partial_audit_feedback>`（6000 字符上限、XML 转义）续审，仍无结论才携带部分文本切下一候选。全部候选耗尽进入 `audit_error` 暂停，绝不静默回退当前执行模型。工具进度 `onUpdate` 与最终 `details` 记录实际采用模型、配置/预检降级状态、每次尝试轨迹（模型、outcome、reason、网络 code、进程 exitCode、error 文本）与耗尽标志；轨迹不写入 `GoalState`，部分反馈不污染正式 `phaseFeedbackById` / `finalFeedback`。详见 ADR 0015。
 
@@ -233,9 +241,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/tree` 导航后浮层与 goal 状态不重同步**：`/tree`（`navigateTree`）原地切 session 分支，只发 `session_tree` 通知、不发 `session_start`，而 pi-dgoal 此前未监听 `session_tree`，导致 `currentGoal` 停在旧分支、计划浮层显示陈旧状态（阶段明明完成了还显示未完成，计时器也冻住）。现抽取 `resyncGoalFromSession`（取消旧 continuation、清 check snapshot/auditor tracker + `loadGoal` + setStatus + overlay 重同步），`session_start` 与新增的 `session_tree` 处理共用，保证两个事件路径不分叉；每次成功重同步递增仅内存的 session generation，旧分支异步审核结果不能写回新分支，已发送但尚未派发的旧 continuation 会被 input handler 丢弃；UI 抛错不阻断状态重同步。`/fork` 走 `session_start reason fork`，同步被覆盖。
-
 - **`/dgoal` 启动不暂停当前 LLM 工作**：`startGoal` 此前不 abort 当前 agent turn（`clearGoal` 有 `ctx.abort`，`startGoal` 没有），用户在 LLM 工作时敲 `/dgoal` 要等当前 turn 跑完才进 dgoal。现 `startGoal` 入口在非 idle 时 `ctx.abort`（参照 `shouldAbortCurrentTurnOnClear`）；并用 `startGoalInProgress` 标志包住「创建 pending goal → 投递 propose prompt」整段（try/finally），抑制被中断 turn 的 `agent_end` 触发 `handleStartupGate` 与 startGoal 自己的 propose 投递撞车（双发）。
-
 - **`dgoal_plan` / `dgoal_propose` 兼容模型把数组参数序列化成字符串**：模型有时会把 `blockedBy` / `addBlockedBy` / `removeBlockedBy`（以及 `dgoal_propose` 的 `phases[].tasks[].blockedBy`）序列化成字符串 `"[]"` / `"[1,2]"` 而非真正的数组，此前 pi-ai 入参校验（`TypeBox` `Value.Convert` 把字符串转成类数组结构后按元素逐项校验）直接以 `blockedBy.0: must be number` 拒绝，导致建 task / 加依赖失败。现新增 `prepareArguments` 钩子（框架提供的「校验前规整模型坏输入」接缝，在 `validateToolArguments` 之前执行），把字符串化的数组 `JSON.parse` 回 `number[]`；schema 保持严格 `Array<number>` 不放宽对 LLM 的契约。reducer 入口同时保留 `coerceNumberArray` 兜底作为防御性二次清洗。
 
 ## [0.5.5] - 2026-07-07
@@ -263,7 +269,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **独立审核器选模配置**：新增 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json`，可通过 `auditorModel`（格式 `provider/model`）为独立审核子进程单独指定模型。解析顺序为项目级（仅项目已 trusted 时生效）> 全局 > 当前会话模型；配置缺失、不可读或非法时回退到当前会话模型，审核不中断。首次审核且无任何配置文件时，dgoal 会一次性 i18n 提示全局路径（提示文案在安装 `pi-di18n` 时跟随 locale），之后保持静默；配置文件不被自动创建。该配置只影响独立审核子进程选模，不改变主执行线程模型。
+- **独立审核器选模配置**：新增 `~/.pi/agent/pi-dgoal.json` 或项目 `.pi/pi-dgoal.json`，可通过 `auditorModel`（格式 `provider/model`）为独立审核子进程单独指定模型。解析顺序为项目级（仅项目已 trusted 时生效）&gt; 全局 &gt; 当前会话模型；配置缺失、不可读或非法时回退到当前会话模型，审核不中断。首次审核且无任何配置文件时，dgoal 会一次性 i18n 提示全局路径（提示文案在安装 `pi-di18n` 时跟随 locale），之后保持静默；配置文件不被自动创建。该配置只影响独立审核子进程选模，不改变主执行线程模型。
 - **穷举式审核 prompt**：`PHASE_CHECK_SYSTEM_PROMPT` 与 `AUDITOR_SYSTEM_PROMPT` 增加「一次提全」与「分级列出所有发现」指令，要求审核器在本轮预算内把所有已能发现的问题全部列出（FAIL/BLOCKER 必须列出，warning 级列出但不一定导致 REJECTED），不要找到第一个 blocker 就停，减少挤牙膏式往返。
 - **重审反馈注入**：`buildPhaseCheckTask` / `buildAuditorTask` 在存在上一轮反馈时，把已持久化的 `phaseFeedbackById` / `finalFeedback` 原始报告以 `<previous_feedback>` 块注入审核子进程 task；两个 SYSTEM_PROMPT 增加「重审聚焦」指令，要求审核器先核验上轮问题是否真已修好，再全量查新问题，消除重审视野漂移。数据结构不变，复用已有反馈持久化。
 - **新决策**：新增 `doc/决策档案/0013-auditorModel配置落点选独立文件.md`，记录审核器选模配置为什么用 `pi-dgoal.json` 而非借道 Pi 的 `settings.json`（不依赖 Pi 未文档化的未知字段容忍）。

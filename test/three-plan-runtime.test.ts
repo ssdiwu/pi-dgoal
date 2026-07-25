@@ -12,6 +12,7 @@ import dgoal, {
   __setPhaseCheckOverrideForTest,
   __setProposalSemanticReviewForTest,
   goalCheckTool,
+  goalPlanTool,
   phasePlanTool,
   phaseCheckTool,
   planCreateTool,
@@ -68,6 +69,15 @@ function withDescriptions(tool: { name?: string }, params: Record<string, unknow
     };
   }
   if (tool.name === "plan_create") return { description: "新增此任务以推进当前目标。", ...params };
+  if (tool.name === "plan_update" && params.target === "task" && params.status === "done") {
+    return {
+      ...params,
+      completionReview: params.completionReview ?? {
+        summary: "已逐项核对当前 Task Plan 的任务说明与交付物。",
+        verification: "各 task 的 evidence 已记录并可复验。",
+      },
+    };
+  }
   return params;
 }
 
@@ -107,6 +117,46 @@ describe("Three-Plan public tool surface", () => {
       "phase_check", "goal_check",
     ]);
     expect(names.every((name) => name.split("_").length === 2)).toBe(true);
+  });
+
+  test("public Plan tools request JSON Schema strict-prefer constrained sampling", () => {
+    const registered: Record<string, unknown> = {};
+    dgoal({
+      registerTool: (tool: { name: string; constrainedSampling?: unknown }) => {
+        registered[tool.name] = tool.constrainedSampling;
+      },
+      registerCommand: () => {},
+      on: () => {},
+      events: { emit: () => {} },
+      appendEntry: () => {},
+    } as never);
+    for (const name of [
+      "task_plan", "phase_plan", "goal_plan",
+      "plan_create", "plan_read", "plan_update",
+      "phase_check", "goal_check",
+    ]) {
+      expect(registered[name]).toEqual({ type: "json_schema", strict: "prefer" });
+    }
+  });
+
+  test("public strict schemas close every object against extra properties", () => {
+    const missing: string[] = [];
+    const visit = (schema: unknown, path: string): void => {
+      if (!schema || typeof schema !== "object") return;
+      const value = schema as Record<string, unknown>;
+      if (value.type === "object" && value.additionalProperties !== false) missing.push(path);
+      if (value.properties && typeof value.properties === "object") {
+        for (const [key, child] of Object.entries(value.properties as Record<string, unknown>)) visit(child, `${path}.properties.${key}`);
+      }
+      if (value.items) visit(value.items, `${path}.items`);
+      for (const key of ["anyOf", "oneOf", "allOf"]) {
+        if (Array.isArray(value[key])) value[key].forEach((child, index) => visit(child, `${path}.${key}[${index}]`));
+      }
+    };
+    for (const tool of [taskPlanTool, phasePlanTool, goalPlanTool, planCreateTool, planReadTool, planUpdateTool, phaseCheckTool, goalCheckTool]) {
+      visit(tool.parameters, tool.name);
+    }
+    expect(missing).toEqual([]);
   });
 
   test("public Plan schemas require descriptions and do not expose activeForm/contextSummary", () => {
@@ -165,10 +215,57 @@ describe("Three-Plan public tool surface", () => {
     });
 
     expect(finished.details).toMatchObject({ target: "task", taskId: 1, status: "done", completed: true, planType: "task" });
-    expect(finished.content[0].text).toContain("Task Plan 的全部 1 个 task 已完成");
+    expect(finished.content[0].text).toContain("已逐项核对当前 Task Plan 的任务说明与交付物");
     expect(finished.content[0].text).toContain("Task Plan 无独立审核");
     expect(__getGoalForTest()).toBeUndefined();
     expect(persistedStatuses.slice(-2)).toEqual(["done", null]);
+  });
+
+  test("Task Plan 的交付物逐项证据与末任务自检都会阻止过早收口", async () => {
+    await execute(taskPlanTool, {
+      objective: "同步交付物",
+      tasks: [{
+        subject: "同步文档",
+        deliverables: [{ target: "README.md", description: "说明新行为" }, { target: "CHANGELOG.md", description: "记录用户可感知变更" }],
+      }],
+    });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+
+    const undeclaredDeliverable = await executeRaw(planUpdateTool, {
+      target: "task", id: 1, status: "in_progress",
+      deliverableEvidence: [{ target: "UNDECLARED.md", evidence: "不应被持久化" }],
+    });
+    expect(undeclaredDeliverable.details).toMatchObject({ error: "deliverableEvidence targets must match declared deliverables" });
+
+    const missingDeliverableEvidence = await executeRaw(planUpdateTool, {
+      target: "task", id: 1, status: "done", evidence: "已同步文档。",
+    });
+    expect(missingDeliverableEvidence.details).toMatchObject({ error: "done requires evidence for every declared deliverable" });
+    expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("in_progress");
+
+    const missingCompletionReview = await executeRaw(planUpdateTool, {
+      target: "task", id: 1, status: "done", evidence: "README 与 CHANGELOG 已更新。",
+      deliverableEvidence: [
+        { target: "README.md", evidence: "README.md 已写入新行为说明" },
+        { target: "CHANGELOG.md", evidence: "CHANGELOG.md 的 Unreleased 已记录变更" },
+      ],
+    });
+    expect(missingCompletionReview.details).toMatchObject({ error: "completion review required" });
+    expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("in_progress");
+
+    const finished = await executeRaw(planUpdateTool, {
+      target: "task", id: 1, status: "done", evidence: "README 与 CHANGELOG 已更新。",
+      deliverableEvidence: [
+        { target: "README.md", evidence: "README.md 已写入新行为说明" },
+        { target: "CHANGELOG.md", evidence: "CHANGELOG.md 的 Unreleased 已记录变更" },
+      ],
+      completionReview: {
+        summary: "已逐项核对同步文档任务的说明与两份声明交付物。",
+        verification: "重读 README.md 和 CHANGELOG.md，确认两者均与实现一致。",
+      },
+    });
+    expect(finished.details).toMatchObject({ completed: true, planType: "task" });
+    expect(__getGoalForTest()).toBeUndefined();
   });
 
   test("Task Plan auto-close remains correct when the completion overlay throws", async () => {

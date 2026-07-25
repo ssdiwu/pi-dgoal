@@ -163,6 +163,19 @@ describe("ADR 0042 · isGoalState 新契约", () => {
     expect(isGoalState(blockedWithoutReason)).toBe(false);
   });
 
+  test("声明交付物的持久 task 必须保留有效逐项证据", () => {
+    const taskPlan = makeGoalWithPlan({ planType: "task", verification: undefined, acceptanceCriteria: undefined });
+    delete taskPlan.plan!.phases[0].acceptanceCriteria;
+    const task = taskPlan.plan!.phases[0].tasks[0];
+    task.status = "done";
+    task.deliverables = [{ target: "README.md", description: "同步行为说明" }];
+    task.deliverableEvidence = [{ target: "README.md", evidence: "README 已重读并与实现一致" }];
+    expect(isGoalState(taskPlan)).toBe(true);
+
+    task.deliverableEvidence = [{ target: "CHANGELOG.md", evidence: "错误目标" }];
+    expect(isGoalState(taskPlan)).toBe(false);
+  });
+
   test("拒绝会破坏只读审核投影的脏 feedback 与 history", () => {
     const malformedPhaseFeedback = makeGoalWithPlan() as unknown as Record<string, unknown>;
     malformedPhaseFeedback.phaseFeedbackById = { "1": { phaseId: 1, report: 42, createdAt: 1 } };

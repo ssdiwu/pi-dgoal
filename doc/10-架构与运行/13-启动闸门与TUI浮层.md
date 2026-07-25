@@ -13,7 +13,7 @@
   → 立即 active，展示 task 列表
 ```
 
-Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它不扩大权限；真正动作仍按宿主工具授权执行。再次调用 `task_plan` 会整份替换当前 Task Plan 的 objective、goal description 与全部 task。普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，都可使用 Task Plan 承载当前 frontier；提交前只做轻量相关性/必要性/依赖/证据路径自检，不增加独立自检阶段或硬门。
+Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它不扩大权限；真正动作仍按宿主工具授权执行。再次调用 `task_plan` 会整份替换当前 Task Plan 的 objective、goal description 与全部 task。普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，都可使用 Task Plan 承载当前 frontier；提交前只做轻量相关性/必要性/依赖/证据路径自检，不增加独立自检阶段或硬门。跨文件、命令或外部状态的交付可按需以 `deliverables` 显式声明；声明后必须逐项有 evidence，末任务在同一 `plan_update` 提交 completion review 后才自动收口，仍不启动独立审核。
 
 纯讨论、解释、能力问答和单步回答不建立 Task Plan。若 agent 判断任务需要冻结验收契约或独立审核，只能建议用户使用 `/dgoal`，不能自行调用 `phase_plan` / `goal_plan`。
 
@@ -93,7 +93,7 @@ Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它
 
 - **列表页**：钉住 goal heading；展示完整 goal description、当前 frontier 的直接原因与下一合法动作、最新适用 goal/phase 审核投影，以及可选择的 phase/task 层级。Task Plan 平铺 task，不显示隐藏 phase。
 - **选中与浏览**：`↑/↓` 或 `j/k` 按逻辑 Plan item 移动，`g/G` 选中首尾项并让窗口跟随；`PgDn/PgUp`、`Ctrl+D/Ctrl+U` 与 `Home/End` 只滚动列表物理行，不改变选中项，确保超长 goal description 可从头浏览到尾。换行续行不成为独立选择。
-- **详情页**：`Enter` 打开所选 phase/task，显示完整 description、status、所在 phase、dependencies、evidence、blocked reason、局部 frontier；phase 还显示最新 check/反馈。长文本独立滚动。
+- **详情页**：`Enter` 打开所选 phase/task，显示完整 description、声明交付物及逐项证据、status、所在 phase、dependencies、evidence、blocked reason、局部 frontier；phase 还显示最新 check/反馈。长文本独立滚动。
 - **返回/关闭**：详情页 `Esc` 返回列表并保留原选择，列表页 `Esc` 关闭；`Ctrl+C` 可直接关闭。
 - Phase/Goal Plan 列表包含 done phase 的 task；审核运行时仍只展示轻量活性片段。审核终态只展示最新反馈与最新完成声明，较早 `finalAuditHistory` 修复索引不展开。
 

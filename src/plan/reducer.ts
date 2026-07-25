@@ -9,6 +9,8 @@ import {
   type Phase,
   type PlanStatus,
   type Task,
+  type TaskDeliverable,
+  type TaskDeliverableEvidence,
   type TaskPlan,
 } from "./index.ts";
 
@@ -90,6 +92,47 @@ export function coerceNumberArray(value: unknown): number[] {
   }
   return [];
 }
+export function normalizeDeliverables(value: unknown): { deliverables?: TaskDeliverable[]; error?: string } {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.length === 0) return { error: "deliverables must be a non-empty array when provided" };
+  const targets = new Set<string>();
+  const deliverables: TaskDeliverable[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { error: "each deliverable requires a target and description" };
+    const record = item as Record<string, unknown>;
+    const target = String(record.target ?? "").trim();
+    const description = String(record.description ?? "").trim();
+    if (!target || !description || targets.has(target)) return { error: "deliverable targets must be unique and include a description" };
+    targets.add(target);
+    deliverables.push({ target, description });
+  }
+  return { deliverables };
+}
+
+function normalizeDeliverableEvidence(value: unknown): { evidence?: TaskDeliverableEvidence[]; error?: string } {
+  if (value === undefined) return {};
+  if (!Array.isArray(value)) return { error: "deliverableEvidence must be an array" };
+  const targets = new Set<string>();
+  const evidence: TaskDeliverableEvidence[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return { error: "each deliverable evidence entry requires a target and evidence" };
+    const record = item as Record<string, unknown>;
+    const target = String(record.target ?? "").trim();
+    const detail = String(record.evidence ?? "").trim();
+    if (!target || !detail || targets.has(target)) return { error: "deliverable evidence targets must be unique and non-empty" };
+    targets.add(target);
+    evidence.push({ target, evidence: detail });
+  }
+  return { evidence };
+}
+
+function hasEvidenceForEveryDeliverable(task: Pick<Task, "deliverables" | "deliverableEvidence">): boolean {
+  const deliverables = task.deliverables ?? [];
+  if (!deliverables.length) return true;
+  const evidence = task.deliverableEvidence ?? [];
+  return evidence.length === deliverables.length
+    && evidence.every((item) => deliverables.some((deliverable) => deliverable.target === item.target));
+}
 
 export function applyPlanMutation<G extends PlanReducerGoal>(
   goal: G,
@@ -107,6 +150,8 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
       if (!subject) return planError(goal, translate("plan.error.subjectRequiredForCreate"));
       const description = String(params.description ?? "").trim();
       if (!description) return planError(goal, translate("plan.error.descriptionRequiredForCreate"));
+      const normalizedDeliverables = normalizeDeliverables(params.deliverables);
+      if (normalizedDeliverables.error) return planError(goal, normalizedDeliverables.error);
       const phaseId = Number(params.phaseId);
       const phaseIndex = goal.plan.phases.findIndex((phase) => phase.id === phaseId);
       if (phaseIndex === -1) return planError(goal, translate("plan.error.phaseNotFound", { phaseId }));
@@ -123,6 +168,7 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
         return planError(goal, translate("plan.error.blockedByCycle"));
       }
       const newTask: Task = { id: goal.plan.nextId, subject, description, status: "pending" };
+      if (normalizedDeliverables.deliverables) newTask.deliverables = normalizedDeliverables.deliverables;
       if (initialBlockedBy.length) newTask.blockedBy = [...initialBlockedBy];
       const phases = goal.plan.phases.map((phase, index) =>
         index === phaseIndex ? { ...phase, tasks: [...phase.tasks, newTask] } : phase,
@@ -143,6 +189,14 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
 
       const addList = coerceNumberArray(params.addBlockedBy);
       const removeList = coerceNumberArray(params.removeBlockedBy);
+      const normalizedDeliverableEvidence = normalizeDeliverableEvidence(params.deliverableEvidence);
+      if (normalizedDeliverableEvidence.error) return planError(goal, normalizedDeliverableEvidence.error);
+      if (params.deliverableEvidence !== undefined && !current.deliverables?.length) {
+        return planError(goal, "deliverableEvidence requires declared deliverables");
+      }
+      if (normalizedDeliverableEvidence.evidence?.some((item) => !current.deliverables!.some((deliverable) => deliverable.target === item.target))) {
+        return planError(goal, "deliverableEvidence targets must match declared deliverables");
+      }
       if (params.subject !== undefined && !String(params.subject).trim()) {
         return planError(goal, translate("plan.error.subjectCannotBeBlank"));
       }
@@ -154,6 +208,7 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
         params.description !== undefined ||
         params.status !== undefined ||
         params.evidence !== undefined ||
+        params.deliverableEvidence !== undefined ||
         params.blockedReason !== undefined ||
         addList.length > 0 ||
         removeList.length > 0;
@@ -169,11 +224,18 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
       }
       const requestedBlockedReason = params.blockedReason === undefined ? undefined : String(params.blockedReason).trim();
       const requestedEvidence = params.evidence === undefined ? undefined : String(params.evidence).trim();
+      const effectiveDeliverableEvidence = normalizedDeliverableEvidence.evidence ?? current.deliverableEvidence;
       if (newStatus === "blocked" && !(requestedBlockedReason ?? current.blockedReason?.trim())) {
         return planError(goal, translate("plan.error.blockedNeedsReason"));
       }
       if (isDonePlanStatus(newStatus) && !(requestedEvidence ?? current.evidence?.trim())) {
         return planError(goal, translate("plan.error.doneNeedsEvidence"));
+      }
+      if (isDonePlanStatus(newStatus) && !hasEvidenceForEveryDeliverable({
+        deliverables: current.deliverables,
+        deliverableEvidence: effectiveDeliverableEvidence,
+      })) {
+        return planError(goal, "done requires evidence for every declared deliverable");
       }
 
       let newBlockedBy = current.blockedBy ? [...current.blockedBy] : [];
@@ -209,6 +271,10 @@ export function applyPlanMutation<G extends PlanReducerGoal>(
       if (params.evidence !== undefined) {
         if (requestedEvidence) updated.evidence = requestedEvidence;
         else delete updated.evidence;
+      }
+      if (params.deliverableEvidence !== undefined) {
+        if (normalizedDeliverableEvidence.evidence?.length) updated.deliverableEvidence = normalizedDeliverableEvidence.evidence;
+        else delete updated.deliverableEvidence;
       }
       if (newStatus === "blocked") updated.blockedReason = requestedBlockedReason ?? current.blockedReason?.trim();
       else delete updated.blockedReason;

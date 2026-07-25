@@ -53,10 +53,11 @@ pi -e ./index.ts
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ 最后一个 task 带 evidence 进入 done 时自动关闭 goal
+→ 末 task：evidence + 声明交付物的逐项证据 + completion review
+→ 自动关闭 goal
 ```
 
-Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。
+Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。task 可选声明具名交付物（文件、命令结果或可观察外部状态）及其完成事实；声明后 done 必须逐项提供证据。末任务自动关闭前，主 agent 还要在同一次更新中结构化回读全部 task Description 与声明交付物；这是自检，不是独立审核。
 
 ### 显式 dgoal：Phase Plan / Goal Plan
 
@@ -94,12 +95,12 @@ goal_plan → [phase_check → plan_update(phase, done)] × N
 
 | 工具 | 职责 |
 |---|---|
-| `task_plan` | 直接建立或整份替换 Task Plan，包含 goal/task description |
+| `task_plan` | 直接建立或整份替换 Task Plan，包含 goal/task description 与可选 task deliverables |
 | `phase_plan` | 显式启动 Phase Plan；提交必填 goal/phase description，冻结 goal 验收契约并进入确认 UI |
 | `goal_plan` | 显式启动 Goal Plan；提交必填三层 description，冻结 phase + goal 验收契约并进入确认 UI |
-| `plan_create` | 新增带必填 description 的 task；不能新增 phase |
-| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：聚合/单项结果会解释当前 frontier 的直接原因、下一合法动作与当前 phase 的 Task DAG 投影（ready/waiting/根阻塞/立即解锁），并只组合现有证据中最新的适用 check、反馈与完成声明；不回传原始 Plan payload（Task Plan 隐藏 phase） |
-| `plan_update` | 唯一 agent 写工具：task / phase / goal 进度、phase/task description 修订、完成与主动暂停 |
+| `plan_create` | 新增带必填 description 与可选声明交付物的 task；不能新增 phase |
+| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：聚合/单项结果会解释当前 frontier 的直接原因、下一合法动作与当前 phase 的 Task DAG 投影（ready/waiting/根阻塞/立即解锁），并只组合现有证据中最新的适用 check、反馈与完成声明；task 详情还显示声明交付物与逐项证据；不回传原始 Plan payload（Task Plan 隐藏 phase） |
+| `plan_update` | 唯一 agent 写工具：task / phase / goal 进度、phase/task description 修订、完成与主动暂停；末 Task Plan 收口另需结构化自检 |
 | `phase_check` | Goal Plan 的 phase 独立审核；只写 CheckRecord |
 | `goal_check` | Phase/Goal Plan 的整体独立审核；只写 CheckRecord |
 
@@ -111,7 +112,7 @@ goal、用户可见 phase 与 task 都有必填 **Description**：说明为什�
 
 ## 完成守卫
 
-- **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；最后一个 task 的完成更新会原子关闭 goal，blocked task 不算完成。
+- **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；已声明交付物的 task 还必须逐项有证据。最后一个 task 的更新另带同会话 completion review，随后原子关闭 goal；blocked task 不算完成。
 - **Phase Plan**：phase 的 task 全部 done 后才可更新 phase done；blocked 表示尚未完成。所有 phase done、当前 revision 的 `goal_check` approved 后才可完成 goal。
 - **Goal Plan**：phase 还必须有当前 revision 的 `phase_check` approved；goal 同样需要 `goal_check` approved。
 - check 结果为 `approved | rejected | audit_error`。rejected 让 agent 修复并重审；audit_error 会安全暂停。
@@ -135,7 +136,7 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 - **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 按当前终端显示宽度裁切目标标题。
 - **`Ctrl+O`**：展开 Phase/Goal Plan 的 task 与建检活性；完成后的十秒快照展示全部 phase/task。
-- **`/dgoal s` Modal**：两层浏览。列表页显示完整 goal description、当前 frontier 原因/下一合法动作、当前 phase 的 Task DAG 投影、最新适用审核投影与可选择的 phase/task；Enter 打开所选项的完整 description、status、dependency、evidence、blocked reason、局部 frontier/graph state 及最新 phase check/反馈，Esc 返回且保留选择。只展示最新反馈/完成声明，内部修复索引不展开；Task Plan 不显示内部隐藏 phase。
+- **`/dgoal s` Modal**：两层浏览。列表页显示完整 goal description、当前 frontier 原因/下一合法动作、当前 phase 的 Task DAG 投影、最新适用审核投影与可选择的 phase/task；Enter 打开所选项的完整 description、声明交付物与逐项证据、status、dependency、evidence、blocked reason、局部 frontier/graph state 及最新 phase check/反馈，Esc 返回且保留选择。只展示最新反馈/完成声明，内部修复索引不展开；Task Plan 不显示内部隐藏 phase。
 - **状态栏**：显示 starting / active / paused / done。
 
 状态机与持久化不依赖 TUI 渲染成功。`setWidget`、Modal、status 或 notify 抛错只能降级展示，不能阻断完成或恢复。
@@ -158,7 +159,7 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 ## 持久化
 
-当前 Plan 使用 `dgoal-plan-v2` custom entry。旧 `dgoal-state`、`dgoal-goal-vnext` 与 `dgoal-plan-v1` 不读取、不迁移；重载时严格复验必填 description、各 Plan 类型的冻结验收契约、ID、状态、依赖图、已删除字段和 pending proposal，任一处非法都会拒绝整条 entry。升级后需要重新建立活动 Plan。一个 Pi session 同时只维护一个当前 Plan。
+当前 Plan 使用 `dgoal-plan-v2` custom entry。旧 `dgoal-state`、`dgoal-goal-vnext` 与 `dgoal-plan-v1` 不读取、不迁移；重载时严格复验必填 description、可选声明交付物与逐项证据、各 Plan 类型的冻结验收契约、ID、状态、依赖图、已删除字段和 pending proposal，任一处非法都会拒绝整条 entry。升级后需要重新建立活动 Plan。一个 Pi session 同时只维护一个当前 Plan。`session_compact` 后持久化的结构化 Plan 原样恢复并重新作为执行权威；压缩摘要只能补背景，不能覆盖 task Description 或声明交付物。
 
 ## 设计边界
 
@@ -197,7 +198,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md) 与 [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md)、[ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md) 与 [ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md)。
 
 ## 协议
 

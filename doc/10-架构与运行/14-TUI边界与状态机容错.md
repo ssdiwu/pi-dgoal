@@ -53,7 +53,7 @@
 
 ```text
 /dgoal <一个可快速完成的小目标>
-# Task Plan：最后一个 task 带 evidence 进入 done 后自动收口
+# Task Plan：最后一个 task 带 evidence、声明交付物的逐项 evidence（如有）与 completionReview 进入 done 后自动收口
 # Phase/Goal Plan：完成最后一个 phase 后依次调用 goal_check
 # 再由 plan_update(target=goal,status=done) 收口
 /dgoal status

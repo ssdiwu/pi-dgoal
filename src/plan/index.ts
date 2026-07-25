@@ -21,15 +21,33 @@ export interface AcceptanceCriterion {
   criterion: string;
   evidence: string;
 }
+export interface TaskDeliverable {
+  /** A file, command, or externally observable state that this task must deliver. */
+  target: string;
+  /** What must be true of the target when this task is complete. */
+  description: string;
+}
+
+export interface TaskDeliverableEvidence {
+  /** Must exactly match one declared TaskDeliverable target. */
+  target: string;
+  /** Reproducible evidence that the declared deliverable is satisfied. */
+  evidence: string;
+}
+
 
 export interface Task {
   id: number;
   subject: string;
   /** Why this task exists, how it serves the goal, and the chosen approach boundary. */
   description: string;
+  /** Optional declared outputs for tasks whose completion spans named artifacts or states. */
+  deliverables?: TaskDeliverable[];
   status: PlanStatus;
   blockedBy?: number[];
   evidence?: string;
+  /** Per-deliverable evidence required when deliverables are declared. */
+  deliverableEvidence?: TaskDeliverableEvidence[];
   blockedReason?: string;
 }
 

@@ -115,14 +115,25 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     expect(__getGoalForTest()?.status).toBe("pending");
   });
 
-  test("session_compact 复用恢复入口加载持久化 goal", () => {
+  test("session_compact 原样恢复含交付物的持久 Plan", () => {
     __resetGoalForTest();
-    const compactedGoal = makeGoal({ id: "compact-goal", status: "active" });
+    const compactedGoal = makeGoal({
+      id: "compact-goal",
+      status: "active",
+      plan: {
+        phases: [phase(1, "p1", [{
+          ...task(1, "同步文档"),
+          deliverables: [{ target: "README.md", description: "同步真实行为" }],
+        }])],
+        nextId: 2,
+      },
+    });
     const handlers = captureHandlers();
     __setGoalForTest(undefined);
     handlers.session_compact({}, makeCtx([dgoalEntry(compactedGoal)]) as never);
     expect(__getGoalForTest()?.id).toBe("compact-goal");
     expect(__getGoalForTest()?.status).toBe("active");
+    expect(__getGoalForTest()?.plan?.phases[0].tasks[0].deliverables).toEqual([{ target: "README.md", description: "同步真实行为" }]);
   });
 
   test("内存 Plan 为空时 public read/check tools 从 session 惰性恢复", async () => {

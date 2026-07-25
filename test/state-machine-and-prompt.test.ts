@@ -46,9 +46,12 @@ describe("Goal 状态机类型完整性", () => {
 });
 
 describe("Three-Plan prompt", () => {
-  test("Task Plan 明确最后一个 task done 会自动收口", () => {
+  test("Task Plan 在末任务收口前要求结构化自检，并声明压缩后 Plan 优先", () => {
     const text = buildSystemPrompt(goal({ planType: "task" }));
-    expect(text).toContain("最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal");
+    expect(text).toContain("completionReview");
+    expect(text).toContain("核对通过后才自动关闭 goal");
+    expect(text).toContain("当前 <dgoal_plan> 是执行与收口的唯一结构化权威");
+    expect(text).toContain("不得覆盖 task description 或已声明 deliverables");
     expect(text).toContain("不要再调用 plan_update(target=goal,status=done)");
   });
 
