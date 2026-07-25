@@ -1871,15 +1871,61 @@ function renderPublicToolResult(result: PublicToolRenderResult, options: { expan
 }
 
 function strictSchemaObject(properties: Record<string, unknown>) {
-  return Type.Object(properties as never, { additionalProperties: false });
+  const schema = Type.Object(properties as never, { additionalProperties: false }) as Record<string, unknown>;
+  const schemaProperties = schema.properties as Record<string, unknown>;
+  const required = new Set(Array.isArray(schema.required) ? schema.required : []);
+  for (const [key, property] of Object.entries(schemaProperties)) {
+    if (!required.has(key)) schemaProperties[key] = Type.Union([property as never, Type.Null()]);
+  }
+  schema.required = Object.keys(schemaProperties);
+  return schema;
+}
+
+function schemaAllowsNull(schema: unknown): boolean {
+  if (!schema || typeof schema !== "object") return false;
+  const value = schema as Record<string, unknown>;
+  return value.type === "null" || ["anyOf", "oneOf"].some((key) => Array.isArray(value[key]) && value[key].some(schemaAllowsNull));
+}
+
+function fillMissingNullableProperties(value: unknown, schema: unknown): unknown {
+  if (!schema || typeof schema !== "object" || value === null) return value;
+  const definition = schema as Record<string, unknown>;
+  const variants = ["anyOf", "oneOf"]
+    .flatMap((key) => Array.isArray(definition[key]) ? definition[key] as unknown[] : [])
+    .filter((variant) => !schemaAllowsNull(variant));
+  if (variants.length) return fillMissingNullableProperties(value, variants[0]);
+  if (definition.type === "array" && Array.isArray(value)) {
+    return value.map((item) => fillMissingNullableProperties(item, definition.items));
+  }
+  if (definition.type !== "object" || typeof value !== "object" || Array.isArray(value)) return value;
+  const properties = definition.properties as Record<string, unknown> | undefined;
+  if (!properties) return value;
+  const out: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  for (const [key, property] of Object.entries(properties)) {
+    if (!(key in out) && schemaAllowsNull(property)) out[key] = null;
+    else if (key in out) out[key] = fillMissingNullableProperties(out[key], property);
+  }
+  return out;
+}
+
+function omitStrictSchemaNulls(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(omitStrictSchemaNulls);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+    .filter(([, item]) => item !== null)
+    .map(([key, item]) => [key, omitStrictSchemaNulls(item)]));
 }
 
 function definePublicTool(definition: any): any {
   // Pi 0.82+: 在支持的 provider/model 上请求 JSON Schema strict 模式，让工具参数严格匹配 TypeBox schema；
   // 不支持时宿主自动回退为普通工具调用，跨 provider 行为不变。见 ADR 0038 八工具边界。
+  const prepareArguments = definition.prepareArguments;
+  const execute = definition.execute;
   return defineTool({
     ...definition,
     constrainedSampling: definition.constrainedSampling ?? { type: "json_schema", strict: "prefer" },
+    prepareArguments: (args: unknown) => fillMissingNullableProperties(prepareArguments ? prepareArguments(args) : args, definition.parameters),
+    execute: (toolCallId: string, args: unknown, ...rest: unknown[]) => execute(toolCallId, omitStrictSchemaNulls(args), ...rest),
     renderResult: renderPublicToolResult,
   });
 }

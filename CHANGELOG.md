@@ -18,7 +18,7 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ### Fixed
 
-- **Codex strict schema 兼容**：公共工具参数及嵌套对象现在均显式关闭额外属性，避免支持 strict JSON Schema 的 OpenAI/Codex 模型因缺少 `additionalProperties: false` 拒绝 `task_plan` 等调用。
+- **Codex strict schema 兼容**：公共工具参数及嵌套对象现在均显式关闭额外属性，并将每个属性列入 `required`；原本可选的字段以 `null` 占位并在执行前还原为省略，避免支持 strict JSON Schema 的 OpenAI/Codex 模型拒绝 `task_plan` 等调用。
 - **自动续跑假进展熔断**：无进展判定现在区分工具活动与持久进展；连续 3 轮无工具或连续 8 轮只有读取、状态查询等活动而没有成功文件写入、独立 check 或 Plan 状态/evidence/阻塞结构变化时都会暂停。判定只使用结构化工具事件与 Plan 状态差，不解析 LLM 文本或 `bash` 命令语义；续跑提示会在暂停前要求直接执行、委派或结构化报告真实用户决策阻塞。
 
 ## [0.7.9] - 2026-07-20

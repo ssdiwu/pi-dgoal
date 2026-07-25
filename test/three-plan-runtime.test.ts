@@ -88,6 +88,9 @@ async function execute(tool: { name?: string; execute: Function }, params: Recor
 async function executeRaw(tool: { execute: Function }, params: Record<string, unknown>) {
   return tool.execute("call", params, undefined, undefined, ctx);
 }
+function unwrapNullableSchema(schema: any): any {
+  return Array.isArray(schema?.anyOf) ? schema.anyOf.find((variant: any) => variant.type !== "null") : schema;
+}
 
 beforeEach(() => {
   __resetGoalForTest();
@@ -139,14 +142,24 @@ describe("Three-Plan public tool surface", () => {
     }
   });
 
-  test("public strict schemas close every object against extra properties", () => {
-    const missing: string[] = [];
+  test("public strict schemas close objects and require every property", () => {
+    const missingAdditionalProperties: string[] = [];
+    const missingRequiredProperties: string[] = [];
     const visit = (schema: unknown, path: string): void => {
       if (!schema || typeof schema !== "object") return;
       const value = schema as Record<string, unknown>;
-      if (value.type === "object" && value.additionalProperties !== false) missing.push(path);
-      if (value.properties && typeof value.properties === "object") {
-        for (const [key, child] of Object.entries(value.properties as Record<string, unknown>)) visit(child, `${path}.properties.${key}`);
+      const properties = value.properties;
+      if (value.type === "object") {
+        if (value.additionalProperties !== false) missingAdditionalProperties.push(path);
+        const required = Array.isArray(value.required) ? value.required : [];
+        if (properties && typeof properties === "object") {
+          for (const key of Object.keys(properties)) {
+            if (!required.includes(key)) missingRequiredProperties.push(`${path}.properties.${key}`);
+          }
+        }
+      }
+      if (properties && typeof properties === "object") {
+        for (const [key, child] of Object.entries(properties as Record<string, unknown>)) visit(child, `${path}.properties.${key}`);
       }
       if (value.items) visit(value.items, `${path}.items`);
       for (const key of ["anyOf", "oneOf", "allOf"]) {
@@ -156,13 +169,39 @@ describe("Three-Plan public tool surface", () => {
     for (const tool of [taskPlanTool, phasePlanTool, goalPlanTool, planCreateTool, planReadTool, planUpdateTool, phaseCheckTool, goalCheckTool]) {
       visit(tool.parameters, tool.name);
     }
-    expect(missing).toEqual([]);
+    expect(missingAdditionalProperties).toEqual([]);
+    expect(missingRequiredProperties).toEqual([]);
+  });
+  test("strict nullable optionals preserve omitted Task Plan fields at execution", async () => {
+    const taskEntry = (taskPlanTool.parameters as any).properties.tasks.items.properties;
+    expect(taskEntry.deliverables.anyOf.some((variant: any) => variant.type === "null")).toBe(true);
+    const prepared = (taskPlanTool as any).prepareArguments({
+      objective: "严格参数兼容",
+      description: "验证缺省字段会补为 strict schema 所需的 null 占位。",
+      tasks: [{ subject: "建立计划", description: "创建没有交付物和依赖的普通任务。" }],
+    });
+    expect(prepared.tasks[0]).toMatchObject({ deliverables: null, blockedBy: null });
+    const result = await executeRaw(taskPlanTool, {
+      objective: "严格参数兼容",
+      description: "验证 strict schema 的 null 占位不会改变可选字段语义。",
+      tasks: [{
+        subject: "建立计划",
+        description: "创建没有交付物和依赖的普通任务。",
+        deliverables: null,
+        blockedBy: null,
+      }],
+    });
+    expect(result.details.error).toBeUndefined();
+    const task = __getGoalForTest()?.plan?.phases[0].tasks[0];
+    expect(task?.deliverables).toBeUndefined();
+    expect(task?.blockedBy).toBeUndefined();
   });
 
   test("public Plan schemas require descriptions and do not expose activeForm/contextSummary", () => {
     const taskPlanProperties = (taskPlanTool.parameters as any).properties;
     const taskEntry = taskPlanProperties.tasks.items.properties;
-    const phaseTaskEntry = (phasePlanTool.parameters as any).properties.phases.items.properties.tasks.items.properties;
+    const phaseTasks = unwrapNullableSchema((phasePlanTool.parameters as any).properties.phases.items.properties.tasks);
+    const phaseTaskEntry = phaseTasks.items.properties;
     expect(taskEntry.activeForm).toBeUndefined();
     expect(phaseTaskEntry.activeForm).toBeUndefined();
     expect((planCreateTool.parameters as any).properties.activeForm).toBeUndefined();
