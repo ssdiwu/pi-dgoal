@@ -8,6 +8,12 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.11] - 2026-07-27
+
+### Fixed
+
+- **Task Plan 收口占位兼容**：`plan_update(target=goal,status=done)` 现将宿主在 strict schema（严格参数模式）边界转写的空字符串或纯空白 `subject` / `description` 视为未提供；真实非空文本仍受 goal 冻结守卫拒绝。
+
 
 ## [0.7.10] - 2026-07-26
 

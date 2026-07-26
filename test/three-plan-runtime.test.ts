@@ -326,6 +326,22 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()).toBeUndefined();
   });
 
+  test("Task Plan 收口将宿主转写的空白 nullable 占位视为省略", async () => {
+    await execute(taskPlanTool, { objective: "兼容宿主占位", tasks: [{ subject: "完成验证" }] });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "验证完成" });
+
+    const closed = await executeRaw(planUpdateTool, {
+      target: "goal", id: null, phaseNumber: null, subject: "", description: "  ", status: "done",
+      addBlockedBy: null, removeBlockedBy: null, evidence: null, deliverableEvidence: null, blockedReason: null, reason: null,
+      summary: "已完成当前 task 并回读其说明。",
+      verification: "任务 evidence 已核验。",
+      whatChanged: null, userReview: null,
+    });
+    expect(closed.details).toMatchObject({ completed: true, planType: "task" });
+    expect(__getGoalForTest()).toBeUndefined();
+  });
+
   test("Task Plan 显式关闭在 completion overlay 抛错时仍正确收口", async () => {
     const overlay = new PlanOverlay();
     overlay.showDoneThenHide = () => { throw new Error("Spacer is not defined"); };

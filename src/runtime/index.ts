@@ -2563,7 +2563,10 @@ export const planUpdateTool = definePublicTool({
       };
     }
 
-    if (params.subject != null || params.description != null) {
+    // strict schema 的 nullable 占位在部分宿主边界会变成空字符串；它与 null 一样不表示修改冻结文本。
+    // 真实非空文本（及任何非字符串值）仍必须被拒绝，不能借收口路径改 goal。
+    const hasFrozenGoalTextUpdate = (value: unknown) => typeof value === "string" ? value.trim().length > 0 : value != null;
+    if (hasFrozenGoalTextUpdate(params.subject) || hasFrozenGoalTextUpdate(params.description)) {
       return { content: [{ type: "text", text: "goal objective and description are frozen; replace a Task Plan with task_plan or re-propose an audited Plan." }], details: { error: "goal description frozen" }, isError: true };
     }
     const requestedStatus = params.status;
