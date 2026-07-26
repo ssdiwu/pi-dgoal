@@ -347,14 +347,25 @@ describe("共享 frontier 诊断", () => {
     expect(diagnostic?.nextAction).toContain("先完成依赖 #1(in_progress)");
   });
 
-  test("Goal Plan 在当前 phase 的 task 完成后要求 current revision 的 phase_check", () => {
-    const g = goal([p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress")], {
-      planType: "goal",
-      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress")] },
+  test("Phase / Goal Plan 在当前 phase 的 task 耗尽后先要求主 agent 决定是否新增 task", () => {
+    const doneTask = t(1, "编码", "done", { evidence: "bun test" });
+    const phasePlan = goal([p(1, "实现", [doneTask], "in_progress")], {
+      planType: "phase",
+      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [doneTask], "in_progress")] },
     });
-    const diagnostic = derivePlanFrontierDiagnostic(g);
-    expect(diagnostic?.reason).toContain("缺少当前 revision 的 approved phase_check");
-    expect(diagnostic?.nextAction).toContain("phase_check");
+    const phaseDiagnostic = derivePlanFrontierDiagnostic(phasePlan);
+    expect(phaseDiagnostic?.reason).toContain("等待主 agent 决定下一步");
+    expect(phaseDiagnostic?.nextAction).toContain("plan_create");
+    expect(phaseDiagnostic?.nextAction).toContain("标记 done");
+
+    const goalPlan = goal([p(1, "实现", [doneTask], "in_progress")], {
+      planType: "goal",
+      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [doneTask], "in_progress")] },
+    });
+    const goalDiagnostic = derivePlanFrontierDiagnostic(goalPlan);
+    expect(goalDiagnostic?.reason).toContain("等待主 agent 决定下一步");
+    expect(goalDiagnostic?.nextAction).toContain("plan_create");
+    expect(goalDiagnostic?.nextAction).toContain("phase_check");
   });
 
   test("只解释当前 frontier；未来 phase 的详情指回当前 phase", () => {

@@ -76,6 +76,20 @@ function captureHandlers() {
   return handlers;
 }
 
+function captureHandlersWithPrompts() {
+  const handlers: Record<string, (event: unknown, ctx: unknown) => unknown> = {};
+  const prompts: string[] = [];
+  dgoal({
+    registerTool: () => {},
+    registerCommand: () => {},
+    on: (event: string, handler: (event: unknown, ctx: unknown) => unknown) => { handlers[event] = handler; },
+    events: { emit: () => {} },
+    sendUserMessage: (prompt: string) => { prompts.push(prompt); },
+    appendEntry: () => {},
+  } as never);
+  return { handlers, prompts };
+}
+
 describe("session_tree 重同步（resyncGoalFromSession）", () => {
   test("tree 到含更新 goal 状态的分支 → currentGoal 反映新分支状态", () => {
     __resetGoalForTest();
@@ -134,6 +148,29 @@ describe("session_tree 重同步（resyncGoalFromSession）", () => {
     expect(__getGoalForTest()?.id).toBe("compact-goal");
     expect(__getGoalForTest()?.status).toBe("active");
     expect(__getGoalForTest()?.plan?.phases[0].tasks[0].deliverables).toEqual([{ target: "README.md", description: "同步真实行为" }]);
+  });
+
+  test("session_compact 恢复 active Task Plan 后重新投递续跑", async () => {
+    __resetGoalForTest();
+    const compactedGoal = makeGoal({
+      id: "compact-continuation",
+      planType: "task",
+      verification: undefined,
+      acceptanceCriteria: undefined,
+      plan: { phases: [phase(1, "p1", [{ ...task(1, "完成提交", "done"), evidence: "git status --short" }], "in_progress")], nextId: 2 },
+    });
+    const { handlers, prompts } = captureHandlersWithPrompts();
+    await handlers.session_compact({ willRetry: false }, { ...makeCtx([dgoalEntry(compactedGoal)]), isIdle: () => true } as never);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain("当前 task 全部带 evidence 完成后先判断是否新增或替换 Task Plan");
+    expect(prompts[0]).toContain("pi-dgoal-continuation:compact-continuation");
+  });
+
+  test("session_compact 的 overflow retry 不重复投递续跑", async () => {
+    __resetGoalForTest();
+    const { handlers, prompts } = captureHandlersWithPrompts();
+    await handlers.session_compact({ willRetry: true }, { ...makeCtx([dgoalEntry(makeGoal())]), isIdle: () => true } as never);
+    expect(prompts).toHaveLength(0);
   });
 
   test("内存 Plan 为空时 public read/check tools 从 session 惰性恢复", async () => {

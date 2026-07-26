@@ -7,6 +7,10 @@ All notable changes to `pi-dgoal` will be documented in this file.
 版本段使用 `## [x.x.x] - YYYY-MM-DD`；能明确回链到 GitHub issue 的条目在句尾标 `(#xx)`。
 
 ## [Unreleased]
+
+
+## [0.7.10] - 2026-07-26
+
 ### Added
 
 - **工具约束采样**：八个公共 Plan 工具（`task_plan` / `phase_plan` / `goal_plan` / `plan_create` / `plan_read` / `plan_update` / `phase_check` / `goal_check`）现在在支持的 provider/model 上请求 JSON Schema strict 模式，让工具参数严格匹配 TypeBox schema；模型不支持时宿主自动回退普通工具调用，跨 provider 行为不变。开发依赖同步升级到 Pi 0.82。
@@ -14,12 +18,17 @@ All notable changes to `pi-dgoal` will be documented in this file.
 ### Changed
 
 - **Task DAG 可解释读模型**：当前未完成 phase 现在从既有 `blockedBy` 与 task status 纯派生 ready、waiting、传递根阻塞和立即解锁关系，并同步投影到 `plan_read`、`/dgoal s` 与主 agent prompt；不新增持久字段或调度状态。ready 只声明主 agent 当前合法执行或委派的 task，不绑定具体执行扩展，也不代替并发冲突判断；结果经主 agent 核验后仍由 `plan_update` 写 Plan。
-- **Task Plan 交付物与安全收口**：task 可按需声明文件、命令结果或可观察外部状态交付物；声明后必须逐项提供结构化证据。最后一个 task 额外要求主 agent 同会话回读全部任务说明与交付物并提交 completion review，才原子关闭 Plan。`session_compact` 后持久 Plan 原样恢复并作为执行权威，压缩摘要不能覆盖 task 说明或声明交付物。
+- **Task Plan 交付物与安全收口**：task 可按需声明文件、命令结果或可观察外部状态交付物；声明后必须逐项提供结构化证据。当前 task 全部完成后 Plan 保持 active，主 agent 回读全部任务说明与交付物后，以 `plan_update(target=goal,status=done)` 的 `summary` / `verification` 显式关闭。`session_compact` 后持久 Plan 原样恢复并作为执行权威，压缩摘要不能覆盖 task 说明或声明交付物。
+- **Task Plan 显式收口**：当前 task 全部完成不再自动关闭 goal。主 agent 现在会收到决策边界提示：可按新证据新增 task、在目标重构时替换 Task Plan，或回读全部 task 说明与声明交付物后，以 `plan_update(target=goal,status=done)` 的 `summary` / `verification` 显式关闭；Task Plan 仍不增加独立审核。
+- **三档 Plan 任务耗尽决策边界**：Phase Plan 与 Goal Plan 的当前 phase task 全部完成后，也会先提示主 agent 判断是否按新证据继续创建 task；确认当前 phase 足够后，才分别进入 phase done 或 `phase_check` 链。既有独立审核与完成守卫不变。
 
 ### Fixed
 
 - **Codex strict schema 兼容**：公共工具参数及嵌套对象现在均显式关闭额外属性，并将每个属性列入 `required`；原本可选的字段以 `null` 占位并在执行前还原为省略，避免支持 strict JSON Schema 的 OpenAI/Codex 模型拒绝 `task_plan` 等调用。
+- **Task Plan 严格参数收口**：`plan_update(target=goal,status=done)` 现在会把严格工具调用填充的 `subject:null` / `description:null` 视为未提供，避免误触冻结 goal 文本守卫而无法显式关闭。
+- **Task Plan 无进展恢复**：仅在 `no_progress` 技术熔断时，主 agent 可原子替换 Task Plan 或在完成守卫通过后显式收口；用户暂停、真实用户 blocker、其他技术暂停及 Phase/Goal Plan 仍保持锁定。
 - **自动续跑假进展熔断**：无进展判定现在区分工具活动与持久进展；连续 3 轮无工具或连续 8 轮只有读取、状态查询等活动而没有成功文件写入、独立 check 或 Plan 状态/evidence/阻塞结构变化时都会暂停。判定只使用结构化工具事件与 Plan 状态差，不解析 LLM 文本或 `bash` 命令语义；续跑提示会在暂停前要求直接执行、委派或结构化报告真实用户决策阻塞。
+- **压缩后的 Task Plan 续跑**：`session_compact`（会话压缩）恢复 active Plan 后，若 Pi 不会自行 retry 当前 turn，会重新投递 continuation（续跑提示）；避免 overlay（浮层）持续计时而主 agent 遗失 task 耗尽后的新增、替换或显式收口决策。
 
 ## [0.7.9] - 2026-07-20
 

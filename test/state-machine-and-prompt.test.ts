@@ -46,25 +46,33 @@ describe("Goal 状态机类型完整性", () => {
 });
 
 describe("Three-Plan prompt", () => {
-  test("Task Plan 在末任务收口前要求结构化自检，并声明压缩后 Plan 优先", () => {
+  test("Task Plan 在 task 耗尽后要求主 agent 显式决定下一步，并声明压缩后 Plan 优先", () => {
     const text = buildSystemPrompt(goal({ planType: "task" }));
-    expect(text).toContain("completionReview");
-    expect(text).toContain("核对通过后才自动关闭 goal");
+    expect(text).toContain("最后一个 task done 只表示当前 task 已耗尽");
+    expect(text).toContain("plan_create 添加 task");
+    expect(text).toContain("task_plan 原子替换");
+    expect(text).toContain("plan_update(target=goal,status=done)");
+    expect(text).toContain("已有 evidence 与 goal description、已声明交付物比较");
     expect(text).toContain("当前 <dgoal_plan> 是执行与收口的唯一结构化权威");
     expect(text).toContain("不得覆盖 task description 或已声明 deliverables");
-    expect(text).toContain("不要再调用 plan_update(target=goal,status=done)");
   });
 
-  test("Phase Plan 只要求 goal_check", () => {
+  test("Phase Plan 在当前 phase 的 task 耗尽后先决定是否新增 task", () => {
     const text = buildSystemPrompt(goal({ planType: "phase" }));
     expect(text).toContain("当前是 Phase Plan");
+    expect(text).toContain("task 全 done 只形成决策边界");
+    expect(text).toContain("已有 evidence 与当前 phase description、goal 验收契约和最新 rejected feedback");
+    expect(text).toContain("plan_create 添加 task");
     expect(text).toContain("goal_check");
     expect(text).toContain("不要调用 phase_check");
   });
 
-  test("Goal Plan 要求 phase_check + goal_check", () => {
+  test("Goal Plan 在当前 phase 的 task 耗尽后先决定是否新增 task", () => {
     const text = buildSystemPrompt(goal({ planType: "goal" }));
     expect(text).toContain("当前是 Goal Plan");
+    expect(text).toContain("task 全 done 只形成决策边界");
+    expect(text).toContain("已有 evidence 与当前 phase description、冻结验收契约和最新 rejected feedback");
+    expect(text).toContain("plan_create 添加 task");
     expect(text).toContain("phase_check");
     expect(text).toContain("goal_check");
   });

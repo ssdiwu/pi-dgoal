@@ -69,15 +69,6 @@ function withDescriptions(tool: { name?: string }, params: Record<string, unknow
     };
   }
   if (tool.name === "plan_create") return { description: "新增此任务以推进当前目标。", ...params };
-  if (tool.name === "plan_update" && params.target === "task" && params.status === "done") {
-    return {
-      ...params,
-      completionReview: params.completionReview ?? {
-        summary: "已逐项核对当前 Task Plan 的任务说明与交付物。",
-        verification: "各 task 的 evidence 已记录并可复验。",
-      },
-    };
-  }
   return params;
 }
 
@@ -236,7 +227,7 @@ describe("Three-Plan public tool surface", () => {
     }
   });
 
-  test("Task Plan automatically closes when its last task completes", async () => {
+  test("Task Plan keeps the final task done and requires an explicit next decision", async () => {
     const persistedStatuses: Array<string | null> = [];
     __setApiForTest({
       appendEntry: (_type: string, data: { goal?: { status?: string } | null }) => {
@@ -246,21 +237,43 @@ describe("Three-Plan public tool surface", () => {
     await execute(taskPlanTool, { objective: "更新文档", tasks: [{ subject: "更新 README" }] });
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
 
-    const finished = await execute(planUpdateTool, {
+    const exhausted = await execute(planUpdateTool, {
       target: "task",
       id: 1,
       status: "done",
       evidence: "README 已更新并通过检查",
     });
 
-    expect(finished.details).toMatchObject({ target: "task", taskId: 1, status: "done", completed: true, planType: "task" });
-    expect(finished.content[0].text).toContain("已逐项核对当前 Task Plan 的任务说明与交付物");
-    expect(finished.content[0].text).toContain("Task Plan 无独立审核");
+    expect(exhausted.details).toMatchObject({ target: "task", taskId: 1, status: "done", taskPlanNeedsDecision: true });
+    expect(exhausted.content[0].text).toContain("The Plan remains active");
+    expect(__getGoalForTest()).toMatchObject({ status: "active", planType: "task" });
+    expect(persistedStatuses.at(-1)).toBe("active");
+
+    const added = await execute(planCreateTool, { subject: "复核边界", description: "根据更新结果检查是否还需补充 task。" });
+    expect(added.details).toMatchObject({ target: "task", op: "create" });
+    expect(__getGoalForTest()?.plan?.phases[0].tasks.at(-1)?.id).toBe(2);
+
+    const replaced = await execute(taskPlanTool, {
+      objective: "改为修文档",
+      description: "改为维护文档，不继续原目标。",
+      tasks: [{ subject: "更新 CHANGELOG", description: "同步用户可见变更。" }],
+    });
+    expect(replaced.details).toMatchObject({ planType: "task" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "CHANGELOG 已更新" });
+
+    const closed = await execute(planUpdateTool, {
+      target: "goal",
+      status: "done",
+      summary: "已回读当前 Task Plan 的任务说明与交付物，目标无需继续分解。",
+      verification: "README 与 CHANGELOG 的变更均已检查。",
+    });
+    expect(closed.details).toMatchObject({ target: "goal", completed: true, planType: "task", audited: false });
     expect(__getGoalForTest()).toBeUndefined();
     expect(persistedStatuses.slice(-2)).toEqual(["done", null]);
   });
 
-  test("Task Plan 的交付物逐项证据与末任务自检都会阻止过早收口", async () => {
+  test("Task Plan 的交付物证据守卫与显式关闭自检都会阻止过早收口", async () => {
     await execute(taskPlanTool, {
       objective: "同步交付物",
       tasks: [{
@@ -282,45 +295,52 @@ describe("Three-Plan public tool surface", () => {
     expect(missingDeliverableEvidence.details).toMatchObject({ error: "done requires evidence for every declared deliverable" });
     expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("in_progress");
 
-    const missingCompletionReview = await executeRaw(planUpdateTool, {
+    const exhausted = await executeRaw(planUpdateTool, {
       target: "task", id: 1, status: "done", evidence: "README 与 CHANGELOG 已更新。",
       deliverableEvidence: [
         { target: "README.md", evidence: "README.md 已写入新行为说明" },
         { target: "CHANGELOG.md", evidence: "CHANGELOG.md 的 Unreleased 已记录变更" },
       ],
     });
-    expect(missingCompletionReview.details).toMatchObject({ error: "completion review required" });
-    expect(__getGoalForTest()?.plan?.phases[0].tasks[0].status).toBe("in_progress");
+    expect(exhausted.details).toMatchObject({ taskPlanNeedsDecision: true });
+    expect(__getGoalForTest()).toMatchObject({ status: "active" });
 
-    const finished = await executeRaw(planUpdateTool, {
-      target: "task", id: 1, status: "done", evidence: "README 与 CHANGELOG 已更新。",
-      deliverableEvidence: [
-        { target: "README.md", evidence: "README.md 已写入新行为说明" },
-        { target: "CHANGELOG.md", evidence: "CHANGELOG.md 的 Unreleased 已记录变更" },
-      ],
-      completionReview: {
-        summary: "已逐项核对同步文档任务的说明与两份声明交付物。",
-        verification: "重读 README.md 和 CHANGELOG.md，确认两者均与实现一致。",
-      },
+    const missingCompletionDetails = await executeRaw(planUpdateTool, { target: "goal", status: "done" });
+    expect(missingCompletionDetails.details).toMatchObject({ error: "missing completion details" });
+    expect(__getGoalForTest()).toMatchObject({ status: "active" });
+
+    const frozenText = await executeRaw(planUpdateTool, {
+      target: "goal", status: "done", subject: "不应修改目标",
+      summary: "不应关闭。", verification: "冻结守卫应拒绝。",
     });
-    expect(finished.details).toMatchObject({ completed: true, planType: "task" });
+    expect(frozenText.details).toMatchObject({ error: "goal description frozen" });
+
+    const closed = await executeRaw(planUpdateTool, {
+      target: "goal", id: null, phaseNumber: null, subject: null, description: null, status: "done",
+      addBlockedBy: null, removeBlockedBy: null, evidence: null, deliverableEvidence: null, blockedReason: null, reason: null,
+      summary: "已逐项核对同步文档任务的说明与两份声明交付物。",
+      verification: "重读 README.md 和 CHANGELOG.md，确认两者均与实现一致。",
+      whatChanged: null, userReview: null,
+    });
+    expect(closed.details).toMatchObject({ completed: true, planType: "task" });
     expect(__getGoalForTest()).toBeUndefined();
   });
 
-  test("Task Plan auto-close remains correct when the completion overlay throws", async () => {
+  test("Task Plan 显式关闭在 completion overlay 抛错时仍正确收口", async () => {
     const overlay = new PlanOverlay();
     overlay.showDoneThenHide = () => { throw new Error("Spacer is not defined"); };
     __setPlanOverlayForTest(overlay);
     try {
       await execute(taskPlanTool, { objective: "修复展示", tasks: [{ subject: "验证完成路径" }] });
       await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
-      const finished = await execute(planUpdateTool, {
-        target: "task",
-        id: 1,
-        status: "done",
-        evidence: "完成路径已验证",
+      await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "完成路径已验证" });
+      expect(__getGoalForTest()).toMatchObject({ status: "active" });
+      const closed = await execute(planUpdateTool, {
+        target: "goal", status: "done",
+        summary: "已检查 task 完成结果。",
+        verification: "完成路径已验证。",
       });
-      expect(finished.details).toMatchObject({ completed: true, planType: "task" });
+      expect(closed.details).toMatchObject({ completed: true, planType: "task" });
       expect(__getGoalForTest()).toBeUndefined();
     } finally {
       __setPlanOverlayForTest(undefined);
@@ -328,7 +348,7 @@ describe("Three-Plan public tool surface", () => {
     }
   });
 
-  test("Task Plan is direct, task-first, replaceable, and auto-closes without audit", async () => {
+  test("Task Plan is direct, task-first, replaceable, and explicitly closes without audit", async () => {
     const started = await execute(taskPlanTool, {
       objective: "修复键盘",
       tasks: [{ subject: "定位" }, { subject: "修复", blockedBy: [1] }, { subject: "验证", blockedBy: [2] }],
@@ -367,9 +387,9 @@ describe("Three-Plan public tool surface", () => {
     expect(__getGoalForTest()).toMatchObject({ iteration: 0, pausedTotalMs: 0, description: "改为维护文档，不继续键盘实现。" });
     expect(renderPlanLines(__getGoalForTest(), { expandTasks: false })[0]).toContain("0/1 tasks");
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
-    const finished = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
-    expect(finished.details).toMatchObject({ completed: true, planType: "task" });
-    expect(__getGoalForTest()).toBeUndefined();
+    const exhausted = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "README updated" });
+    expect(exhausted.details).toMatchObject({ taskPlanNeedsDecision: true });
+    expect(__getGoalForTest()).toMatchObject({ status: "active" });
   });
 
   test("missing descriptions are rejected across creation paths", async () => {
@@ -422,6 +442,12 @@ describe("Three-Plan public tool surface", () => {
     for (const field of ["verificationPolicy", "budgetPolicy", "runtimeBudget", "budgetUsage", "implicitStart"]) {
       expect(active[field]).toBeUndefined();
     }
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+    const exhausted = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "实现已完成" });
+    expect(exhausted.details).toMatchObject({ phaseTasksNeedDecision: true });
+    expect(exhausted.content[0].text).toContain("Before marking the phase done");
+    const followUp = await execute(planCreateTool, { phaseId: 1, subject: "补充验证", description: "根据实现结果补充当前 phase 的验证。" });
+    expect(followUp.details).toMatchObject({ target: "task", op: "create" });
   });
 
   test("audited Plan entry rejects missing or cyclic local task dependencies before semantic review", async () => {
@@ -451,6 +477,33 @@ describe("Three-Plan public tool surface", () => {
     expect(paused.details.status).toBe("paused");
     expect(__getGoalForTest()?.status).toBe("paused");
     expect(__getGoalForTest()?.pauseReason).toBe("agent_blocked");
+  });
+
+  test("Task Plan 仅在 no_progress 暂停时可原子替换或显式收口", async () => {
+    await execute(taskPlanTool, { objective: "旧目标", tasks: [{ subject: "完成旧任务" }] });
+    const blockedGoal = { ...__getGoalForTest()!, status: "paused" as const, pauseReason: "agent_blocked" as const, pauseStartedAt: Date.now() };
+    __setGoalForTest(blockedGoal);
+    const blockedReplacement = await execute(taskPlanTool, { objective: "不应替换", tasks: [{ subject: "不应创建" }] });
+    expect(blockedReplacement.details).toMatchObject({ error: "goal paused", pauseReason: "agent_blocked" });
+
+    __setGoalForTest({ ...blockedGoal, pauseReason: "no_progress" as const });
+    const forbiddenAppend = await execute(planCreateTool, { subject: "不应追加", description: "no_progress 暂停时不允许追加 task。" });
+    expect(forbiddenAppend.details).toMatchObject({ error: "goal paused", pauseReason: "no_progress" });
+    const replacement = await execute(taskPlanTool, { objective: "新目标", tasks: [{ subject: "建立新计划" }] });
+    expect(replacement.details).toMatchObject({ planType: "task", objective: "新目标" });
+    expect(__getGoalForTest()).toMatchObject({ status: "active", objective: "新目标", pauseReason: undefined });
+
+    await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
+    await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "新计划已完成" });
+    const doneGoal = { ...__getGoalForTest()!, status: "paused" as const, pauseReason: "no_progress" as const, pauseStartedAt: Date.now() };
+    __setGoalForTest(doneGoal);
+    const closed = await executeRaw(planUpdateTool, {
+      target: "goal", id: null, phaseNumber: null, subject: null, description: null, status: "done",
+      addBlockedBy: null, removeBlockedBy: null, evidence: null, deliverableEvidence: null, blockedReason: null, reason: null,
+      summary: "任务已完成并已回读说明。", verification: "证据已核验。", whatChanged: null, userReview: null,
+    });
+    expect(closed.details).toMatchObject({ completed: true, planType: "task" });
+    expect(__getGoalForTest()).toBeUndefined();
   });
 
   test("plan_create only adds task and Task Plan never exposes its structural phase", async () => {

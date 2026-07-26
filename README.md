@@ -53,11 +53,12 @@ Ask for a concrete multi-step task normally. When tracking adds value, the agent
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ final task: evidence + declared-deliverable evidence + completion review
-→ automatic goal closure
+→ all current tasks done: main agent decides
+   → plan_create another task / task_plan replacement / explicit goal closure
+→ plan_update(goal, done): summary + verification
 ```
 
-Task Plan has no startup review, confirmation dialog, or independent auditor, and it grants no extra tool permissions. A task may optionally declare named deliverables—files, command results, or observable external states—with a required completion fact. Declared deliverables need one-to-one evidence before that task can be done. Before the final update closes a Task Plan, the main agent supplies a same-session structured review of every task description and declared deliverable; this is a self-check, not an independent audit.
+Task Plan has no startup review, confirmation dialog, or independent auditor, and it grants no extra tool permissions. A task may optionally declare named deliverables—files, command results, or observable external states—with a required completion fact. Declared deliverables need one-to-one evidence before that task can be done. When all current tasks are done, the Plan remains active: the main agent either adds evidence-led work, replaces a reframed Task Plan, or reviews every task description and declared deliverable before explicitly closing the goal. This is a self-check, not an independent audit.
 
 ### Explicit dgoal: Phase Plan / Goal Plan
 
@@ -69,11 +70,11 @@ An imperative such as “use dgoal to complete this objective” also enters the
 
 ```text
 Phase Plan
-phase_plan → plan_update(phase, done) × N
+phase_plan → [current phase tasks exhausted: main agent decides plan_create / phase done] × N
 → goal_check → plan_update(goal, done)
 
 Goal Plan
-goal_plan → [phase_check → plan_update(phase, done)] × N
+goal_plan → [current phase tasks exhausted: main agent decides plan_create / phase_check → phase done] × N
 → goal_check → plan_update(goal, done)
 ```
 
@@ -112,7 +113,7 @@ Every goal, visible phase, and task carries a required **Description**: why it e
 
 ## Completion Guards
 
-- **Task Plan:** every task must carry reproducible evidence and be done; a task with declared deliverables also needs one-to-one deliverable evidence. The final update additionally carries a same-session completion review, then atomically closes the goal. Blocked tasks do not count as complete.
+- **Task Plan:** every task must carry reproducible evidence and be done; a task with declared deliverables also needs one-to-one deliverable evidence. When current tasks are exhausted, the main agent decides whether to add a task, replace the Plan, or explicitly close it with a summary and verification after reviewing every task description and declared deliverable. Blocked tasks do not count as complete.
 - **Phase Plan:** a phase may be marked done only after every task is done; blocked still means incomplete. The goal requires all phases done plus a current-revision approved `goal_check`.
 - **Goal Plan:** each phase additionally requires a current-revision approved `phase_check`; the goal likewise requires `goal_check` approval.
 - Check results are `approved | rejected | audit_error`. Rejection keeps work active for repair; audit errors pause safely.
@@ -159,7 +160,7 @@ Legacy single-candidate `phaseAuditorModel`, `goalAuditorModel`, and `auditorMod
 
 ## Persistence
 
-Current plans use the `dgoal-plan-v2` custom entry. Old `dgoal-state`, `dgoal-goal-vnext`, and `dgoal-plan-v1` entries are intentionally ignored and not migrated. Reload strictly revalidates required descriptions, optional declared deliverables and their evidence, the Plan-specific frozen acceptance contract, IDs, statuses, dependencies, removed fields, and any pending proposal; one invalid part rejects the whole entry. A Pi session owns at most one current plan. On `session_compact`, the persisted structural Plan is restored unchanged and re-injected as the execution authority; the compacted summary remains background only and cannot override task descriptions or declared deliverables.
+Current plans use the `dgoal-plan-v2` custom entry. Old `dgoal-state`, `dgoal-goal-vnext`, and `dgoal-plan-v1` entries are intentionally ignored and not migrated. Reload strictly revalidates required descriptions, optional declared deliverables and their evidence, the Plan-specific frozen acceptance contract, IDs, statuses, dependencies, removed fields, and any pending proposal; one invalid part rejects the whole entry. A Pi session owns at most one current plan. On `session_compact`, the persisted structural Plan is restored unchanged and re-injected as execution authority; when Pi is not already retrying the interrupted turn, an active Plan also receives a new continuation so compaction cannot leave an active timer without an execution frontier. The compacted summary remains background only and cannot override task descriptions or declared deliverables.
 
 ## Design Boundaries
 
@@ -198,7 +199,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md), [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md), [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md), and [ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md).
+See [`doc/README.md`](./doc/README.md), the authoritative [`doc/术语表.md`](./doc/术语表.md), [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md), [ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md), [ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md), [ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md), [ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md), and [ADR 0047](./doc/决策档案/0047-TaskPlan任务耗尽后显式收口.md).
 
 ## License
 

@@ -447,6 +447,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.phaseBlockedNext": "解除阻塞后用 plan_update 将 phase #{phaseId} 恢复为 in_progress",
       "frontier.phaseNoTasks": "当前 phase #{phaseId} 还没有可执行 task",
       "frontier.phaseNoTasksNext": "用 plan_create 在 phase #{phaseId} 创建服务当前目标的 task",
+      "frontier.phasePlanTasksExhausted": "当前 phase #{phaseId} 的 task 已全部带证据完成，等待主 agent 决定下一步",
+      "frontier.phasePlanTasksExhaustedNext": "根据新证据用 plan_create 在 phase #{phaseId} 添加 task，或确认本 phase 已足够后用 plan_update 标记 done",
+      "frontier.goalPlanTasksExhausted": "当前 phase #{phaseId} 的 task 已全部带证据完成，等待主 agent 决定下一步",
+      "frontier.goalPlanTasksExhaustedNext": "根据新证据用 plan_create 在 phase #{phaseId} 添加 task，或确认本 phase 已足够后调用 phase_check",
       "frontier.phaseCheckRejected": "phase #{phaseId} 的最新 phase_check 未通过",
       "frontier.phaseCheckRejectedNext": "根据最新反馈在 phase #{phaseId} 创建接续 task，修复后重新 phase_check",
       "frontier.phaseCheckNeeded": "phase #{phaseId} 的 task 已全部带证据完成，但缺少当前 revision 的 approved phase_check",
@@ -459,8 +463,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.goalCheckNeededNext": "调用 goal_check 进行目标终审",
       "frontier.goalReady": "当前 Plan 已满足完成守卫但尚未收口",
       "frontier.goalReadyNext": "调用 plan_update(target=goal,status=done) 并提供 summary 与 verification",
-      "frontier.taskPlanReady": "Task Plan 的 task 已全部带证据完成，正在等待自动收口",
-      "frontier.taskPlanReadyNext": "无需更新隐藏 phase 或 goal；最后一个 task 的 plan_update 会自动收口",
+      "frontier.taskPlanReady": "Task Plan 的 task 已全部带证据完成，等待主 agent 决定下一步",
+      "frontier.taskPlanReadyNext": "根据新证据用 plan_create 添加 task、用 task_plan 替换计划，或回读全部 task/交付物后用 plan_update(target=goal,status=done) 显式关闭",
       "frontier.itemDone": "{kind} #{id} 已完成",
       "frontier.itemWaitingPhase": "{kind} #{id} 尚未到达；当前 frontier 仍在 phase #{phaseId}",
       "tool.propose.noPendingGoal": "当前没有 pending 的 /dgoal 目标（启动闸门未激活）。",
@@ -700,6 +704,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.phaseBlockedNext": "Resolve the blocker, then use plan_update to return phase #{phaseId} to in_progress",
       "frontier.phaseNoTasks": "current phase #{phaseId} has no executable tasks",
       "frontier.phaseNoTasksNext": "Use plan_create to add a task that serves the current goal to phase #{phaseId}",
+      "frontier.phasePlanTasksExhausted": "all current tasks in phase #{phaseId} are done with evidence and await the main agent's decision",
+      "frontier.phasePlanTasksExhaustedNext": "Use plan_create for another task in phase #{phaseId}, or if the phase is sufficient use plan_update to mark it done",
+      "frontier.goalPlanTasksExhausted": "all current tasks in phase #{phaseId} are done with evidence and await the main agent's decision",
+      "frontier.goalPlanTasksExhaustedNext": "Use plan_create for another task in phase #{phaseId}, or if the phase is sufficient run phase_check",
       "frontier.phaseCheckRejected": "the latest phase_check for phase #{phaseId} was rejected",
       "frontier.phaseCheckRejectedNext": "Create a follow-up task in phase #{phaseId} from the latest feedback, fix it, then rerun phase_check",
       "frontier.phaseCheckNeeded": "all tasks in phase #{phaseId} are done with evidence, but there is no approved phase_check for the current revision",
@@ -712,8 +720,8 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.goalCheckNeededNext": "Run goal_check for final goal review",
       "frontier.goalReady": "the current Plan satisfies its completion guards but has not been finalized",
       "frontier.goalReadyNext": "Call plan_update(target=goal,status=done) with summary and verification",
-      "frontier.taskPlanReady": "all Task Plan tasks are done with evidence and the Plan is waiting for automatic closure",
-      "frontier.taskPlanReadyNext": "Do not update the hidden phase or goal; the final task plan_update closes the Plan automatically",
+      "frontier.taskPlanReady": "all Task Plan tasks are done with evidence and the Plan awaits the main agent's decision",
+      "frontier.taskPlanReadyNext": "Use plan_create for another task, task_plan to replace the Plan, or after reviewing every task and deliverable call plan_update(target=goal,status=done) to close it explicitly",
       "frontier.itemDone": "{kind} #{id} is done",
       "frontier.itemWaitingPhase": "{kind} #{id} is not at the current frontier; work remains in phase #{phaseId}",
       "tool.propose.noPendingGoal": "There is no pending /dgoal goal (startup gate is not active).",
@@ -1940,10 +1948,6 @@ const taskDeliverableEvidenceSchema = strictSchemaObject({
   evidence: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "该交付物的可复验证据" }),
 });
 
-const taskCompletionReviewSchema = strictSchemaObject({
-  summary: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "末任务收口前对全部 task 与交付物的核对结论" }),
-  verification: Type.String({ minLength: 1, maxLength: MAX_DESCRIPTION_LENGTH, description: "核对所依据的文件、命令、测试或外部状态" }),
-});
 
 const entryTaskSchema = strictSchemaObject({
   subject: Type.String({ minLength: 1, description: "task 简述" }),
@@ -2039,7 +2043,8 @@ export const taskPlanTool = definePublicTool({
     if (!current && goalRuntimeState.naturalLanguageStartAuthorized) {
       return { content: [{ type: "text", text: "The user explicitly requested /dgoal; submit phase_plan or goal_plan instead of silently downgrading to Task Plan." }], details: { error: "explicit dgoal requested" }, isError: true };
     }
-    if (current?.status === "paused") return pausedGoalResult(current);
+    const taskPlanNoProgressRecovery = current?.status === "paused" && resolvePlanType(current) === "task" && current.pauseReason === "no_progress";
+    if (current?.status === "paused" && !taskPlanNoProgressRecovery) return pausedGoalResult(current);
     if (current && resolvePlanType(current) !== "task" && current.status !== "done") {
       return { content: [{ type: "text", text: "An audited Phase Plan or Goal Plan is already active; task_plan cannot replace it." }], details: { error: "audited plan active" }, isError: true };
     }
@@ -2402,13 +2407,13 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
 export const planUpdateTool = definePublicTool({
   name: PLAN_UPDATE_TOOL_NAME,
   label: "Plan Update",
-  description: "更新当前 Plan 的 task、phase 或 goal 状态。Task Plan 在最后一个 task 完成时自动收口；Phase/Goal Plan 的 check 只写审核结果，由本工具显式完成 phase/goal。",
+  description: "更新当前 Plan 的 task、phase 或 goal 状态。Task Plan 的 task 全部完成后保持 active，由主 agent 决定新增 task、替换 Plan 或显式关闭；Phase/Goal Plan 的 check 只写审核结果，由本工具显式完成 phase/goal。",
   promptSnippet: "更新 Plan 状态与显示",
   promptGuidelines: [
-    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence，已声明 deliverables 时还须逐项提供 deliverableEvidence，且不回退。最后一个 Task Plan task 完成前，重读所有 task description 与交付物；确认无遗漏后随本次更新提供 completionReview，才会自动关闭 goal。",
+    "target=task 按 pending→in_progress→done 推进；done 必须带可复验 evidence，已声明 deliverables 时还须逐项提供 deliverableEvidence，且不回退。Task Plan 的最后一个 task done 只表示当前 task 已耗尽，Plan 保持 active：根据新证据选择 plan_create 新增 task、task_plan 整份替换，或在回读全部 task description 与交付物后调用 plan_update(target=goal,status=done) 并提供 summary 与 verification 显式关闭。",
     "target=phase 只能更新当前 phase；description 可显式修订并留痕但不能为空。Phase Plan 要求 task 全 done，Goal Plan 还要求 phase_check approved。goal_check rejected 后可把受影响的 done phase 重开，再新增 follow-up task 修复。",
     "goal 的 objective 与 description 在 Phase/Goal Plan 确认后冻结；Task Plan 要改变它们必须重新调用 task_plan 整份替换。",
-    "Phase/Goal Plan 用 target=goal status=done 最终收口，并要求 goal_check approved；Task Plan 通常无需另行更新 goal。",
+    "Phase/Goal Plan 用 target=goal status=done 最终收口，并要求 goal_check approved；Task Plan 也由主 agent 使用 target=goal status=done 显式收口，但无独立审核。",
     "只有确实需要用户决定的死锁才能把 goal 更新为 paused，且 reason 必填；agent 不得自行 resume。",
   ],
   parameters: strictSchemaObject({
@@ -2424,7 +2429,6 @@ export const planUpdateTool = definePublicTool({
     removeBlockedBy: Type.Optional(Type.Array(Type.Number())),
     evidence: Type.Optional(Type.String()),
     deliverableEvidence: Type.Optional(Type.Array(taskDeliverableEvidenceSchema, { description: "已声明 deliverables 的逐项可复验证据" })),
-    completionReview: Type.Optional(taskCompletionReviewSchema),
     blockedReason: Type.Optional(Type.String()),
     reason: Type.Optional(Type.String({ maxLength: MAX_PAUSE_REASON_DETAIL_LENGTH })),
     summary: Type.Optional(Type.String({ description: "goal done 时的完成总结" })),
@@ -2444,9 +2448,10 @@ export const planUpdateTool = definePublicTool({
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
     if (!goal) return { content: [{ type: "text", text: "No active Plan." }], details: { error: "no plan" } };
-    if (goal.status === "paused") return pausedGoalResult(goal);
-    if (!isGoalMutable(goal.status) || !goal.plan) return { content: [{ type: "text", text: "Current Plan is not mutable." }], details: { error: "plan not mutable" } };
     const planType = resolvePlanType(goal);
+    const taskPlanNoProgressClosure = goal.status === "paused" && planType === "task" && goal.pauseReason === "no_progress" && params.target === "goal" && params.status === "done";
+    if (goal.status === "paused" && !taskPlanNoProgressClosure) return pausedGoalResult(goal);
+    if ((!isGoalMutable(goal.status) && !taskPlanNoProgressClosure) || !goal.plan) return { content: [{ type: "text", text: "Current Plan is not mutable." }], details: { error: "plan not mutable" } };
 
     if (params.target === "task") {
       const taskId = Number(params.id);
@@ -2462,50 +2467,30 @@ export const planUpdateTool = definePublicTool({
         ...(params.description !== undefined ? { description: String(params.description).trim() } : {}),
       });
       if (result.op.kind === "error") return { content: [{ type: "text", text: formatPlanResult(result.op) }], details: { error: result.op.message } };
-      const completionReviewValue = params.completionReview;
-      const completionReview = completionReviewValue && typeof completionReviewValue === "object" && !Array.isArray(completionReviewValue)
-        ? {
-          summary: String((completionReviewValue as Record<string, unknown>).summary ?? "").trim(),
-          verification: String((completionReviewValue as Record<string, unknown>).verification ?? "").trim(),
-        }
-        : undefined;
-      if (planType === "task" && allPlanTasksDoneWithEvidence(result.goal.plan!)) {
-        if (!completionReview?.summary || !completionReview.verification) {
-          return {
-            content: [{ type: "text", text: "Final Task Plan completion requires completionReview.summary and completionReview.verification after checking every task description and declared deliverable." }],
-            details: { error: "completion review required", taskId },
-            isError: true,
-          };
-        }
-        goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
-        clearCurrentCheckSnapshot();
-        const completionGoal = goalRuntimeState.currentGoal;
-        finalizeGoal(ctx);
-        return {
-          content: [{ type: "text", text: buildCompletionReplySignal({ goal: completionGoal, summary: completionReview.summary, verification: completionReview.verification, audited: false }) }],
-          details: {
-            target: "task",
-            taskId,
-            status: params.status,
-            revision: completionGoal.plan?.revision,
-            completed: true,
-            planType: "task",
-            display: [`完成总结：${completionReview.summary}`, `验证：${completionReview.verification}`].join("\n"),
-          },
-        };
-      }
+      const allCurrentPhaseTasksDone = allTasksDoneWithEvidence(result.goal.plan!.phases[phaseIndex]);
+      const taskPlanNeedsDecision = planType === "task" && allCurrentPhaseTasksDone;
+      const phaseTasksNeedDecision = planType !== "task" && allCurrentPhaseTasksDone;
+      const taskExhaustionMessage = taskPlanNeedsDecision
+        ? "All Task Plan tasks are done with evidence. The Plan remains active: use plan_create if new evidence calls for another task, call task_plan to replace the Plan if the goal changed, or after reviewing every task description and declared deliverable call plan_update(target=goal,status=done) with summary and verification."
+        : phaseTasksNeedDecision && planType === "phase"
+          ? `All current tasks in phase #${phase.id} are done with evidence. Before marking the phase done, decide whether new evidence calls for plan_create in this phase; otherwise use plan_update(target=phase,status=done).`
+          : phaseTasksNeedDecision
+            ? `All current tasks in phase #${phase.id} are done with evidence. Before phase_check, decide whether new evidence calls for plan_create in this phase; otherwise run phase_check.`
+            : undefined;
       goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
       clearCurrentCheckSnapshot();
       const updatedTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === taskId);
       persistGoal(goalRuntimeState.currentGoal);
       safeUpdatePlanOverlay();
       return {
-        content: [{ type: "text", text: formatPlanResult(result.op) }],
+        content: [{ type: "text", text: taskExhaustionMessage ?? formatPlanResult(result.op) }],
         details: {
           target: "task",
           taskId,
           status: params.status,
           revision: goalRuntimeState.currentGoal.plan?.revision,
+          taskPlanNeedsDecision,
+          phaseTasksNeedDecision,
           display: updatedTask
             ? [formatTaskDisplay(updatedTask, `task #${updatedTask.id} · `), `  说明：${updatedTask.description}`, `计划修订：${goalRuntimeState.currentGoal.plan?.revision ?? 0}`].join("\n")
             : undefined,
@@ -2578,7 +2563,7 @@ export const planUpdateTool = definePublicTool({
       };
     }
 
-    if (params.subject !== undefined || params.description !== undefined) {
+    if (params.subject != null || params.description != null) {
       return { content: [{ type: "text", text: "goal objective and description are frozen; replace a Task Plan with task_plan or re-propose an audited Plan." }], details: { error: "goal description frozen" }, isError: true };
     }
     const requestedStatus = params.status;
@@ -2607,7 +2592,9 @@ export const planUpdateTool = definePublicTool({
     }
     const summary = String(params.summary ?? "").trim();
     const verification = String(params.verification ?? "").trim();
-    if (!summary || !verification) return { content: [{ type: "text", text: "Finishing a Plan requires summary and verification." }], details: { error: "missing completion details" } };
+    if (!summary || !verification) return { content: [{ type: "text", text: planType === "task"
+      ? "Finishing a Task Plan requires summary and verification after reviewing every task description and declared deliverable."
+      : "Finishing a Plan requires summary and verification." }], details: { error: "missing completion details" } };
     const whatChanged = normalizeStringList((params as unknown as Record<string, unknown>).whatChanged) ?? [];
     const userReview = trimOptionalText((params as unknown as Record<string, unknown>).userReview);
     const completionGoal = goal;
@@ -3472,10 +3459,15 @@ function phaseFrontierDiagnostic(goal: GoalState, phase: Phase): PlanFrontierDia
     }
     if (phase.check?.status !== "approved" || phase.check.revision !== revision) {
       return {
-        reason: t("frontier.phaseCheckNeeded", { phaseId: phase.id }),
-        nextAction: t("frontier.phaseCheckNeededNext", { phaseId: phase.id }),
+        reason: t("frontier.goalPlanTasksExhausted", { phaseId: phase.id }),
+        nextAction: t("frontier.goalPlanTasksExhaustedNext", { phaseId: phase.id }),
       };
     }
+  } else {
+    return {
+      reason: t("frontier.phasePlanTasksExhausted", { phaseId: phase.id }),
+      nextAction: t("frontier.phasePlanTasksExhaustedNext", { phaseId: phase.id }),
+    };
   }
   return {
     reason: t("frontier.phaseReady", { phaseId: phase.id }),
@@ -3610,10 +3602,10 @@ export function buildSystemPrompt(goal: GoalState) {
   const acceptanceContractBlock = planType === "task" ? "" : buildAcceptanceContractBlock(goal);
   const feedbackBlock = buildCheckFeedbackBlock(goal);
   const typeRule = planType === "task"
-    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；已声明 deliverables 的 task 必须逐项记录 deliverableEvidence。最后一个 task 完成前必须重读全部 task description 与交付物，并随 done 更新提供 completionReview；核对通过后才自动关闭 goal，不要再调用 plan_update(target=goal,status=done)。用户改变目标时重新调用 task_plan，原子替换 objective 与全部 task。"
+    ? "- 当前是 Task Plan：无独立审核。维护 task 状态；已声明 deliverables 的 task 必须逐项记录 deliverableEvidence。最后一个 task done 只表示当前 task 已耗尽，Plan 保持 active：先把已有 evidence 与 goal description、已声明交付物比较；只有发现可精确表述的未覆盖差距时才调用 plan_create 添加 task，目标改变时调用 task_plan 原子替换；否则回读全部 task description 与交付物，并通过 plan_update(target=goal,status=done) 提供 summary 与 verification 后显式关闭 goal。"
     : planType === "phase"
-      ? "- 当前是 Phase Plan：每个 phase 的 task 全 done 后用 plan_update(target=phase,status=done) 推进；所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。不要调用 phase_check。"
-      : "- 当前是 Goal Plan：每个 phase 的 task 全 done 后调用 phase_check；通过后用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。";
+      ? "- 当前是 Phase Plan：当前 phase 的 task 全 done 只形成决策边界；先把已有 evidence 与当前 phase description、goal 验收契约和最新 rejected feedback（如有）比较，只有发现可精确表述的未覆盖差距时才用 plan_create 添加 task；确认当前 phase 已足够后才用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。不要调用 phase_check。"
+      : "- 当前是 Goal Plan：当前 phase 的 task 全 done 只形成决策边界；先把已有 evidence 与当前 phase description、冻结验收契约和最新 rejected feedback（如有）比较，只有发现可精确表述的未覆盖差距时才用 plan_create 添加 task；确认当前 phase 已足够后才调用 phase_check；通过后用 plan_update(target=phase,status=done) 推进。所有 phase done 后调用 goal_check，通过后再用 plan_update(target=goal,status=done) 收口。";
   return `当前 Plan：${planType}\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>${acceptanceContractBlock}${boundaryBlock}${planBlock}${taskGraphBlock}${feedbackBlock}\n\n循环规则：\n- 当前 <dgoal_plan> 是执行与收口的唯一结构化权威；会话压缩、摘要和普通对话只能提供背景，不得覆盖 task description 或已声明 deliverables。冲突时不得标记 done：用户改变目标才用 task_plan 原子替换，否则创建 follow-up task。\n- 持续工作直到当前 Plan 端到端完成，不要停在纸面计划或部分进度。\n- 用 plan_create 动态新增 task，用 plan_read 回查，用 plan_update 更新 task/phase/goal 状态和显示；task 先进入 in_progress，完成时带可复验 evidence 标 done。\n- phase 结构在启动后冻结，运行中不得新增 phase。\n- 按 phase 顺序推进，严禁跳过当前未完成 phase。\n- <dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界；waiting/blocked task 不推进。\n- ready 只表示依赖已满足，不代表 task 之间可安全并发；执行或委派前仍由主 agent 核对范围与冲突。\n- Plan 状态只由主 agent 写入；对任何执行结果核验证据后再调用 plan_update。\n- check 只记录独立审核结果；只有 plan_update 能写完成状态。\n- 以当前文件、命令输出、测试和外部状态为准；工具失败时先尝试合理替代方案。\n- 遇到必须由用户决策才能继续的死锁时，用 plan_update(target=goal,status=paused,reason=...) 主动暂停；一时困难不算死锁。\n${typeRule}`;
 }
 
@@ -3935,14 +3927,14 @@ function buildHelpPrompt(goal: GoalState | undefined) {
 
 function buildResumePrompt(goal: GoalState) {
   const completionInstruction = resolvePlanType(goal) === "task"
-    ? "继续更新 task；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal。"
+    ? "继续更新 task；当前 task 全部带 evidence 完成后先判断是否新增或替换 Task Plan，确认目标完成时用 plan_update(target=goal,status=done) 提供 summary 与 verification 显式关闭。"
     : "按 Plan 类型继续 plan_update / phase_check / goal_check，满足前置条件后用 plan_update(target=goal,status=done) 收口。";
   return `恢复当前 ${resolvePlanType(goal)} Plan 并继续直到完成：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n${completionInstruction}`;
 }
 
 function buildContinuePrompt(goal: GoalState, marker: string) {
   const completionInstruction = resolvePlanType(goal) === "task"
-    ? "保持 plan_update 与实际进度同步；最后一个 task 带 evidence 进入 done 时会自动完成并关闭 goal。"
+    ? "保持 plan_update 与实际进度同步；当前 task 全部带 evidence 完成后先判断是否新增或替换 Task Plan，确认目标完成时用 plan_update(target=goal,status=done) 提供 summary 与 verification 显式关闭。"
     : "保持 plan_update 与实际进度同步，满足对应 check 后最终更新 goal 为 done。";
   const progressNudge = buildContinuationProgressNudge(
     goalRuntimeState.consecutiveNoProgressTurns,

@@ -10,13 +10,13 @@
 - 管理：`plan_create` / `plan_read` / `plan_update`
 - 审核：`phase_check` / `goal_check`
 
-Task Plan 可直接建立和整份替换 objective、goal description 与全部 task，隐藏内部单 phase。task 可选声明 named deliverables，并在完成时保存逐项证据；最后一个 task 还要求主 agent 在同一 `plan_update` 提供 completion review，才原子关闭 goal。Phase/Goal Plan 复用显式启动闸门；三层 Description 必填，goal description 随确认冻结，phase/task 可显式修订；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。Description 进入主 agent 执行上下文，但不是独立审核完成门。新 Plan 的 phase 与 plan-global task 使用各自从 `1` 开始的 ID namespace，`nextId` 仅分配 task；v1 持久态不迁移。
+Task Plan 可直接建立和整份替换 objective、goal description 与全部 task，隐藏内部单 phase。task 可选声明 named deliverables，并在完成时保存逐项证据；所有当前 task 完成后 Plan 保持 active，主 agent 必须依据结果新增 task、整份替换 Plan，或在回读全部 task Description 与声明交付物后以 `plan_update(target=goal,status=done)` 加 `summary` / `verification` 显式关闭。Task Plan 不因此启动独立审核。Phase/Goal Plan 复用显式启动闸门；三层 Description 必填，goal description 随确认冻结，phase/task 可显式修订；`phase_plan` 只冻结 goal 条件，`goal_plan` 同时冻结 phase 条件。Description 进入主 agent 执行上下文，但不是独立审核完成门。新 Plan 的 phase 与 plan-global task 使用各自从 `1` 开始的 ID namespace，`nextId` 仅分配 task；v1 持久态不迁移。
 
-`phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。全局 Plan revision 保护 goal check；task/phase 的受审事实变化只递增所属 phase revision 并使该 phase check 失效。用户命令与技术熔断仍可暂停/恢复。
+`phase_check` / `goal_check` 只写带 revision 的 `CheckRecord`；`plan_update` 是 agent 可调用的 task / phase / goal 执行状态、完成和主动暂停写入口。全局 Plan revision 保护 goal check；task/phase 的受审事实变化只递增所属 phase revision 并使该 phase check 失效。用户命令与技术熔断仍可暂停/恢复；唯一恢复例外是 Task Plan 的 `no_progress`，它可由新的 `task_plan` 原子替换或完成守卫通过的显式 goal 收口解除，不能借此新增 task 或绕过其他暂停原因。
 
 ## Task DAG 读模型
 
-runtime 对当前未完成 phase 调用纯函数 `deriveTaskGraph`，从 phase/task status 与去重后的 `blockedBy` 派生 ready、waiting、phase/task 传递根阻塞和 ready task 完成后的立即解锁关系；phase 级 blocked 会使 ready 集合为空。该结果进入 `plan_read`、`/dgoal s` 与每轮 `<dgoal_task_graph>` prompt block，但不进入 `GoalState` 或持久化。ready 是主 agent 当前合法执行或委派边界，只表达依赖已满足，不保证 task 之间可安全并发；主 agent 仍负责选择执行方式、核对范围冲突、验证结果并经 `plan_update` 推进。
+runtime 对当前未完成 phase 调用纯函数 `deriveTaskGraph`，从 phase/task status 与去重后的 `blockedBy` 派生 ready、waiting、phase/task 传递根阻塞和 ready task 完成后的立即解锁关系；phase 级 blocked 会使 ready 集合为空。该结果进入 `plan_read`、`/dgoal s` 与每轮 `<dgoal_task_graph>` prompt block，但不进入 `GoalState` 或持久化。ready 是主 agent 当前合法执行或委派边界，只表达依赖已满足，不保证 task 之间可安全并发；当前 task 耗尽时，三档 Plan 都先由主 agent 判断是否新增 task，再分别进入 Task Plan 的显式 goal 收口、Phase Plan 的 phase done，或 Goal Plan 的 phase check 链。
 
 ## Proposal 语义预审
 

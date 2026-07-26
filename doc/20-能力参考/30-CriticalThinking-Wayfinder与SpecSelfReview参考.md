@@ -150,7 +150,7 @@ Agent 接到用户想法后，不展示路由分级，而是自行判断是否�
 - `src/startup/index.ts::buildTaskPlanDefaultGuidance()` — 把“普通、明确多步”扩展为“明确执行或有界 AFK 探索”；
 - `src/runtime/index.ts::taskPlanTool.promptGuidelines` — 约束探索 objective 必须有界、可验证，不替用户作决定；
 - `src/runtime/index.ts::planCreateTool.promptGuidelines` — 明确新增探索 task 仍须服务当前 objective；
-- `test/activation-boundary.test.ts`、`test/three-plan-runtime.test.ts` — 回归默认授权边界、整份替换和末 task 自动收口不变；
+- `test/activation-boundary.test.ts`、`test/three-plan-runtime.test.ts` — 回归默认授权边界、整份替换，以及 task 耗尽后由主 agent 显式决定新增、替换或收口。
 - `README.md` / `README-zh.md` 与 `doc/10-架构与运行/13-启动闸门与TUI浮层.md` — 只解释 Agent 可用 Task Plan 探路，不给用户新增路由操作。
 
 价值：吸收 Wayfinder 的 frontier 思想，但复用现有 Task Plan，不新增 map、状态、工具或跨会话历史。

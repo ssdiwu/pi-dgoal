@@ -140,9 +140,13 @@ export function registerDgoal(pi: ExtensionAPI) {
     resyncGoalFromSession(ctx);
   });
 
-  // 会话压缩完成后主会话上下文可能重建，但 dgoal 状态仍在 custom entry；复用统一恢复路径。
-  pi.on("session_compact", (_event, ctx) => {
+  // 会话压缩完成后主会话上下文可能重建，但 dgoal 状态仍在 custom entry；先重同步。
+  // resync 会取消旧 continuation（它可能引用压缩前上下文）；若 Pi 不会自行重试当前 turn，
+  // 必须为仍 active 的 goal 排入新 continuation，避免 Plan 保持计时却没有下一轮三选一决策。
+  pi.on("session_compact", async (event, ctx) => {
     resyncGoalFromSession(ctx);
+    const goal = goalRuntimeState.currentGoal;
+    if (goal && isGoalRunning(goal.status) && !event.willRetry) await sendContinuation(pi, ctx, goal);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {

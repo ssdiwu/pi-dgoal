@@ -13,7 +13,7 @@
   → 立即 active，展示 task 列表
 ```
 
-Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它不扩大权限；真正动作仍按宿主工具授权执行。再次调用 `task_plan` 会整份替换当前 Task Plan 的 objective、goal description 与全部 task。普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，都可使用 Task Plan 承载当前 frontier；提交前只做轻量相关性/必要性/依赖/证据路径自检，不增加独立自检阶段或硬门。跨文件、命令或外部状态的交付可按需以 `deliverables` 显式声明；声明后必须逐项有 evidence，末任务在同一 `plan_update` 提交 completion review 后才自动收口，仍不启动独立审核。
+Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它不扩大权限；真正动作仍按宿主工具授权执行。再次调用 `task_plan` 会整份替换当前 Task Plan 的 objective、goal description 与全部 task。普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，都可使用 Task Plan 承载当前 frontier；提交前只做轻量相关性/必要性/依赖/证据路径自检，不增加独立自检阶段或硬门。跨文件、命令或外部状态的交付可按需以 `deliverables` 显式声明；声明后必须逐项有 evidence。当前 task 全部完成时 Plan 保持 active，主 agent 按新证据新增 task、在目标重构时替换 Task Plan，或回读全部 task Description 与交付物后显式关闭，仍不启动独立审核。
 
 纯讨论、解释、能力问答和单步回答不建立 Task Plan。若 agent 判断任务需要冻结验收契约或独立审核，只能建议用户使用 `/dgoal`，不能自行调用 `phase_plan` / `goal_plan`。
 

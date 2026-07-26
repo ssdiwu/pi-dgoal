@@ -17,7 +17,7 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 
 | 文件 | 验证内容 |
 |---|---|
-| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；三层 Description 必填/冻结/显式修订；Task Plan 隐藏 phase/整份替换、声明交付物的逐项 evidence 守卫、末任务 completion review 与自动收口；`plan_read` Task DAG 投影；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
+| `three-plan-runtime.test.ts` | 八工具集合；三档 Plan 生命周期；三层 Description 必填/冻结/显式修订；Task Plan 隐藏 phase/整份替换、声明交付物的逐项 evidence 守卫、task 耗尽后新增/替换/显式收口的主 agent 决策边界；`plan_read` Task DAG 投影；严格状态/evidence 守卫；revision 并发失效；check→update 双层链与主动暂停 |
 | `activation-boundary.test.ts` | Task Plan 默认 guidance、Phase/Goal Plan 显式激活边界、自然语言显式授权反例、入口 schema 不再暴露 implicit / runtime budget |
 | `task-plan-data-model.test.ts` | Description 新契约、Plan 数据与 `dgoal-plan-v2` 持久化往返、可选交付物/证据校验、v1/旧 entry 隔离、check feedback helper |
 | `state-machine-and-prompt.test.ts` | 三档 Plan system prompt、压缩后 Plan 优先、Plan context 与 `<dgoal_task_graph>` 注入、通用 ready 执行/委派边界、软遗忘、暂停/恢复 helper |

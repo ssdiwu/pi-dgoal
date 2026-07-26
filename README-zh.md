@@ -53,11 +53,12 @@ pi -e ./index.ts
 ```text
 task_plan
 → plan_create / plan_update(task)
-→ 末 task：evidence + 声明交付物的逐项证据 + completion review
-→ 自动关闭 goal
+→ 当前 task 全部完成：主 agent 决定
+   → plan_create 新增 task / task_plan 替换 / 显式关闭 goal
+→ plan_update(goal, done)：summary + verification
 ```
 
-Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。task 可选声明具名交付物（文件、命令结果或可观察外部状态）及其完成事实；声明后 done 必须逐项提供证据。末任务自动关闭前，主 agent 还要在同一次更新中结构化回读全部 task Description 与声明交付物；这是自检，不是独立审核。
+Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。task 可选声明具名交付物（文件、命令结果或可观察外部状态）及其完成事实；声明后 done 必须逐项提供证据。当前 task 全部完成时 Plan 保持 active：主 agent 要么按新证据新增 task、要么在目标重构时替换 Task Plan、要么回读全部 task Description 与声明交付物后显式关闭 goal；这是自检，不是独立审核。
 
 ### 显式 dgoal：Phase Plan / Goal Plan
 
@@ -69,11 +70,11 @@ Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大�
 
 ```text
 Phase Plan
-phase_plan → plan_update(phase, done) × N
+phase_plan → [当前 phase task 耗尽：主 agent 决定 plan_create / phase done] × N
 → goal_check → plan_update(goal, done)
 
 Goal Plan
-goal_plan → [phase_check → plan_update(phase, done)] × N
+goal_plan → [当前 phase task 耗尽：主 agent 决定 plan_create / phase_check → phase done] × N
 → goal_check → plan_update(goal, done)
 ```
 
@@ -159,7 +160,7 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 
 ## 持久化
 
-当前 Plan 使用 `dgoal-plan-v2` custom entry。旧 `dgoal-state`、`dgoal-goal-vnext` 与 `dgoal-plan-v1` 不读取、不迁移；重载时严格复验必填 description、可选声明交付物与逐项证据、各 Plan 类型的冻结验收契约、ID、状态、依赖图、已删除字段和 pending proposal，任一处非法都会拒绝整条 entry。升级后需要重新建立活动 Plan。一个 Pi session 同时只维护一个当前 Plan。`session_compact` 后持久化的结构化 Plan 原样恢复并重新作为执行权威；压缩摘要只能补背景，不能覆盖 task Description 或声明交付物。
+当前 Plan 使用 `dgoal-plan-v2` custom entry。旧 `dgoal-state`、`dgoal-goal-vnext` 与 `dgoal-plan-v1` 不读取、不迁移；重载时严格复验必填 description、可选声明交付物与逐项证据、各 Plan 类型的冻结验收契约、ID、状态、依赖图、已删除字段和 pending proposal，任一处非法都会拒绝整条 entry。升级后需要重新建立活动 Plan。一个 Pi session 同时只维护一个当前 Plan。`session_compact` 后持久化的结构化 Plan 原样恢复并重新作为执行权威；若 Pi 未自行 retry 被打断的 turn，active Plan 还会收到新的 continuation，避免压缩后只保留计时却遗失执行 frontier。压缩摘要只能补背景，不能覆盖 task Description 或声明交付物。
 
 ## 设计边界
 
@@ -198,7 +199,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0041](./doc/决策档案/0041-TaskPlan末任务自动收口.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md)、[ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md) 与 [ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md)、[ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md)、[ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md) 与 [ADR 0047](./doc/决策档案/0047-TaskPlan任务耗尽后显式收口.md)。
 
 ## 协议
 

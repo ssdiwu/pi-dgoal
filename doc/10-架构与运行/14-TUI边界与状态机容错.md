@@ -53,9 +53,7 @@
 
 ```text
 /dgoal <一个可快速完成的小目标>
-# Task Plan：最后一个 task 带 evidence、声明交付物的逐项 evidence（如有）与 completionReview 进入 done 后自动收口
-# Phase/Goal Plan：完成最后一个 phase 后依次调用 goal_check
-# 再由 plan_update(target=goal,status=done) 收口
+# 三档 Plan：当前 task 耗尽后保持 active；主 agent 先决定是否新增 task，再分别进入 Task Plan 的显式 goal 关闭、Phase Plan 的 phase done，或 Goal Plan 的 phase_check → phase done；最终仍由 plan_update(target=goal,status=done) 收口
 /dgoal status
 ```
 
