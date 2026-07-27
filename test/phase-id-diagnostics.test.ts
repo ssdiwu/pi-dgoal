@@ -148,7 +148,7 @@ describe("phase diagnostics preserve non-contiguous IDs in memory", () => {
       const result = await execute(tool, tool === planReadTool
         ? { target: "phase", id: 4, phaseNumber: 2 }
         : { phaseId: 4, phaseNumber: 2 });
-      expect(String(result.content?.[0]?.text ?? "")).toMatch(/not both|ambiguous/i);
+      expect(String(result.content?.[0]?.text ?? "")).toMatch(/只能提供|not both|ambiguous/i);
     }
   });
 });

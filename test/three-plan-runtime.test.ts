@@ -11,6 +11,7 @@ import dgoal, {
   __setPlanOverlayForTest,
   __setPhaseCheckOverrideForTest,
   __setProposalSemanticReviewForTest,
+  __setI18nForTest,
   goalCheckTool,
   goalPlanTool,
   phasePlanTool,
@@ -245,7 +246,7 @@ describe("Three-Plan public tool surface", () => {
     });
 
     expect(exhausted.details).toMatchObject({ target: "task", taskId: 1, status: "done", taskPlanNeedsDecision: true });
-    expect(exhausted.content[0].text).toContain("The Plan remains active");
+    expect(exhausted.content[0].text).toContain("Plan 仍保持 active");
     expect(__getGoalForTest()).toMatchObject({ status: "active", planType: "task" });
     expect(persistedStatuses.at(-1)).toBe("active");
 
@@ -271,6 +272,41 @@ describe("Three-Plan public tool surface", () => {
     expect(closed.details).toMatchObject({ target: "goal", completed: true, planType: "task", audited: false });
     expect(__getGoalForTest()).toBeUndefined();
     expect(persistedStatuses.slice(-2)).toEqual(["done", null]);
+  });
+
+
+  test("Goal Plan 任务耗尽提示走 i18n 覆盖", async () => {
+    __setGoalForTest({
+      id: "goal-plan-i18n",
+      objective: "本地化 Goal Plan 提示",
+      description: "验证任务耗尽提示的翻译入口。",
+      status: "active",
+      planType: "goal",
+      startedAt: 1,
+      updatedAt: 1,
+      iteration: 0,
+      plan: {
+        nextId: 2,
+        phases: [{
+          id: 1,
+          subject: "当前阶段",
+          description: "完成任务后进入建检决策。",
+          status: "in_progress",
+          tasks: [{ id: 1, subject: "完成实现", description: "产生可复验证据。", status: "in_progress" }],
+        }],
+      },
+    });
+    __setI18nForTest({
+      t: (key: string, params?: Record<string, string | number>) => key === "dgoal.tool.plan.goalPhaseTasksExhausted"
+        ? `Localized Goal Plan exhaustion for phase #${params?.phaseId}.`
+        : undefined,
+    });
+    try {
+      const exhausted = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "实现完成" });
+      expect(exhausted.content[0].text).toBe("Localized Goal Plan exhaustion for phase #1.");
+    } finally {
+      __setI18nForTest(undefined);
+    }
   });
 
   test("Task Plan 的交付物证据守卫与显式关闭自检都会阻止过早收口", async () => {
@@ -370,7 +406,7 @@ describe("Three-Plan public tool surface", () => {
       tasks: [{ subject: "定位" }, { subject: "修复", blockedBy: [1] }, { subject: "验证", blockedBy: [2] }],
     });
     expect(started.details).toMatchObject({ planType: "task", revision: 0 });
-    expect(started.content[0].text).toBe("Task Plan 已建立：修复键盘（0/3 tasks）");
+    expect(started.content[0].text).toBe("Task Plan 已建立：修复键盘（0/3 个 task）");
     expect(started.content[0].text).not.toContain("Start the first task");
     expect(__getGoalForTest()?.planType).toBe("task");
     expect(__getGoalForTest()?.plan?.phases).toHaveLength(1);
@@ -461,7 +497,7 @@ describe("Three-Plan public tool surface", () => {
     await execute(planUpdateTool, { target: "task", id: 1, status: "in_progress" });
     const exhausted = await execute(planUpdateTool, { target: "task", id: 1, status: "done", evidence: "实现已完成" });
     expect(exhausted.details).toMatchObject({ phaseTasksNeedDecision: true });
-    expect(exhausted.content[0].text).toContain("Before marking the phase done");
+    expect(exhausted.content[0].text).toContain("标记该 phase 为 done 前");
     const followUp = await execute(planCreateTool, { phaseId: 1, subject: "补充验证", description: "根据实现结果补充当前 phase 的验证。" });
     expect(followUp.details).toMatchObject({ target: "task", op: "create" });
   });
@@ -529,7 +565,7 @@ describe("Three-Plan public tool surface", () => {
     expect(created.details.phaseId).toBeUndefined();
     expect(created.content[0].text).not.toContain("phase");
     const read = await execute(planReadTool, { target: "plan" });
-    expect(read.content[0].text).toContain("Task Plan · 0/2 tasks");
+    expect(read.content[0].text).toContain("任务计划 · 0/2 个任务");
     expect(read.content[0].text).toContain("├─ task #1 · ○ A");
     expect(read.content[0].text).toContain("├─ task #2 · ○ B");
     expect(read.content[0].text).toContain("当前 frontier：task #1 已就绪但尚未开始");
@@ -540,11 +576,26 @@ describe("Three-Plan public tool surface", () => {
     expect(read.details).toMatchObject({ target: "plan", planType: "task", readOnly: true });
 
     const goal = await execute(planReadTool, { target: "goal" });
-    expect(goal.content[0].text).toContain("Task Plan · 0/2 tasks · active");
+    expect(goal.content[0].text).toContain("任务计划 · 0/2 个任务 · active");
     expect(goal.details.value).toBeUndefined();
 
     expect((await execute(planCreateTool, { phaseId: 1, subject: "C" })).details.error).toBe("hidden phase");
     expect((await execute(planReadTool, { target: "phase", id: 1 })).details.error).toBe("hidden phase");
+  });
+
+  test("plan_read 标题可被 i18n 覆盖", async () => {
+    __setI18nForTest({
+      t: (key: string, params?: Record<string, string | number>) => key === "dgoal.tool.plan.readTitle.task"
+        ? `Localized Task Plan · ${params?.doneTasks}/${params?.totalTasks}`
+        : undefined,
+    });
+    try {
+      await execute(taskPlanTool, { objective: "本地化读取", tasks: [{ subject: "任务" }] });
+      const read = await execute(planReadTool, { target: "plan" });
+      expect(read.content[0].text).toContain("Localized Task Plan · 0/1");
+    } finally {
+      __setI18nForTest(undefined);
+    }
   });
 
   test("plan_read projects only the latest audit feedback and completion claim", async () => {

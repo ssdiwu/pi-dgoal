@@ -8,6 +8,13 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.7.12] - 2026-07-27
+
+### Fixed
+
+- **任务耗尽提示本地化**：`plan_update(target=task,status=done)` 在 Task、Phase 与 Goal Plan 的当前 task 耗尽时，现遵循当前界面语言；不再绕过 `i18n`（国际化）直接显示英文提示。
+- **Plan 工具输出本地化**：`plan_read` 标题、Plan 创建与更新守卫、阶段/目标审核入口及其审核器异常提示现遵循当前界面语言。
+
 ## [0.7.11] - 2026-07-27
 
 ### Fixed

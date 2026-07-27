@@ -19,6 +19,8 @@ import {
   STATE_ENTRY_TYPE,
   type GoalState,
   type PlanProposal,
+  planUpdateTool,
+  taskPlanTool,
   type Task,
 } from "../index.ts";
 
@@ -241,6 +243,31 @@ describe("工具 execute 用户可见固定文案 · i18n 覆盖", () => {
       expect(String(result.content?.[0]?.text ?? "")).toBe("There is no pending /dgoal goal (startup gate is not active).");
     } finally {
       __setI18nForTest(undefined);
+    }
+  });
+
+  test("Task Plan 任务耗尽提示可被 i18n 覆盖", async () => {
+    const ctx = {
+      cwd: process.cwd(),
+      ui: { setStatus: () => {}, setWidget: () => {}, notify: () => {} },
+      sessionManager: { getBranch: () => [] },
+    } as never;
+    __resetGoalForTest();
+    __setI18nForTest({
+      t: (key: string) => key === "dgoal.tool.plan.taskExhausted" ? "Localized task exhaustion message." : undefined,
+    });
+    try {
+      await taskPlanTool.execute("task-plan-i18n", {
+        objective: "本地化提示",
+        description: "验证最后一个 task 完成时的用户可见提示。",
+        tasks: [{ subject: "完成任务", description: "完成后触发任务耗尽提示。" }],
+      }, undefined, undefined, ctx);
+      await planUpdateTool.execute("task-start", { target: "task", id: 1, status: "in_progress" }, undefined, undefined, ctx);
+      const exhausted = await planUpdateTool.execute("task-done", { target: "task", id: 1, status: "done", evidence: "任务完成" }, undefined, undefined, ctx);
+      expect(exhausted.content[0].text).toBe("Localized task exhaustion message.");
+    } finally {
+      __setI18nForTest(undefined);
+      __resetGoalForTest();
     }
   });
 });

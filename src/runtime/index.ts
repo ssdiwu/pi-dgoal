@@ -465,6 +465,69 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.goalReadyNext": "调用 plan_update(target=goal,status=done) 并提供 summary 与 verification",
       "frontier.taskPlanReady": "Task Plan 的 task 已全部带证据完成，等待主 agent 决定下一步",
       "frontier.taskPlanReadyNext": "根据新证据用 plan_create 添加 task、用 task_plan 替换计划，或回读全部 task/交付物后用 plan_update(target=goal,status=done) 显式关闭",
+      "tool.plan.taskExhausted": "Task Plan 的 task 已全部带证据完成。Plan 仍保持 active：若新证据需要追加 task，请用 plan_create；目标变化时，用 task_plan 替换 Plan；否则回读每个 task 说明与声明交付物后，调用 plan_update(target=goal,status=done) 并提供 summary 与 verification。",
+      "tool.plan.phaseTasksExhausted": "phase #{phaseId} 的当前 task 已全部带证据完成。标记该 phase 为 done 前，先判断新证据是否需要在此 phase 用 plan_create 追加 task；否则调用 plan_update(target=phase,status=done)。",
+      "tool.plan.goalPhaseTasksExhausted": "phase #{phaseId} 的当前 task 已全部带证据完成。调用 phase_check 前，先判断新证据是否需要在此 phase 用 plan_create 追加 task；否则调用 phase_check。",
+      "tool.plan.readTitle.task": "任务计划 · {doneTasks}/{totalTasks} 个任务",
+      "tool.plan.readTitle.phase": "阶段计划 · {donePhases}/{totalPhases} 个阶段 · {doneTasks}/{totalTasks} 个任务",
+      "tool.plan.readTitle.goal": "目标计划 · {donePhases}/{totalPhases} 个阶段 · {doneTasks}/{totalTasks} 个任务",
+      "tool.plan.noActive": "当前没有进行中的 Plan。",
+      "tool.plan.notMutable": "当前 Plan 不可修改。",
+      "tool.plan.hiddenPhaseCreate": "Task Plan 的结构性 phase 不对外可见；请省略 phaseId 和 phaseNumber。",
+      "tool.plan.hiddenPhaseRead": "Task Plan 的结构性 phase 不对外可见，不能读取。",
+      "tool.plan.createDescriptionRequired": "plan_create 必须提供非空 task description。",
+      "tool.plan.phaseAlreadyDone": "phase #{phaseId} 已完成。",
+      "tool.plan.createUnexpected": "plan_create 得到了意外的 reducer 结果。",
+      "tool.plan.createdTask": "已创建 task #{taskId}。",
+      "tool.plan.noReadable": "当前没有可读取的 Plan。",
+      "tool.plan.taskNotFound": "task #{taskId} 不存在。",
+      "tool.plan.goalTextFrozen": "goal 的 objective 和 description 已冻结；Task Plan 请用 task_plan 替换，已审核 Plan 请重新提案。",
+      "tool.plan.pauseReasonRequired": "暂停 Plan 必须提供具体的用户决策或授权原因。",
+      "tool.plan.goalStatusInvalid": "goal 更新只接受 status=paused 或 status=done。",
+      "tool.plan.completionDetailsRequired": "完成 Plan 必须提供 summary 和 verification。",
+      "tool.phaseCheck.noGoalPlan": "当前没有 Goal Plan。",
+      "tool.phaseCheck.notMutable": "当前 Goal Plan 不可修改。",
+      "tool.phaseCheck.wrongPlanType": "phase_check 只适用于 Goal Plan。",
+      "tool.goalCheck.noAuditedPlan": "当前没有已审核 Plan。",
+      "tool.goalCheck.notMutable": "当前已审核 Plan 不可修改。",
+      "tool.goalCheck.taskPlanUnsupported": "Task Plan 不支持独立 goal_check。",
+      "tool.goalCheck.missingCriteria": "已审核 Plan 缺少冻结的 goal 验收条件。",
+      "tool.goalCheck.phasesNotDone": "调用 goal_check 前，所有 phase 必须标记为 done。",
+      "tool.goalCheck.claimRequired": "goal_check 的 summary 和 verification 不能为空。",
+      "tool.phaseCheck.failed": "phase_check 失败：{reason}",
+      "tool.phaseCheck.auditorError": "phase_check 因审核器异常暂停：{reason}",
+      "tool.goalCheck.failed": "goal_check 失败：{reason}",
+      "tool.goalCheck.auditorError": "goal_check 因审核器异常暂停：{reason}",
+      "tool.phaseUpdate.order": "必须先完成 phase #{currentId}，才能处理 phase #{phaseId}。",
+      "tool.phaseUpdate.invalidStatus": "phase 不能使用 status={status}。",
+      "tool.phaseUpdate.reopen": "仅当 goal_check 被拒绝后，已完成 phase 才能以 status=in_progress 重开。",
+      "tool.phaseUpdate.invalidTransition": "非法 phase 状态转换：{from} → {to}。",
+      "tool.phaseUpdate.tasksNotDone": "phase #{phaseId} 的所有 task 尚未带证据完成。",
+      "tool.phaseUpdate.checkRequired": "phase #{phaseId} 标记为 done 前需要当前 revision 已通过的 phase_check。",
+      "tool.phaseUpdate.updatedStatus": "已更新 phase #{phaseId}：{from} → {to}。",
+      "tool.plan.tasksEvidenceRequired": "Task Plan 的所有 task 必须带可复验证据完成后才能收口。",
+      "tool.plan.phasesDoneRequired": "Plan 收口前，所有 phase 必须标记为 done。",
+      "tool.plan.goalCheckRequired": "Plan 收口前需要当前 revision 已通过的 goal_check。",
+      "tool.phaseUpdate.updatedDescription": "已更新 phase #{phaseId} 的 description。",
+      "tool.plan.pauseReasonTooLong": "暂停原因过长（{length}/{maxLength}）。",
+      "tool.plan.paused": "Plan 已暂停：{reason}",
+      "tool.phaseCheck.missingCriteria": "phase #{phaseId} 缺少冻结验收条件。",
+      "tool.phaseCheck.order": "必须先核验 phase #{currentId}，才能核验 phase #{phaseId}。",
+      "tool.phaseCheck.tasksNotDone": "phase #{phaseId} 的 task 尚未全部带证据完成。",
+      "tool.plan.noPhaseTree": "当前 Plan 没有 phase tree。",
+      "tool.plan.ambiguousPhaseId": "只能提供 phaseId 或 phaseNumber 之一。",
+      "tool.plan.invalidPhaseId": "必须提供有效的 phaseId 或 phaseNumber。",
+      "tool.taskPlan.explicitDgoal": "用户已明确请求 /dgoal；请提交 phase_plan 或 goal_plan，不要静默降级为 Task Plan。",
+      "tool.taskPlan.auditedPlanActive": "已有进行中的已审核 Phase Plan 或 Goal Plan，task_plan 不能替换它。",
+      "tool.taskPlan.descriptionRequired": "Task Plan 必须提供非空 description。",
+      "tool.taskPlan.objectiveAndTaskRequired": "Task Plan 必须提供非空 objective 和至少一个 task。",
+      "tool.taskPlan.created": "Task Plan 已建立：{objective}（0/{taskCount} 个 task）",
+      "tool.propose.invalidPlanType": "planType 必须为 phase 或 goal。",
+      "tool.propose.phaseSubjectRequired": "phase #{phaseNumber} 必须提供 subject。",
+      "tool.propose.phaseDescriptionRequired": "phase #{phaseNumber} 必须提供 description。",
+      "tool.propose.invalidTaskGraph": "phase #{phaseNumber}：{reason}",
+      "tool.propose.sessionChanged": "语义预审期间会话已变化，已丢弃该提案结果。",
+      "tool.propose.persistFailed": "保存 pending dgoal 失败：{reason}",
       "frontier.itemDone": "{kind} #{id} 已完成",
       "frontier.itemWaitingPhase": "{kind} #{id} 尚未到达；当前 frontier 仍在 phase #{phaseId}",
       "tool.propose.noPendingGoal": "当前没有 pending 的 /dgoal 目标（启动闸门未激活）。",
@@ -722,6 +785,69 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "frontier.goalReadyNext": "Call plan_update(target=goal,status=done) with summary and verification",
       "frontier.taskPlanReady": "all Task Plan tasks are done with evidence and the Plan awaits the main agent's decision",
       "frontier.taskPlanReadyNext": "Use plan_create for another task, task_plan to replace the Plan, or after reviewing every task and deliverable call plan_update(target=goal,status=done) to close it explicitly",
+      "tool.plan.taskExhausted": "All Task Plan tasks are done with evidence. The Plan remains active: use plan_create if new evidence calls for another task, call task_plan to replace the Plan if the goal changed, or after reviewing every task description and declared deliverable call plan_update(target=goal,status=done) with summary and verification.",
+      "tool.plan.phaseTasksExhausted": "All current tasks in phase #{phaseId} are done with evidence. Before marking the phase done, decide whether new evidence calls for plan_create in this phase; otherwise use plan_update(target=phase,status=done).",
+      "tool.plan.goalPhaseTasksExhausted": "All current tasks in phase #{phaseId} are done with evidence. Before phase_check, decide whether new evidence calls for plan_create in this phase; otherwise run phase_check.",
+      "tool.plan.readTitle.task": "Task Plan · {doneTasks}/{totalTasks} tasks",
+      "tool.plan.readTitle.phase": "Phase Plan · {donePhases}/{totalPhases} phases · {doneTasks}/{totalTasks} tasks",
+      "tool.plan.readTitle.goal": "Goal Plan · {donePhases}/{totalPhases} phases · {doneTasks}/{totalTasks} tasks",
+      "tool.plan.noActive": "No active Plan.",
+      "tool.plan.notMutable": "Current Plan is not mutable.",
+      "tool.plan.hiddenPhaseCreate": "Task Plan's structural phase is internal; omit phaseId and phaseNumber.",
+      "tool.plan.hiddenPhaseRead": "Task Plan's structural phase is internal and cannot be read.",
+      "tool.plan.createDescriptionRequired": "plan_create requires a non-empty task description.",
+      "tool.plan.phaseAlreadyDone": "phase #{phaseId} is already done.",
+      "tool.plan.createUnexpected": "Unexpected plan_create reducer result.",
+      "tool.plan.createdTask": "Created task #{taskId}.",
+      "tool.plan.noReadable": "No readable Plan.",
+      "tool.plan.taskNotFound": "task #{taskId} not found.",
+      "tool.plan.goalTextFrozen": "goal objective and description are frozen; replace a Task Plan with task_plan or re-propose an audited Plan.",
+      "tool.plan.pauseReasonRequired": "Pausing a Plan requires a concrete user decision or authorization reason.",
+      "tool.plan.goalStatusInvalid": "goal update only accepts status=paused or status=done.",
+      "tool.plan.completionDetailsRequired": "Finishing a Plan requires summary and verification.",
+      "tool.phaseCheck.noGoalPlan": "No Goal Plan.",
+      "tool.phaseCheck.notMutable": "Current Goal Plan is not mutable.",
+      "tool.phaseCheck.wrongPlanType": "phase_check is available only for Goal Plan.",
+      "tool.goalCheck.noAuditedPlan": "No audited Plan.",
+      "tool.goalCheck.notMutable": "Current audited Plan is not mutable.",
+      "tool.goalCheck.taskPlanUnsupported": "Task Plan has no independent goal_check.",
+      "tool.goalCheck.missingCriteria": "The audited Plan has no frozen goal acceptance criteria.",
+      "tool.goalCheck.phasesNotDone": "All phases must be marked done before goal_check.",
+      "tool.goalCheck.claimRequired": "goal_check summary and verification cannot be blank.",
+      "tool.phaseCheck.failed": "phase_check failed: {reason}",
+      "tool.phaseCheck.auditorError": "phase_check paused after auditor error: {reason}",
+      "tool.goalCheck.failed": "goal_check failed: {reason}",
+      "tool.goalCheck.auditorError": "goal_check paused after auditor error: {reason}",
+      "tool.phaseUpdate.order": "phase #{currentId} must be completed before phase #{phaseId}.",
+      "tool.phaseUpdate.invalidStatus": "phase cannot use status={status}.",
+      "tool.phaseUpdate.reopen": "A done phase can be reopened only with status=in_progress after a rejected goal_check.",
+      "tool.phaseUpdate.invalidTransition": "Illegal phase transition {from} → {to}.",
+      "tool.phaseUpdate.tasksNotDone": "phase #{phaseId} tasks are not all done with evidence.",
+      "tool.phaseUpdate.checkRequired": "phase #{phaseId} requires a current approved phase_check before it can be marked done.",
+      "tool.phaseUpdate.updatedStatus": "Updated phase #{phaseId}: {from} → {to}.",
+      "tool.phaseUpdate.updatedDescription": "Updated phase #{phaseId} description.",
+      "tool.plan.tasksEvidenceRequired": "Task Plan cannot finish until every task is done with reproducible evidence.",
+      "tool.plan.phasesDoneRequired": "All phases must be marked done before the Plan can finish.",
+      "tool.plan.pauseReasonTooLong": "Pause reason is too long ({length}/{maxLength}).",
+      "tool.plan.goalCheckRequired": "A current approved goal_check is required before the Plan can finish.",
+      "tool.plan.paused": "Plan paused: {reason}",
+      "tool.phaseCheck.missingCriteria": "phase #{phaseId} has no frozen acceptance criteria.",
+      "tool.plan.noPhaseTree": "Current Plan has no phase tree.",
+      "tool.plan.ambiguousPhaseId": "Provide phaseId or phaseNumber, not both.",
+      "tool.plan.invalidPhaseId": "A valid phaseId or phaseNumber is required.",
+      "tool.phaseCheck.order": "phase #{currentId} must be checked before phase #{phaseId}.",
+      "tool.taskPlan.explicitDgoal": "The user explicitly requested /dgoal; submit phase_plan or goal_plan instead of silently downgrading to Task Plan.",
+      "tool.taskPlan.auditedPlanActive": "An audited Phase Plan or Goal Plan is already active; task_plan cannot replace it.",
+      "tool.phaseCheck.tasksNotDone": "phase #{phaseId} tasks are not all done with evidence.",
+      "tool.taskPlan.descriptionRequired": "Task Plan requires a non-empty description.",
+      "tool.taskPlan.objectiveAndTaskRequired": "Task Plan requires a non-empty objective and at least one task.",
+      "tool.taskPlan.created": "Task Plan created: {objective} (0/{taskCount} tasks)",
+      "tool.propose.invalidPlanType": "planType must be phase or goal.",
+      "tool.propose.invalidTaskGraph": "phase #{phaseNumber}: {reason}",
+      "tool.propose.phaseSubjectRequired": "phase #{phaseNumber} subject is required.",
+      "tool.propose.phaseDescriptionRequired": "phase #{phaseNumber} description is required.",
+      "tool.propose.sessionChanged": "Proposal result discarded because the session changed during semantic review.",
+      "tool.propose.persistFailed": "Failed to persist pending dgoal: {reason}",
       "frontier.itemDone": "{kind} #{id} is done",
       "frontier.itemWaitingPhase": "{kind} #{id} is not at the current frontier; work remains in phase #{phaseId}",
       "tool.propose.noPendingGoal": "There is no pending /dgoal goal (startup gate is not active).",
@@ -1690,7 +1816,7 @@ const auditedPlanProposalTool = defineTool({
     const raw = params as Record<string, unknown>;
     const planType = raw.planType === "phase" ? "phase" : raw.planType === "goal" ? "goal" : undefined;
     if (!planType) {
-      return { content: [{ type: "text", text: "planType must be phase or goal." }], details: { error: "invalid plan type" }, isError: true };
+      return { content: [{ type: "text", text: t("tool.propose.invalidPlanType") }], details: { error: "invalid plan type" }, isError: true };
     }
     const objective = String(raw.objective ?? "").trim();
     const description = String(raw.description ?? "").trim();
@@ -1720,14 +1846,14 @@ const auditedPlanProposalTool = defineTool({
     });
     for (const [phaseIndex, phase] of normalizedPhases.entries()) {
       if (!phase.subject) {
-        return { content: [{ type: "text", text: `phase #${phaseIndex + 1} subject is required.` }], details: { error: "invalid phase subject" }, isError: true };
+        return { content: [{ type: "text", text: t("tool.propose.phaseSubjectRequired", { phaseNumber: phaseIndex + 1 }) }], details: { error: "invalid phase subject" }, isError: true };
       }
       if (!phase.description) {
-        return { content: [{ type: "text", text: `phase #${phaseIndex + 1} description is required.` }], details: { error: "invalid phase description" }, isError: true };
+        return { content: [{ type: "text", text: t("tool.propose.phaseDescriptionRequired", { phaseNumber: phaseIndex + 1 }) }], details: { error: "invalid phase description" }, isError: true };
       }
       const taskValidation = makeInitialTasks(phase.tasks ?? [], 1);
       if (taskValidation.error) {
-        return { content: [{ type: "text", text: `phase #${phaseIndex + 1}: ${taskValidation.error}` }], details: { error: "invalid task graph", phaseNumber: phaseIndex + 1 }, isError: true };
+        return { content: [{ type: "text", text: t("tool.propose.invalidTaskGraph", { phaseNumber: phaseIndex + 1, reason: taskValidation.error }) }], details: { error: "invalid task graph", phaseNumber: phaseIndex + 1 }, isError: true };
       }
     }
     const invalid = validateProposalInput({
@@ -1781,7 +1907,7 @@ const auditedPlanProposalTool = defineTool({
     }
     if (goalRuntimeState.sessionGeneration !== proposalSessionGeneration || goalRuntimeState.currentGoal?.id !== proposalGoalId) {
       return {
-        content: [{ type: "text", text: "Proposal result discarded because the session changed during semantic review." }],
+        content: [{ type: "text", text: t("tool.propose.sessionChanged") }],
         details: { error: "session changed during semantic review", stale: true },
         isError: false,
       };
@@ -1803,7 +1929,7 @@ const auditedPlanProposalTool = defineTool({
         persistGoal(createdGoal, nextPendingProposal);
       } catch (error) {
         return {
-          content: [{ type: "text", text: `Failed to persist pending dgoal: ${formatError(error)}` }],
+          content: [{ type: "text", text: t("tool.propose.persistFailed", { reason: formatError(error) }) }],
           details: { error: "pending goal persistence failed", reason: formatError(error) },
           isError: true,
         };
@@ -2041,19 +2167,19 @@ export const taskPlanTool = definePublicTool({
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const current = restoreGoalIfMissing(ctx);
     if (!current && goalRuntimeState.naturalLanguageStartAuthorized) {
-      return { content: [{ type: "text", text: "The user explicitly requested /dgoal; submit phase_plan or goal_plan instead of silently downgrading to Task Plan." }], details: { error: "explicit dgoal requested" }, isError: true };
+      return { content: [{ type: "text", text: t("tool.taskPlan.explicitDgoal") }], details: { error: "explicit dgoal requested" }, isError: true };
     }
     const taskPlanNoProgressRecovery = current?.status === "paused" && resolvePlanType(current) === "task" && current.pauseReason === "no_progress";
     if (current?.status === "paused" && !taskPlanNoProgressRecovery) return pausedGoalResult(current);
     if (current && resolvePlanType(current) !== "task" && current.status !== "done") {
-      return { content: [{ type: "text", text: "An audited Phase Plan or Goal Plan is already active; task_plan cannot replace it." }], details: { error: "audited plan active" }, isError: true };
+      return { content: [{ type: "text", text: t("tool.taskPlan.auditedPlanActive") }], details: { error: "audited plan active" }, isError: true };
     }
     const objective = String(params.objective ?? "").trim();
     const description = String(params.description ?? "").trim();
     const built = makeInitialTasks(params.tasks as Array<{ subject: string; description?: string; blockedBy?: number[] }>, 1);
     if (!objective || !description || built.error || !built.tasks?.length) {
-      const error = built.error ?? (!description ? "Task Plan requires a non-empty description." : "Task Plan requires a non-empty objective and at least one task.");
-      return { content: [{ type: "text", text: error }], details: { error: error === "Task Plan requires a non-empty description." ? "no description" : built.error ?? "invalid task plan" }, isError: true };
+      const error = built.error ?? (!description ? t("tool.taskPlan.descriptionRequired") : t("tool.taskPlan.objectiveAndTaskRequired"));
+      return { content: [{ type: "text", text: error }], details: { error: error === t("tool.taskPlan.descriptionRequired") ? "no description" : built.error ?? "invalid task plan" }, isError: true };
     }
     const beforeProgressFingerprint = buildDurableProgressFingerprint(goalRuntimeState.currentGoal);
     const now = Date.now();
@@ -2105,7 +2231,7 @@ export const taskPlanTool = definePublicTool({
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     ensurePlanOverlay(ctx);
     return {
-      content: [{ type: "text", text: `Task Plan 已建立：${objective}（0/${built.tasks.length} tasks）` }],
+      content: [{ type: "text", text: t("tool.taskPlan.created", { objective, taskCount: built.tasks.length }) }],
       details: {
         planType: "task",
         objective,
@@ -2201,22 +2327,22 @@ export const goalPlanTool = definePublicTool({
 });
 
 function resolveToolPhase(goal: GoalState, phaseId: unknown, phaseNumber: unknown): { phase?: Phase; error?: ReturnType<typeof formatPhaseNotFoundResult> | { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } } {
-  if (!goal.plan) return { error: { content: [{ type: "text", text: "Current Plan has no phase tree." }], details: { error: "no plan" } } };
+  if (!goal.plan) return { error: { content: [{ type: "text", text: t("tool.plan.noPhaseTree") }], details: { error: "no plan" } } };
   if (phaseId !== undefined && phaseNumber !== undefined) {
-    return { error: { content: [{ type: "text", text: "Provide phaseId or phaseNumber, not both." }], details: { error: "ambiguous phase identifier" } } };
+    return { error: { content: [{ type: "text", text: t("tool.plan.ambiguousPhaseId") }], details: { error: "ambiguous phase identifier" } } };
   }
   let id: number | undefined;
   if (phaseNumber !== undefined) {
     const number = Number(phaseNumber);
     if (!Number.isInteger(number) || number < 1) {
-      return { error: { content: [{ type: "text", text: "A valid phaseId or phaseNumber is required." }], details: { error: "invalid phase number" } } };
+      return { error: { content: [{ type: "text", text: t("tool.plan.invalidPhaseId") }], details: { error: "invalid phase number" } } };
     }
     id = phaseNumberToId(goal, number);
     if (id === undefined) return { error: formatPhaseNotFoundResult(goal, number) };
   } else {
     id = Number(phaseId ?? currentUncheckedPhase(goal)?.id);
   }
-  if (!Number.isFinite(id)) return { error: { content: [{ type: "text", text: "A valid phaseId or phaseNumber is required." }], details: { error: "missing phase identifier" } } };
+  if (!Number.isFinite(id)) return { error: { content: [{ type: "text", text: t("tool.plan.invalidPhaseId") }], details: { error: "missing phase identifier" } } };
   const phase = goal.plan.phases.find((item) => item.id === id);
   return phase ? { phase } : { error: formatPhaseNotFoundResult(goal, id) };
 }
@@ -2239,21 +2365,21 @@ export const planCreateTool = definePublicTool({
   prepareArguments: prepareEntryTaskArrays as never,
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
-    if (!goal) return { content: [{ type: "text", text: "No active Plan." }], details: { error: "no plan" } };
+    if (!goal) return { content: [{ type: "text", text: t("tool.plan.noActive") }], details: { error: "no plan" } };
     if (goal.status === "paused") return pausedGoalResult(goal);
-    if (!isGoalMutable(goal.status) || !goal.plan) return { content: [{ type: "text", text: "Current Plan is not mutable." }], details: { error: "plan not mutable" } };
+    if (!isGoalMutable(goal.status) || !goal.plan) return { content: [{ type: "text", text: t("tool.plan.notMutable") }], details: { error: "plan not mutable" } };
     if (resolvePlanType(goal) === "task" && (params.phaseId !== undefined || params.phaseNumber !== undefined)) {
-      return { content: [{ type: "text", text: "Task Plan's structural phase is internal; omit phaseId and phaseNumber." }], details: { error: "hidden phase" }, isError: true };
+      return { content: [{ type: "text", text: t("tool.plan.hiddenPhaseCreate") }], details: { error: "hidden phase" }, isError: true };
     }
     const description = String(params.description ?? "").trim();
-    if (!description) return { content: [{ type: "text", text: "plan_create requires a non-empty task description." }], details: { error: "no description" }, isError: true };
+    if (!description) return { content: [{ type: "text", text: t("tool.plan.createDescriptionRequired") }], details: { error: "no description" }, isError: true };
     const resolved = resolveToolPhase(goal, params.phaseId, params.phaseNumber);
     if (resolved.error) return resolved.error;
     const phase = resolved.phase!;
-    if (isDonePlanStatus(phase.status)) return { content: [{ type: "text", text: `phase #${phase.id} is already done.` }], details: { error: "phase done" } };
+    if (isDonePlanStatus(phase.status)) return { content: [{ type: "text", text: t("tool.plan.phaseAlreadyDone", { phaseId: phase.id }) }], details: { error: "phase done" } };
     const result = applyPlanMutation(goal, "create", { ...params, description, phaseId: phase.id });
     if (result.op.kind === "error") return { content: [{ type: "text", text: formatPlanResult(result.op) }], details: { error: result.op.message } };
-    if (result.op.kind !== "create") return { content: [{ type: "text", text: "Unexpected plan_create reducer result." }], details: { error: "unexpected reducer result" }, isError: true };
+    if (result.op.kind !== "create") return { content: [{ type: "text", text: t("tool.plan.createUnexpected") }], details: { error: "unexpected reducer result" }, isError: true };
     const createdTaskId = result.op.taskId;
     goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
     clearCurrentCheckSnapshot();
@@ -2262,7 +2388,7 @@ export const planCreateTool = definePublicTool({
     const taskPlan = resolvePlanType(goal) === "task";
     const createdTask = flattenTasks(goalRuntimeState.currentGoal.plan).find((task) => task.id === createdTaskId);
     return {
-      content: [{ type: "text", text: taskPlan ? `Created task #${createdTaskId}.` : formatPlanResult(result.op) }],
+      content: [{ type: "text", text: taskPlan ? t("tool.plan.createdTask", { taskId: createdTaskId }) : formatPlanResult(result.op) }],
       details: {
         target: "task",
         op: "create",
@@ -2288,7 +2414,7 @@ export const planReadTool = definePublicTool({
   }),
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
-    if (!goal || !isGoalReadable(goal.status)) return { content: [{ type: "text", text: "No readable Plan." }], details: { error: "no plan" } };
+    if (!goal || !isGoalReadable(goal.status)) return { content: [{ type: "text", text: t("tool.plan.noReadable") }], details: { error: "no plan" } };
     const target = params.target ?? "plan";
     let value: unknown;
     if (target === "goal") {
@@ -2306,14 +2432,14 @@ export const planReadTool = definePublicTool({
         };
     } else if (target === "phase") {
       if (resolvePlanType(goal) === "task") {
-        return { content: [{ type: "text", text: "Task Plan's structural phase is internal and cannot be read." }], details: { error: "hidden phase" }, isError: true };
+        return { content: [{ type: "text", text: t("tool.plan.hiddenPhaseRead") }], details: { error: "hidden phase" }, isError: true };
       }
       const resolved = resolveToolPhase(goal, params.id, params.phaseNumber);
       if (resolved.error) return resolved.error;
       value = resolved.phase;
     } else if (target === "task") {
       const task = flattenTasks(goal.plan).find((item) => item.id === Number(params.id));
-      if (!task) return { content: [{ type: "text", text: `task #${params.id ?? "?"} not found.` }], details: { error: "task not found" } };
+      if (!task) return { content: [{ type: "text", text: t("tool.plan.taskNotFound", { taskId: params.id ?? "?" }) }], details: { error: "task not found" } };
       value = task;
     } else if (resolvePlanType(goal) === "task") {
       value = { objective: goal.objective, description: goal.description, planType: "task", status: goal.status, revision: goal.plan?.revision, tasks: goal.plan?.phases[0]?.tasks ?? [] };
@@ -2392,9 +2518,12 @@ function formatPlanReadSummary(value: unknown, target: string, planType: PlanTyp
     ].join("\n");
   }
   const view = derivePlanView(goal)!;
-  const title = planType === "task"
-    ? `Task Plan · ${view.doneTasks}/${view.totalTasks} tasks`
-    : `${planType[0].toUpperCase()}${planType.slice(1)} Plan · ${view.donePhases}/${view.totalPhases} phases · ${view.doneTasks}/${view.totalTasks} tasks`;
+  const title = t(`tool.plan.readTitle.${planType}`, {
+    donePhases: view.donePhases,
+    totalPhases: view.totalPhases,
+    doneTasks: view.doneTasks,
+    totalTasks: view.totalTasks,
+  });
   const goalDescription = typeof record.description === "string" ? record.description : "";
   if (target === "goal") return [`${title} · ${record.status}`, `目标：${record.objective ?? ""}`, `说明：${goalDescription}`, ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal), ...formatLatestAuditReadLines(goal)].join("\n");
   if (planType === "task") return [title, `说明：${goalDescription}`, ...tasks.map((task) => formatTaskDisplay(task, `├─ task #${task.id} · `)), ...formatFrontierReadLines(goal), ...buildTaskGraphTextLines(goal)].join("\n");
@@ -2447,21 +2576,21 @@ export const planUpdateTool = definePublicTool({
   },
   async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
-    if (!goal) return { content: [{ type: "text", text: "No active Plan." }], details: { error: "no plan" } };
+    if (!goal) return { content: [{ type: "text", text: t("tool.plan.noActive") }], details: { error: "no plan" } };
     const planType = resolvePlanType(goal);
     const taskPlanNoProgressClosure = goal.status === "paused" && planType === "task" && goal.pauseReason === "no_progress" && params.target === "goal" && params.status === "done";
     if (goal.status === "paused" && !taskPlanNoProgressClosure) return pausedGoalResult(goal);
-    if ((!isGoalMutable(goal.status) && !taskPlanNoProgressClosure) || !goal.plan) return { content: [{ type: "text", text: "Current Plan is not mutable." }], details: { error: "plan not mutable" } };
+    if ((!isGoalMutable(goal.status) && !taskPlanNoProgressClosure) || !goal.plan) return { content: [{ type: "text", text: t("tool.plan.notMutable") }], details: { error: "plan not mutable" } };
 
     if (params.target === "task") {
       const taskId = Number(params.id);
       if (params.description !== undefined && !String(params.description).trim()) {
-        return { content: [{ type: "text", text: "task description cannot be blank." }], details: { error: "description cannot be blank" }, isError: true };
+        return { content: [{ type: "text", text: t("plan.error.descriptionCannotBeBlank") }], details: { error: "description cannot be blank" }, isError: true };
       }
       const phaseIndex = findPhaseByTask(goal.plan, taskId);
-      if (phaseIndex < 0) return { content: [{ type: "text", text: `task #${params.id ?? "?"} not found.` }], details: { error: "task not found" } };
+      if (phaseIndex < 0) return { content: [{ type: "text", text: t("tool.plan.taskNotFound", { taskId: params.id ?? "?" }) }], details: { error: "task not found" } };
       const phase = goal.plan.phases[phaseIndex];
-      if (isDonePlanStatus(phase.status)) return { content: [{ type: "text", text: `phase #${phase.id} is already done.` }], details: { error: "phase done" } };
+      if (isDonePlanStatus(phase.status)) return { content: [{ type: "text", text: t("tool.plan.phaseAlreadyDone", { phaseId: phase.id }) }], details: { error: "phase done" } };
       const result = applyPlanMutation(goal, "update", {
         ...(params as unknown as Record<string, unknown>),
         ...(params.description !== undefined ? { description: String(params.description).trim() } : {}),
@@ -2471,11 +2600,11 @@ export const planUpdateTool = definePublicTool({
       const taskPlanNeedsDecision = planType === "task" && allCurrentPhaseTasksDone;
       const phaseTasksNeedDecision = planType !== "task" && allCurrentPhaseTasksDone;
       const taskExhaustionMessage = taskPlanNeedsDecision
-        ? "All Task Plan tasks are done with evidence. The Plan remains active: use plan_create if new evidence calls for another task, call task_plan to replace the Plan if the goal changed, or after reviewing every task description and declared deliverable call plan_update(target=goal,status=done) with summary and verification."
+        ? t("tool.plan.taskExhausted")
         : phaseTasksNeedDecision && planType === "phase"
-          ? `All current tasks in phase #${phase.id} are done with evidence. Before marking the phase done, decide whether new evidence calls for plan_create in this phase; otherwise use plan_update(target=phase,status=done).`
+          ? t("tool.plan.phaseTasksExhausted", { phaseId: phase.id })
           : phaseTasksNeedDecision
-            ? `All current tasks in phase #${phase.id} are done with evidence. Before phase_check, decide whether new evidence calls for plan_create in this phase; otherwise run phase_check.`
+            ? t("tool.plan.goalPhaseTasksExhausted", { phaseId: phase.id })
             : undefined;
       goalRuntimeState.currentGoal = invalidatePhaseAndGoalCheck(result.goal, phase.id);
       clearCurrentCheckSnapshot();
@@ -2499,41 +2628,41 @@ export const planUpdateTool = definePublicTool({
     }
 
     if (params.target === "phase") {
-      if (planType === "task") return { content: [{ type: "text", text: "Task Plan's structural phase is internal and cannot be updated." }], details: { error: "hidden phase" }, isError: true };
+      if (planType === "task") return { content: [{ type: "text", text: t("tool.plan.hiddenPhaseRead") }], details: { error: "hidden phase" }, isError: true };
       const resolved = resolveToolPhase(goal, params.id, params.phaseNumber);
       if (resolved.error) return resolved.error;
       const phase = resolved.phase!;
       const current = currentUncheckedPhase(goal);
-      if (current && current.id !== phase.id) return { content: [{ type: "text", text: `phase #${current.id} must be completed before phase #${phase.id}.` }], details: { error: "phase order violation" } };
+      if (current && current.id !== phase.id) return { content: [{ type: "text", text: t("tool.phaseUpdate.order", { currentId: current.id, phaseId: phase.id }) }], details: { error: "phase order violation" } };
       const rawStatus = params.status as string | undefined;
       const nextSubject = params.subject === undefined ? phase.subject : String(params.subject).trim();
       const nextDescription = params.description === undefined ? phase.description : String(params.description).trim();
-      if (!nextSubject) return { content: [{ type: "text", text: "phase subject cannot be blank." }], details: { error: "subject cannot be blank" }, isError: true };
-      if (params.description !== undefined && !nextDescription) return { content: [{ type: "text", text: "phase description cannot be blank." }], details: { error: "description cannot be blank" }, isError: true };
+      if (!nextSubject) return { content: [{ type: "text", text: t("plan.error.subjectCannotBeBlank") }], details: { error: "subject cannot be blank" }, isError: true };
+      if (params.description !== undefined && !nextDescription) return { content: [{ type: "text", text: t("plan.error.descriptionCannotBeBlank") }], details: { error: "description cannot be blank" }, isError: true };
       const hasMetadataUpdate = params.subject !== undefined || params.description !== undefined;
-      if (!rawStatus && !hasMetadataUpdate) return { content: [{ type: "text", text: "phase update requires status, subject, or description." }], details: { error: "missing mutable field" } };
-      if (isDonePlanStatus(phase.status) && !rawStatus) return { content: [{ type: "text", text: "A done phase must be reopened before its description can change." }], details: { error: "phase done" } };
+      if (!rawStatus && !hasMetadataUpdate) return { content: [{ type: "text", text: t("plan.error.updateRequiresMutableField") }], details: { error: "missing mutable field" } };
+      if (isDonePlanStatus(phase.status) && !rawStatus) return { content: [{ type: "text", text: t("tool.plan.phaseAlreadyDone", { phaseId: phase.id }) }], details: { error: "phase done" } };
       const allowedPhaseStatuses: PlanStatus[] = ["pending", "in_progress", "done", "blocked"];
       if (rawStatus && !allowedPhaseStatuses.includes(rawStatus as PlanStatus)) {
-        return { content: [{ type: "text", text: `phase cannot use status=${rawStatus}.` }], details: { error: "invalid phase status" }, isError: true };
+        return { content: [{ type: "text", text: t("tool.phaseUpdate.invalidStatus", { status: rawStatus }) }], details: { error: "invalid phase status" }, isError: true };
       }
       const nextStatus = rawStatus ? rawStatus as PlanStatus : phase.status;
       const reopeningAfterGoalRejection = Boolean(rawStatus) && isDonePlanStatus(phase.status) && !isDonePlanStatus(nextStatus);
       if (reopeningAfterGoalRejection && (nextStatus !== "in_progress" || goal.goalCheck?.status !== "rejected")) {
-        return { content: [{ type: "text", text: "A done phase can be reopened only with status=in_progress after a rejected goal_check." }], details: { error: "phase done" } };
+        return { content: [{ type: "text", text: t("tool.phaseUpdate.reopen") }], details: { error: "phase done" } };
       }
       if (rawStatus && !reopeningAfterGoalRejection && !isTaskTransitionValid(phase.status, nextStatus)) {
-        return { content: [{ type: "text", text: `Illegal phase transition ${phase.status} → ${nextStatus}.` }], details: { error: "illegal phase transition" }, isError: true };
+        return { content: [{ type: "text", text: t("tool.phaseUpdate.invalidTransition", { from: phase.status, to: nextStatus }) }], details: { error: "illegal phase transition" }, isError: true };
       }
       if (rawStatus && isDonePlanStatus(nextStatus)) {
-        if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: `phase #${phase.id} tasks are not all done with evidence.` }], details: { error: "tasks not done" } };
+        if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: t("tool.phaseUpdate.tasksNotDone", { phaseId: phase.id }) }], details: { error: "tasks not done" } };
         if (planType === "goal" && (phase.check?.status !== "approved" || phase.check.revision !== phaseRevision(phase))) {
-          return { content: [{ type: "text", text: `phase #${phase.id} requires a current approved phase_check before it can be marked done.` }], details: { error: "phase check required" } };
+          return { content: [{ type: "text", text: t("tool.phaseUpdate.checkRequired", { phaseId: phase.id }) }], details: { error: "phase check required" } };
         }
       }
       const requestedBlockedReason = params.blockedReason === undefined ? undefined : String(params.blockedReason).trim();
       const effectiveBlockedReason = requestedBlockedReason ?? phase.blockedReason?.trim();
-      if (nextStatus === "blocked" && !effectiveBlockedReason) return { content: [{ type: "text", text: "blocked phase requires blockedReason." }], details: { error: "missing blocked reason" } };
+      if (nextStatus === "blocked" && !effectiveBlockedReason) return { content: [{ type: "text", text: t("plan.error.blockedNeedsReason") }], details: { error: "missing blocked reason" } };
       const phases = goal.plan.phases.map((item) => {
         if (item.id !== phase.id) return item;
         const updated: Phase = { ...item, subject: nextSubject, description: nextDescription, status: nextStatus };
@@ -2550,7 +2679,7 @@ export const planUpdateTool = definePublicTool({
       safeUpdatePlanOverlay();
       const updatedPhase = goalRuntimeState.currentGoal.plan.phases.find((item) => item.id === phase.id);
       return {
-        content: [{ type: "text", text: rawStatus ? `Updated phase #${phase.id}: ${phase.status} → ${nextStatus}.` : `Updated phase #${phase.id} description.` }],
+        content: [{ type: "text", text: rawStatus ? t("tool.phaseUpdate.updatedStatus", { phaseId: phase.id, from: phase.status, to: nextStatus }) : t("tool.phaseUpdate.updatedDescription", { phaseId: phase.id }) }],
         details: {
           target: "phase",
           phaseId: phase.id,
@@ -2567,13 +2696,13 @@ export const planUpdateTool = definePublicTool({
     // 真实非空文本（及任何非字符串值）仍必须被拒绝，不能借收口路径改 goal。
     const hasFrozenGoalTextUpdate = (value: unknown) => typeof value === "string" ? value.trim().length > 0 : value != null;
     if (hasFrozenGoalTextUpdate(params.subject) || hasFrozenGoalTextUpdate(params.description)) {
-      return { content: [{ type: "text", text: "goal objective and description are frozen; replace a Task Plan with task_plan or re-propose an audited Plan." }], details: { error: "goal description frozen" }, isError: true };
+      return { content: [{ type: "text", text: t("tool.plan.goalTextFrozen") }], details: { error: "goal description frozen" }, isError: true };
     }
     const requestedStatus = params.status;
     if (requestedStatus === "paused") {
       const reason = String(params.reason ?? "").trim();
-      if (!reason) return { content: [{ type: "text", text: "Pausing a Plan requires a concrete user decision or authorization reason." }], details: { error: "missing pause reason" } };
-      if (reason.length > MAX_PAUSE_REASON_DETAIL_LENGTH) return { content: [{ type: "text", text: `Pause reason is too long (${reason.length}/${MAX_PAUSE_REASON_DETAIL_LENGTH}).` }], details: { error: "pause reason too long" }, isError: true };
+      if (!reason) return { content: [{ type: "text", text: t("tool.plan.pauseReasonRequired") }], details: { error: "missing pause reason" } };
+      if (reason.length > MAX_PAUSE_REASON_DETAIL_LENGTH) return { content: [{ type: "text", text: t("tool.plan.pauseReasonTooLong", { length: reason.length, maxLength: MAX_PAUSE_REASON_DETAIL_LENGTH }) }], details: { error: "pause reason too long" }, isError: true };
       cancelPendingContinuation();
       resetProgressStreaks(goalRuntimeState);
       goalRuntimeState.currentGoal = markGoalPaused(goal, Date.now(), { pauseReason: "agent_blocked", pauseReasonDetail: reason });
@@ -2581,23 +2710,21 @@ export const planUpdateTool = definePublicTool({
       persistGoal(goalRuntimeState.currentGoal);
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
-      return { content: [{ type: "text", text: `Plan paused: ${reason}` }], details: { target: "goal", status: "paused", pauseReason: "agent_blocked" }, terminate: true };
+      return { content: [{ type: "text", text: t("tool.plan.paused", { reason }) }], details: { target: "goal", status: "paused", pauseReason: "agent_blocked" }, terminate: true };
     }
-    if (requestedStatus !== "done") return { content: [{ type: "text", text: "goal update only accepts status=paused or status=done." }], details: { error: "invalid goal status" } };
+    if (requestedStatus !== "done") return { content: [{ type: "text", text: t("tool.plan.goalStatusInvalid") }], details: { error: "invalid goal status" } };
     const allPhasesDone = goal.plan.phases.length > 0 && goal.plan.phases.every((phase) => isDonePlanStatus(phase.status));
     if (planType === "task") {
-      if (!allPlanTasksDoneWithEvidence(goal.plan)) return { content: [{ type: "text", text: "Task Plan cannot finish until every task is done with reproducible evidence." }], details: { error: "tasks not done" } };
+      if (!allPlanTasksDoneWithEvidence(goal.plan)) return { content: [{ type: "text", text: t("tool.plan.tasksEvidenceRequired") }], details: { error: "tasks not done" } };
     } else {
-      if (!allPhasesDone) return { content: [{ type: "text", text: "All phases must be marked done before the Plan can finish." }], details: { error: "phases not done" } };
+      if (!allPhasesDone) return { content: [{ type: "text", text: t("tool.plan.phasesDoneRequired") }], details: { error: "phases not done" } };
       if (goal.goalCheck?.status !== "approved" || goal.goalCheck.revision !== (goal.plan.revision ?? 0)) {
-        return { content: [{ type: "text", text: "A current approved goal_check is required before the Plan can finish." }], details: { error: "goal check required" } };
+        return { content: [{ type: "text", text: t("tool.plan.goalCheckRequired") }], details: { error: "goal check required" } };
       }
     }
     const summary = String(params.summary ?? "").trim();
     const verification = String(params.verification ?? "").trim();
-    if (!summary || !verification) return { content: [{ type: "text", text: planType === "task"
-      ? "Finishing a Task Plan requires summary and verification after reviewing every task description and declared deliverable."
-      : "Finishing a Plan requires summary and verification." }], details: { error: "missing completion details" } };
+    if (!summary || !verification) return { content: [{ type: "text", text: t("tool.plan.completionDetailsRequired") }], details: { error: "missing completion details" } };
     const whatChanged = normalizeStringList((params as unknown as Record<string, unknown>).whatChanged) ?? [];
     const userReview = trimOptionalText((params as unknown as Record<string, unknown>).userReview);
     const completionGoal = goal;
@@ -2666,17 +2793,17 @@ export const phaseCheckTool = definePublicTool({
   parameters: strictSchemaObject({ phaseId: Type.Optional(Type.Number()), phaseNumber: Type.Optional(Type.Number()) }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
-    if (!goal || !goal.plan) return { content: [{ type: "text", text: "No Goal Plan." }], details: { error: "no goal plan" } };
+    if (!goal || !goal.plan) return { content: [{ type: "text", text: t("tool.phaseCheck.noGoalPlan") }], details: { error: "no goal plan" } };
     if (goal.status === "paused") return pausedGoalResult(goal);
-    if (!isGoalMutable(goal.status)) return { content: [{ type: "text", text: "Current Goal Plan is not mutable." }], details: { error: "plan not mutable" } };
-    if (resolvePlanType(goal) !== "goal") return { content: [{ type: "text", text: "phase_check is available only for Goal Plan." }], details: { error: "wrong plan type" }, isError: true };
+    if (!isGoalMutable(goal.status)) return { content: [{ type: "text", text: t("tool.phaseCheck.notMutable") }], details: { error: "plan not mutable" } };
+    if (resolvePlanType(goal) !== "goal") return { content: [{ type: "text", text: t("tool.phaseCheck.wrongPlanType") }], details: { error: "wrong plan type" }, isError: true };
     const resolved = resolveToolPhase(goal, params.phaseId, params.phaseNumber);
     if (resolved.error) return resolved.error;
     const phase = resolved.phase!;
-    if (!phase.acceptanceCriteria?.length) return { content: [{ type: "text", text: `phase #${phase.id} has no frozen acceptance criteria.` }], details: { error: "missing phase acceptance criteria" }, isError: true };
+    if (!phase.acceptanceCriteria?.length) return { content: [{ type: "text", text: t("tool.phaseCheck.missingCriteria", { phaseId: phase.id }) }], details: { error: "missing phase acceptance criteria" }, isError: true };
     const current = currentUncheckedPhase(goal);
-    if (current && current.id !== phase.id) return { content: [{ type: "text", text: `phase #${current.id} must be checked before phase #${phase.id}.` }], details: { error: "phase order violation" } };
-    if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: `phase #${phase.id} tasks are not all done with evidence.` }], details: { error: "tasks not done" } };
+    if (current && current.id !== phase.id) return { content: [{ type: "text", text: t("tool.phaseCheck.order", { currentId: current.id, phaseId: phase.id }) }], details: { error: "phase order violation" } };
+    if (!allTasksDoneWithEvidence(phase)) return { content: [{ type: "text", text: t("tool.phaseCheck.tasksNotDone", { phaseId: phase.id }) }], details: { error: "tasks not done" } };
     const auditRevision = phaseRevision(phase);
     const auditSessionGeneration = goalRuntimeState.sessionGeneration;
     let result: AuditorResult;
@@ -2701,7 +2828,7 @@ export const phaseCheckTool = definePublicTool({
       commitCurrentGoal({ ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "phase");
-      return { content: [{ type: "text", text: `phase_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
+      return { content: [{ type: "text", text: t("tool.phaseCheck.failed", { reason }) }], details: { error: reason }, isError: true, terminate: true };
     }
     const latest = currentPhaseForCheckResult(goal, phase.id, auditRevision, auditSessionGeneration);
     if (!latest) return staleCheckResult("phase", goal, auditRevision, auditSessionGeneration);
@@ -2712,7 +2839,7 @@ export const phaseCheckTool = definePublicTool({
       commitCurrentGoal({ ...latest, plan: { ...latest.plan!, phases }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "phase");
-      return { content: [{ type: "text", text: `phase_check paused after auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
+      return { content: [{ type: "text", text: t("tool.phaseCheck.auditorError", { reason }) }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
     }
     const report = result.output ?? "";
     const check: CheckRecord = result.approved
@@ -2762,20 +2889,20 @@ export const goalCheckTool = definePublicTool({
   }),
   async execute(_toolCallId, params, _signal, onUpdate, ctx) {
     const goal = restoreGoalIfMissing(ctx);
-    if (!goal || !goal.plan) return { content: [{ type: "text", text: "No audited Plan." }], details: { error: "no audited plan" } };
+    if (!goal || !goal.plan) return { content: [{ type: "text", text: t("tool.goalCheck.noAuditedPlan") }], details: { error: "no audited plan" } };
     if (goal.status === "paused") return pausedGoalResult(goal);
-    if (!isGoalMutable(goal.status)) return { content: [{ type: "text", text: "Current audited Plan is not mutable." }], details: { error: "plan not mutable" } };
+    if (!isGoalMutable(goal.status)) return { content: [{ type: "text", text: t("tool.goalCheck.notMutable") }], details: { error: "plan not mutable" } };
     const planType = resolvePlanType(goal);
-    if (planType === "task") return { content: [{ type: "text", text: "Task Plan has no independent goal_check." }], details: { error: "wrong plan type" }, isError: true };
-    if (!goal.acceptanceCriteria?.length) return { content: [{ type: "text", text: "The audited Plan has no frozen goal acceptance criteria." }], details: { error: "missing goal acceptance criteria" }, isError: true };
+    if (planType === "task") return { content: [{ type: "text", text: t("tool.goalCheck.taskPlanUnsupported") }], details: { error: "wrong plan type" }, isError: true };
+    if (!goal.acceptanceCriteria?.length) return { content: [{ type: "text", text: t("tool.goalCheck.missingCriteria") }], details: { error: "missing goal acceptance criteria" }, isError: true };
     if (!goal.plan.phases.length || !goal.plan.phases.every((phase) => isDonePlanStatus(phase.status))) {
-      return { content: [{ type: "text", text: "All phases must be marked done before goal_check." }], details: { error: "phases not done" } };
+      return { content: [{ type: "text", text: t("tool.goalCheck.phasesNotDone") }], details: { error: "phases not done" } };
     }
     const summary = String(params.summary).trim();
     const verification = String(params.verification).trim();
     if (!summary || !verification) {
       return {
-        content: [{ type: "text", text: "goal_check summary and verification cannot be blank." }],
+        content: [{ type: "text", text: t("tool.goalCheck.claimRequired") }],
         details: { error: "completion claim required" },
         isError: true,
       };
@@ -2811,7 +2938,7 @@ export const goalCheckTool = definePublicTool({
       commitCurrentGoal({ ...latest, goalCheck: { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "goal");
-      return { content: [{ type: "text", text: `goal_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
+      return { content: [{ type: "text", text: t("tool.goalCheck.failed", { reason }) }], details: { error: reason }, isError: true, terminate: true };
     }
     const latest = currentGoalForCheckResult(goal, auditRevision, auditSessionGeneration);
     if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
@@ -2820,7 +2947,7 @@ export const goalCheckTool = definePublicTool({
       commitCurrentGoal({ ...latest, goalCheck: { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision }, updatedAt: Date.now() }, persistGoal);
       clearCurrentCheckSnapshot();
       pauseOnAuditFailure(ctx, reason, "goal");
-      return { content: [{ type: "text", text: `goal_check paused after auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
+      return { content: [{ type: "text", text: t("tool.goalCheck.auditorError", { reason }) }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
     }
     const report = result.output ?? "";
     const check: CheckRecord = result.approved
