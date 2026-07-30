@@ -3139,6 +3139,26 @@ function pauseGoal(ctx: DgoalContext) {
   safeUpdatePlanOverlay();
 }
 
+/**
+ * Resume the same Task Plan after model_error when startup has observed a real user input.
+ * This transition preserves the Plan and does not enqueue a synthetic prompt: the user turn
+ * that granted the one-shot authorization is already starting.
+ */
+export function resumeTaskPlanAfterModelErrorFromUserInput(ctx: DgoalContext): boolean {
+  const goal = goalRuntimeState.currentGoal;
+  if (!goal || goal.status !== "paused" || goal.pauseReason !== "model_error" || resolvePlanType(goal) !== "task") {
+    return false;
+  }
+  goalRuntimeState.consecutiveErrors = 0;
+  resetProgressTracking(goalRuntimeState);
+  clearContinuation();
+  commitCurrentGoal(markGoalResumed(goal), persistGoal);
+  clearCurrentCheckSnapshot();
+  safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+  safeUpdatePlanOverlay();
+  return true;
+}
+
 async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   if (!goalRuntimeState.currentGoal || goalRuntimeState.currentGoal.status !== "paused") return;
   const pausedGoal = goalRuntimeState.currentGoal;
@@ -6204,6 +6224,9 @@ export function __getRuntimeStateForTest() {
     startGoalInProgress: goalRuntimeState.startGoalInProgress,
     naturalLanguageStartAuthorized: goalRuntimeState.naturalLanguageStartAuthorized,
     naturalLanguageStartInput: goalRuntimeState.naturalLanguageStartInput,
+    taskPlanModelErrorRecovery: goalRuntimeState.taskPlanModelErrorRecovery
+      ? { ...goalRuntimeState.taskPlanModelErrorRecovery }
+      : undefined,
     consecutiveErrors: goalRuntimeState.consecutiveErrors,
     consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
     consecutiveNoDurableProgressTurns: goalRuntimeState.consecutiveNoDurableProgressTurns,

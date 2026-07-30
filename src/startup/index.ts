@@ -30,6 +30,7 @@ import {
   formatStatus,
   markGoalPaused,
   persistGoal,
+  resumeTaskPlanAfterModelErrorFromUserInput,
   sendContinuation,
   buildNoProgressDetail,
   setupI18n,
@@ -58,10 +59,12 @@ import {
 } from "../runtime/liveness.ts";
 import {
   authorizeNaturalLanguageStart,
+  authorizeTaskPlanModelErrorRecovery,
   clearNaturalLanguageStartAuthorization,
+  clearTaskPlanModelErrorRecovery,
   goalRuntimeState,
 } from "../goal-runtime/state.ts";
-import { clearCurrentGoal, commitCurrentGoal } from "../goal-runtime/commit.ts";
+import { commitCurrentGoal } from "../goal-runtime/commit.ts";
 
 const DGOAL_TOKEN_SOURCE = String.raw`(?<![A-Za-z0-9_])\/?dgoal\b`;
 const DGOAL_TOKEN_PATTERN = new RegExp(DGOAL_TOKEN_SOURCE, "i");
@@ -128,6 +131,7 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("session_start", (event, ctx) => {
     clearNaturalLanguageStartAuthorization();
+    clearTaskPlanModelErrorRecovery();
     if (event.reason === "reload") clearAuditorModelRegistryCache();
     resyncGoalFromSession(ctx);
   });
@@ -137,6 +141,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   // （阶段明明完成了还显示未完成，计时器也冻住）。与 session_start 复用同一套重同步。
   pi.on("session_tree", (_event, ctx) => {
     clearNaturalLanguageStartAuthorization();
+    clearTaskPlanModelErrorRecovery();
     resyncGoalFromSession(ctx);
   });
 
@@ -144,6 +149,7 @@ export function registerDgoal(pi: ExtensionAPI) {
   // resync 会取消旧 continuation（它可能引用压缩前上下文）；若 Pi 不会自行重试当前 turn，
   // 必须为仍 active 的 goal 排入新 continuation，避免 Plan 保持计时却没有下一轮三选一决策。
   pi.on("session_compact", async (event, ctx) => {
+    clearTaskPlanModelErrorRecovery();
     resyncGoalFromSession(ctx);
     const goal = goalRuntimeState.currentGoal;
     if (goal && isGoalRunning(goal.status) && !event.willRetry) await sendContinuation(pi, ctx, goal);
@@ -151,6 +157,7 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("session_shutdown", (_event, ctx) => {
     clearNaturalLanguageStartAuthorization();
+    clearTaskPlanModelErrorRecovery();
     if (goalRuntimeState.currentGoal) persistGoal(goalRuntimeState.currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
@@ -162,15 +169,25 @@ export function registerDgoal(pi: ExtensionAPI) {
   pi.on("input", (event) => {
     if (event.source === "extension") {
       clearNaturalLanguageStartAuthorization();
+      clearTaskPlanModelErrorRecovery();
       if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
       return;
     }
     if (event.source !== "interactive" && event.source !== "rpc") {
       clearNaturalLanguageStartAuthorization();
+      clearTaskPlanModelErrorRecovery();
       return;
     }
+    const directUserInput = event.streamingBehavior === undefined;
+    const pausedTaskPlan = goalRuntimeState.currentGoal;
+    if (directUserInput && pausedTaskPlan?.status === "paused" && pausedTaskPlan.pauseReason === "model_error"
+      && resolvePlanType(pausedTaskPlan) === "task") {
+      authorizeTaskPlanModelErrorRecovery(pausedTaskPlan.id, event.text);
+    } else {
+      clearTaskPlanModelErrorRecovery();
+    }
     const authorized = !goalRuntimeState.currentGoal
-      && event.streamingBehavior === undefined
+      && directUserInput
       && isNaturalLanguageDgoalStartRequest(event.text);
     if (authorized) authorizeNaturalLanguageStart(event.text);
     else clearNaturalLanguageStartAuthorization();
@@ -178,17 +195,18 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
-    // Task Plan 是可被最新上下文替换的轻量脚手架。model_error 后出现新 turn，
-    // 说明旧 Plan 不再拥有 session；清除它而非错误地恢复旧上下文。
-    const staleTaskPlan = goalRuntimeState.currentGoal;
-    if (staleTaskPlan?.status === "paused" && staleTaskPlan.pauseReason === "model_error" && resolvePlanType(staleTaskPlan) === "task") {
-      clearCurrentGoal(persistGoal);
-      clearContinuation();
-      clearCurrentCheckSnapshot();
-      resetAuditorWorkspaceTracker();
-      safeSetDgoalStatus(ctx, undefined);
-      safeUpdatePlanOverlay();
-    }
+    // 真实 interactive/RPC 输入可一次性恢复同一个 paused(model_error) Task Plan。
+    // 精确绑定 goal id 与原始输入，避免 extension continuation 或后加载扩展改写 prompt 后自行唤醒。
+    const recovery = goalRuntimeState.taskPlanModelErrorRecovery;
+    const recoveryGoal = goalRuntimeState.currentGoal;
+    const shouldRecoverTaskPlan = Boolean(recovery
+      && recoveryGoal?.id === recovery.goalId
+      && recoveryGoal.status === "paused"
+      && recoveryGoal.pauseReason === "model_error"
+      && resolvePlanType(recoveryGoal) === "task"
+      && event.prompt === recovery.input);
+    clearTaskPlanModelErrorRecovery();
+    if (shouldRecoverTaskPlan) resumeTaskPlanAfterModelErrorFromUserInput(ctx);
     // 只接受 dgoal input handler 观察到的文本；后加载扩展若 transform 了 prompt，精确绑定会 fail-closed。
     if (!goalRuntimeState.currentGoal && goalRuntimeState.naturalLanguageStartAuthorized
       && event.prompt !== goalRuntimeState.naturalLanguageStartInput) {

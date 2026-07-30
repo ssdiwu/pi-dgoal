@@ -7,6 +7,7 @@
 - 注册 `task_plan` / `phase_plan` / `goal_plan`、`plan_create` / `plan_read` / `plan_update`、`phase_check` / `goal_check`。
 - `before_agent_start` 默认注入 Task Plan guidance：明确多步执行或 AFK、有界、低风险探索可主动建计划；当前 frontier 变化时整份替换；生成前做不新增硬门的轻量自检；讨论和单步回答不建，不得自行升级 Phase/Goal Plan。
 - 识别真实用户明确要求使用 dgoal 的自然语言显式授权，并叠加 Phase/Goal Plan 启动 guidance；能力问句、引用、否定与 extension 注入不授权。
+- Task Plan 达到 `model_error` 阈值后保持 paused；下一条真实、非流式 interactive/RPC 输入以 goal ID + 原始 prompt 精确绑定一次性恢复同一 Plan。extension 注入、流式 follow-up、prompt 改写与 Phase/Goal Plan 均不能走该路径。
 - `session_start` / `session_tree` / `session_compact` 恢复 `dgoal-plan-v2` 状态和持续显示浮层；`session_compact` 会取消压缩前 continuation，并在 Pi 不会 retry 当前 turn 时为仍 active 的 Plan 投递新的 continuation，避免仅恢复计时而遗失执行 frontier；overflow retry 由 Pi 自行重试，不重复投递。
 - 在每轮开始冻结结构化 Plan 指纹，在工具/agent turn 结束时刷新状态投影并执行双层活性熔断；事件 wiring 只调用 `runtime/liveness.ts` 的语义操作，不逐字段维护活性状态。连续 3 轮无工具，或连续 8 轮仅有工具活动但无成功文件写入、独立 check 或 Plan 持久状态差，都会进入 `paused(no_progress)`；不解析 LLM 文本或 `bash` 命令语义。
 

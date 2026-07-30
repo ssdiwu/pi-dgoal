@@ -40,6 +40,11 @@ export interface PendingProposalState {
   goalId: string;
   proposal: PlanProposal;
 }
+export interface TaskPlanModelErrorRecoveryAuthorization {
+  goalId: string;
+  input: string;
+}
+
 
 export interface GoalRuntimeState {
   currentGoal: GoalState | undefined;
@@ -50,6 +55,8 @@ export interface GoalRuntimeState {
   naturalLanguageStartAuthorized: boolean;
   /** Exact observed input, used to reject later input-transform changes before agent start. Never persisted. */
   naturalLanguageStartInput: string | undefined;
+  /** One-shot real-user authorization to resume the same Task Plan after model_error. Never persisted. */
+  taskPlanModelErrorRecovery: TaskPlanModelErrorRecoveryAuthorization | undefined;
   consecutiveErrors: number;
   /** Consecutive normal turns with no tool execution at all. */
   consecutiveNoProgressTurns: number;
@@ -77,6 +84,7 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     startGoalInProgress: false,
     naturalLanguageStartAuthorized: false,
     naturalLanguageStartInput: undefined,
+    taskPlanModelErrorRecovery: undefined,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
     consecutiveNoDurableProgressTurns: 0,
@@ -105,6 +113,14 @@ export function authorizeNaturalLanguageStart(input: string): void {
 export function clearNaturalLanguageStartAuthorization(): void {
   goalRuntimeState.naturalLanguageStartAuthorized = false;
   goalRuntimeState.naturalLanguageStartInput = undefined;
+}
+
+export function authorizeTaskPlanModelErrorRecovery(goalId: string, input: string): void {
+  goalRuntimeState.taskPlanModelErrorRecovery = { goalId, input };
+}
+
+export function clearTaskPlanModelErrorRecovery(): void {
+  goalRuntimeState.taskPlanModelErrorRecovery = undefined;
 }
 
 // 重置全部可变状态（测试 / session_shutdown 用）。

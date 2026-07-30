@@ -1,6 +1,7 @@
 # ADR 0049：Task Plan 无进展受限自恢复
 
 > Status：已接受，已实现。
+> Task Plan 的 `model_error` 用户输入恢复边界后由 ADR 0050 补充；本 ADR 只规定 `no_progress` 的替换与收口例外。
 
 ## 背景
 
@@ -14,7 +15,7 @@
 2. 允许已满足完成守卫的 `plan_update(target=goal,status=done)` 显式收口；
 3. 不允许 `plan_create`、删除 Plan 或其他写操作。
 
-用户暂停、`agent_blocked`、`model_error`、`audit_error`，以及全部 Phase/Goal Plan 的暂停，仍拒绝写入并等待用户恢复。该例外不新增 pause reason、状态、公共工具或调度器。
+用户暂停、`agent_blocked`、`audit_error`，以及全部 Phase/Goal Plan 的暂停，仍拒绝写入并等待用户恢复。Task Plan 的 `model_error` 不走本 ADR 的工具写入例外，其真实用户输入恢复由 ADR 0050 规定。该例外不新增 pause reason、状态、公共工具或调度器。
 
 ## 后果
 

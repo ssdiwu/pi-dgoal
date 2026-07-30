@@ -8,6 +8,10 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Task Plan 模型错误恢复**：Task Plan 达到 `model_error` 熔断后不再在下一 turn 静默丢弃；下一条真实 interactive/RPC 输入会一次性恢复并保留原 task、evidence 与 revision。extension 注入、流式 follow-up、prompt 改写和 Phase/Goal Plan 不会自动唤醒。
+
 ## [0.7.12] - 2026-07-27
 
 ### Fixed

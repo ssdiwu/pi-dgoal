@@ -408,18 +408,99 @@ describe("验收 1 · agent_end 无进展熔断集成", () => {
     expect(__getGoalForTest()?.status).toBe("active");
   });
 
-  test("新的 agent turn 会清除 model_error 后过期的 Task Plan，并恢复轻量默认指引", async () => {
-    __setGoalForTest(makePausedTaskPlanAfterModelError());
-    const guided = await handlers["before_agent_start"]({ prompt: "处理另一件事", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
-    expect(__getGoalForTest()).toBeUndefined();
-    expect(guided.systemPrompt).toContain("<task_plan_default>");
-    expect(guided.systemPrompt).not.toContain("<dgoal_goal>");
+  test("真实 interactive 输入一次性恢复 model_error 后的同一 Task Plan", async () => {
+    const paused = {
+      ...makePausedTaskPlanAfterModelError(),
+      pauseStartedAt: 1,
+      pausedTotalMs: 10,
+      plan: {
+        ...makePausedTaskPlanAfterModelError().plan!,
+        revision: 7,
+        phases: [{
+          ...makePausedTaskPlanAfterModelError().plan!.phases[0],
+          tasks: [{ ...makePausedTaskPlanAfterModelError().plan!.phases[0].tasks[0], status: "done" as const, evidence: "保留证据" }],
+        }],
+      },
+    };
+    __setGoalForTest(paused);
+    __setRuntimeStateForTest({ consecutiveErrors: 4, consecutiveNoProgressTurns: 2, consecutiveNoDurableProgressTurns: 7 });
+
+    handlers["input"]({ source: "interactive", text: "继续当前任务" });
+    expect(__getRuntimeStateForTest().taskPlanModelErrorRecovery).toEqual({ goalId: paused.id, input: "继续当前任务" });
+    const guided = await handlers["before_agent_start"]({ prompt: "继续当前任务", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
+
+    expect(__getGoalForTest()).toMatchObject({
+      id: paused.id,
+      status: "active",
+      planType: "task",
+      plan: { revision: 7, phases: [{ tasks: [{ evidence: "保留证据" }] }] },
+    });
+    expect(__getGoalForTest()?.pauseReason).toBeUndefined();
+    expect(__getGoalForTest()?.pausedTotalMs).toBeGreaterThan(10);
+    expect(__getRuntimeStateForTest()).toMatchObject({
+      taskPlanModelErrorRecovery: undefined,
+      consecutiveErrors: 0,
+      consecutiveNoProgressTurns: 0,
+      consecutiveNoDurableProgressTurns: 0,
+    });
+    expect(guided.systemPrompt).toContain("<dgoal_goal>");
+    expect(guided.systemPrompt).toContain("当前是 Task Plan");
   });
 
-  test("model_error 后的显式 Phase/Goal Plan 保持 paused，不会被新 turn 静默清除", async () => {
+  test("RPC 可恢复 Task Plan；extension、流式追加和 prompt 改写不能唤醒", async () => {
+    const paused = makePausedTaskPlanAfterModelError();
+    __setGoalForTest(paused);
+    handlers["input"]({ source: "extension", text: "继续" });
+    await handlers["before_agent_start"]({ prompt: "继续", systemPrompt: "base" }, mockCtx());
+    expect(__getGoalForTest()).toMatchObject({ status: "paused", pauseReason: "model_error" });
+
+    handlers["input"]({ source: "interactive", streamingBehavior: "followUp", text: "继续" });
+    expect(__getRuntimeStateForTest().taskPlanModelErrorRecovery).toBeUndefined();
+
+    handlers["input"]({ source: "interactive", text: "继续" });
+    await handlers["before_agent_start"]({ prompt: "被其它扩展改写", systemPrompt: "base" }, mockCtx());
+    expect(__getGoalForTest()).toMatchObject({ status: "paused", pauseReason: "model_error" });
+    expect(__getRuntimeStateForTest().taskPlanModelErrorRecovery).toBeUndefined();
+
+    handlers["input"]({ source: "rpc", text: "继续" });
+    await handlers["before_agent_start"]({ prompt: "继续", systemPrompt: "base" }, mockCtx());
+    expect(__getGoalForTest()).toMatchObject({ status: "active", id: paused.id, planType: "task" });
+  });
+
+  test("Task Plan 用户触发恢复先落盘且不依赖 TUI 成功", async () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const localHandlers: Record<string, (event: unknown, ctx?: unknown) => unknown> = {};
+    const throwPi = {
+      registerTool: () => {},
+      registerCommand: () => {},
+      on: (event: string, handler: (event: unknown, ctx?: unknown) => unknown) => { localHandlers[event] = handler; },
+      events: { emit: () => {} },
+      sendUserMessage: () => {},
+      appendEntry: (_type: string, data: Record<string, unknown>) => { writes.push(data); },
+    } as unknown as ExtensionAPI;
+    dgoal(throwPi);
+    __setGoalForTest(makePausedTaskPlanAfterModelError());
+    localHandlers["input"]({ source: "interactive", text: "继续" });
+    const throwCtx = {
+      ui: {
+        setStatus: () => { throw new Error("Spacer is not defined"); },
+        notify: () => { throw new Error("notify boom"); },
+        custom: () => { throw new Error("custom boom"); },
+      },
+      cwd: "/tmp",
+    } as unknown as DgoalContext;
+
+    await expect(localHandlers["before_agent_start"]({ prompt: "继续", systemPrompt: "base" }, throwCtx)).resolves.toBeDefined();
+    expect(__getGoalForTest()).toMatchObject({ status: "active", planType: "task" });
+    expect((writes.at(-1)?.goal as GoalState | undefined)).toMatchObject({ status: "active", planType: "task" });
+  });
+
+  test("model_error 后的显式 Phase/Goal Plan 保持 paused，不会被真实用户输入自动恢复", async () => {
     __setGoalForTest({ ...makePausedTaskPlanAfterModelError(), planType: "goal" });
-    await handlers["before_agent_start"]({ prompt: "处理另一件事", systemPrompt: "base" }, mockCtx());
+    handlers["input"]({ source: "interactive", text: "继续" });
+    await handlers["before_agent_start"]({ prompt: "继续", systemPrompt: "base" }, mockCtx());
     expect(__getGoalForTest()).toMatchObject({ status: "paused", pauseReason: "model_error", planType: "goal" });
+    expect(__getRuntimeStateForTest().taskPlanModelErrorRecovery).toBeUndefined();
   });
 
   test("UI 抛错时无进展暂停仍正确落盘状态", async () => {
