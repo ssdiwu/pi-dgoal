@@ -233,8 +233,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     };
   });
 
-  const onAgentSettled = pi.on as unknown as (event: "agent_settled", handler: () => void) => void;
-  onAgentSettled("agent_settled", () => {
+  pi.on("agent_settled", () => {
     if (!goalRuntimeState.currentGoal) clearNaturalLanguageStartAuthorization();
   });
 

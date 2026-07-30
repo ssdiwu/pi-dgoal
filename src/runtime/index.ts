@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
@@ -109,8 +109,12 @@ import {
   __setSpawnManagedSubprocessForTest as setIsolatedSpawnForTest,
   consumeBufferedLines,
   fingerprintAuditWorkspace as fingerprintIsolatedAuditWorkspace,
+  getPiInvocation,
   runIsolatedPiCheck,
+  spawnIsolatedPi,
   SUBPROCESS_FORCE_KILL_TIMEOUT_MS,
+  terminateIsolatedPi,
+  type SpawnManagedSubprocess,
 } from "../isolated-pi/index.ts";
 
 const AUDITOR_DISABLED = process.env.PI_DGOAL_NO_AUDIT === "1";
@@ -2009,7 +2013,8 @@ function strictSchemaObject(properties: Record<string, unknown>) {
   const schemaProperties = schema.properties as Record<string, unknown>;
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   for (const [key, property] of Object.entries(schemaProperties)) {
-    if (!required.has(key)) schemaProperties[key] = Type.Union([property as never, Type.Null()]);
+    // Pi validates with TypeBox Value.Convert; null must be the first branch or numeric sentinels become 0.
+    if (!required.has(key)) schemaProperties[key] = Type.Union([Type.Null(), property as never]);
   }
   schema.required = Object.keys(schemaProperties);
   return schema;
@@ -2328,19 +2333,23 @@ export const goalPlanTool = definePublicTool({
 
 function resolveToolPhase(goal: GoalState, phaseId: unknown, phaseNumber: unknown): { phase?: Phase; error?: ReturnType<typeof formatPhaseNotFoundResult> | { content: Array<{ type: "text"; text: string }>; details: Record<string, unknown> } } {
   if (!goal.plan) return { error: { content: [{ type: "text", text: t("tool.plan.noPhaseTree") }], details: { error: "no plan" } } };
-  if (phaseId !== undefined && phaseNumber !== undefined) {
+  // strict schema uses null as the wire sentinel for an omitted optional field.
+  // Normalize again at the resolver boundary because host execution paths may preserve it.
+  const resolvedPhaseId = phaseId === null ? undefined : phaseId;
+  const resolvedPhaseNumber = phaseNumber === null ? undefined : phaseNumber;
+  if (resolvedPhaseId !== undefined && resolvedPhaseNumber !== undefined) {
     return { error: { content: [{ type: "text", text: t("tool.plan.ambiguousPhaseId") }], details: { error: "ambiguous phase identifier" } } };
   }
   let id: number | undefined;
-  if (phaseNumber !== undefined) {
-    const number = Number(phaseNumber);
+  if (resolvedPhaseNumber !== undefined) {
+    const number = Number(resolvedPhaseNumber);
     if (!Number.isInteger(number) || number < 1) {
       return { error: { content: [{ type: "text", text: t("tool.plan.invalidPhaseId") }], details: { error: "invalid phase number" } } };
     }
     id = phaseNumberToId(goal, number);
     if (id === undefined) return { error: formatPhaseNotFoundResult(goal, number) };
   } else {
-    id = Number(phaseId ?? currentUncheckedPhase(goal)?.id);
+    id = Number(resolvedPhaseId ?? currentUncheckedPhase(goal)?.id);
   }
   if (!Number.isFinite(id)) return { error: { content: [{ type: "text", text: t("tool.plan.invalidPhaseId") }], details: { error: "missing phase identifier" } } };
   const phase = goal.plan.phases.find((item) => item.id === id);
@@ -5585,47 +5594,12 @@ export const PHASE_CHECK_SYSTEM_PROMPT = [
   "- 不得把 AGENTS、README 或人工 TUI/视觉/体验要求临时加入完成门；这类发现只能放入“建议用户复核（不阻塞完成）”。",
   "- 只有 phase 的冻结独立验收条件整体成立时才 <APPROVED>。",
 ].join("\n");
-
-// 复刻官方 subagent 示例的 getPiInvocation：避免在 bun 虚拟脚本下误用 process.argv[1]。
-function getPiInvocation(extraArgs: string[]): { command: string; args: string[] } {
-  const currentScript = process.argv[1];
-  const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
-  if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
-    return { command: process.execPath, args: [currentScript, ...extraArgs] };
-  }
-  const execName = path.basename(process.execPath).toLowerCase();
-  const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
-  if (!isGenericRuntime) {
-    return { command: process.execPath, args: extraArgs };
-  }
-  return { command: "pi", args: extraArgs };
-}
-
-function canKillProcessGroup() {
-  return process.platform !== "win32";
-}
-
-type SpawnManagedSubprocess = (command: string, args: string[], cwd: string, stdin?: "ignore" | "pipe") => ChildProcess;
-
-function spawnManagedSubprocessImpl(command: string, args: string[], cwd: string, stdin: "ignore" | "pipe" = "ignore") {
-  return spawn(command, args, {
-    cwd,
-    shell: false,
-    stdio: [stdin, "pipe", "pipe"],
-    detached: canKillProcessGroup(),
-  });
-}
-
-let spawnManagedSubprocess: SpawnManagedSubprocess = spawnManagedSubprocessImpl;
-
-// 测试专用：替换隔离子进程 spawn，保持生产行为不变。
+// 测试专用：模型 registry 预检与审核 child 共用 isolated-pi 的生产 spawn 接缝。
 export function __setSpawnManagedSubprocessForTest(spawnImpl: SpawnManagedSubprocess | undefined): void {
-  spawnManagedSubprocess = spawnImpl ?? spawnManagedSubprocessImpl;
   setIsolatedSpawnForTest(spawnImpl);
 }
 
 export function __resetSpawnManagedSubprocessForTest(): void {
-  spawnManagedSubprocess = spawnManagedSubprocessImpl;
   resetIsolatedSpawnForTest();
 }
 
@@ -5648,7 +5622,7 @@ function parseAuditorModelReferences(value: unknown): AuditorModelReference[] | 
 function queryIsolatedAuditorModelRegistry(cwd: string): Promise<AuditorModelReference[]> {
   const invocation = getPiInvocation(["--mode", "rpc", "--no-session", "--no-extensions", "--no-skills"]);
   return new Promise<AuditorModelReference[]>((resolve, reject) => {
-    const proc = spawnManagedSubprocess(invocation.command, invocation.args, cwd, "pipe");
+    const proc = spawnIsolatedPi(invocation.command, invocation.args, cwd, "pipe");
     let buffer = "";
     let settled = false;
     const timeout = setTimeout(() => finish(new Error("auditor model registry preflight timed out")), AUDITOR_MODEL_REGISTRY_TIMEOUT_MS);
@@ -5660,7 +5634,7 @@ function queryIsolatedAuditorModelRegistry(cwd: string): Promise<AuditorModelRef
       proc.stdout?.removeAllListeners();
       proc.stderr?.removeAllListeners();
       proc.removeAllListeners();
-      if (proc.exitCode === null && proc.signalCode === null) terminateManagedSubprocess(proc);
+      if (proc.exitCode === null && proc.signalCode === null) terminateIsolatedPi(proc);
       if (error) reject(error);
       else resolve(models!);
     };
@@ -5708,28 +5682,6 @@ function queryIsolatedAuditorModelRegistry(cwd: string): Promise<AuditorModelRef
   });
 }
 
-function sendManagedSignal(proc: ChildProcess, signal: NodeJS.Signals) {
-  if (canKillProcessGroup() && typeof proc.pid === "number") {
-    try {
-      process.kill(-proc.pid, signal);
-      return;
-    } catch {
-      // Fall back to the direct child if the process group is already gone.
-    }
-  }
-  try {
-    proc.kill(signal);
-  } catch {
-    // Ignore already-exited races.
-  }
-}
-
-function terminateManagedSubprocess(proc: ChildProcess, forceKillDelayMs = SUBPROCESS_FORCE_KILL_TIMEOUT_MS) {
-  sendManagedSignal(proc, "SIGTERM");
-  return setTimeout(() => {
-    if (proc.exitCode === null && proc.signalCode === null) sendManagedSignal(proc, "SIGKILL");
-  }, forceKillDelayMs);
-}
 
 export function summarizeCheckProgress(output: string): string {
   return summarizeAuditProgress(output, t("check.progress.noText"));
@@ -6201,7 +6153,7 @@ export function __trackFileToolExecutionEndForTest(toolCallId: string, isError: 
 
 // 测试专用：复用生产里的子进程终止逻辑，验证 detached process group 能被整体收尸。
 export function __terminateManagedSubprocessForTest(proc: ChildProcess, forceKillDelayMs = SUBPROCESS_FORCE_KILL_TIMEOUT_MS) {
-  return terminateManagedSubprocess(proc, forceKillDelayMs);
+  return terminateIsolatedPi(proc, forceKillDelayMs);
 }
 
 export function __setGoalForTest(goal: GoalState | undefined) {

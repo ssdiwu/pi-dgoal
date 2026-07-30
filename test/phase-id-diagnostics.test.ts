@@ -3,6 +3,7 @@ import {
   __getGoalForTest,
   __resetGoalForTest,
   __setGoalForTest,
+  __setPhaseCheckOverrideForTest,
   loadGoal,
   phaseCheckTool,
   planCreateTool,
@@ -141,6 +142,16 @@ describe("phase diagnostics preserve non-contiguous IDs in memory", () => {
     });
     const result = await execute(planReadTool, { target: "phase", id: 1 });
     expect(result.content[0].text).toContain("无任务旧 phase");
+  });
+
+  test("nullable strict-schema sentinel does not conflict with phaseNumber", async () => {
+    const goal = nonContiguousGoal();
+    goal.plan!.phases[1].tasks[0].evidence = "verified";
+    __setGoalForTest(goal);
+    __setPhaseCheckOverrideForTest(async () => ({ approved: true, aborted: false, output: "APPROVED", liveness: "approved" }));
+    const result = await execute(phaseCheckTool, { phaseId: null, phaseNumber: 2 });
+    expect(result.details.phaseId).toBe(4);
+    expect(result.details.approved).toBe(true);
   });
 
   test("phaseId and phaseNumber are mutually exclusive", async () => {

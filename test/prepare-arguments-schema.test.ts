@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { validateToolArguments } from "@earendil-works/pi-ai";
 import { Compile } from "typebox/compile";
-import { goalPlanTool, planCreateTool, planUpdateTool, taskPlanTool } from "../index.ts";
+import { goalPlanTool, phaseCheckTool, planCreateTool, planUpdateTool, taskPlanTool } from "../index.ts";
 
 type ToolDef = { parameters: object; prepareArguments?: (args: unknown) => unknown };
 
@@ -47,6 +48,12 @@ describe("Eight-tool prepareArguments schema seam", () => {
     expect(passes(planUpdateTool, args)).toBe(true);
     expect(prepare(planUpdateTool, args).addBlockedBy).toEqual([2]);
     expect(prepare(planUpdateTool, args).removeBlockedBy).toEqual([]);
+  });
+
+  test("Pi validation preserves nullable strict-schema sentinels", () => {
+    const args = prepare(phaseCheckTool, { phaseId: null, phaseNumber: 1 });
+    const validated = validateToolArguments(phaseCheckTool, { id: "test", name: "phase_check", arguments: args } as never) as Record<string, unknown>;
+    expect(validated).toEqual({ phaseId: null, phaseNumber: 1 });
   });
 
   test("real arrays are left valid", () => {

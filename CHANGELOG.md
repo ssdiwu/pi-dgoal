@@ -8,9 +8,16 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
+### Changed
+
+- **Pi 0.83 开发基线**：Pi 三项开发依赖升级至 0.83，根 TypeBox 升级至 1.3.8；公共 peer 依赖范围保持宿主提供的 `*`，并继续保留 strict schema（严格参数模式）的 nullable（可空）参数兼容层。
+
 ### Fixed
 
 - **Task Plan 模型错误恢复**：Task Plan 达到 `model_error` 熔断后不再在下一 turn 静默丢弃；下一条真实 interactive/RPC 输入会一次性恢复并保留原 task、evidence 与 revision。extension 注入、流式 follow-up、prompt 改写和 Phase/Goal Plan 不会自动唤醒。
+- **严格参数可空值转换**：nullable（可空）参数现在把 `null` 分支置于 TypeBox 联合类型首位，避免 Pi 0.83 校验时把数字缺省值转换成 `0`；`phaseId:null` 与有效 `phaseNumber` 不再被误判为双参数并触发无效 `phase_check` 重试循环。
 
 ## [0.7.12] - 2026-07-27
 
