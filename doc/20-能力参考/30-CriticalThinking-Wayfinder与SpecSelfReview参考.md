@@ -113,75 +113,63 @@ Superpowers 当前 `brainstorming` 主流程在写完设计文档后执行一次
 
 **不借 Superpowers 的“所有任务强制 Spec”硬门。** Task Plan 的存在就是为了让普通明确工作跳过 proposal、确认和 auditor 开销；小任务不应为形式生成 Spec。
 
-**不把“准备度 × 保障强度”做成用户可见的新路由模型。** Agent 本来就能主动用 Task Plan 探索或执行；用户只需要表达意图，并在 Agent 推荐 Phase/Goal Plan 时决定是否授权升级。
+**不把“准备度 × 保障强度”做成用户可见的新路由模型。** Agent 本来就能主动使用 soft Work List 探索/跟踪，确需持续执行时进入 Execution；只有独立建检保障需要用户显式授权。
 
-**不把 Spec Self-review 升级为独立阶段、auditor 或 hard gate。** dgoal 已有语义预审和 phase/goal auditor。吸收时只在 Plan/task 生成 guidance 中增加轻提示，不新增模型调用、审核记录、确认 UI 或失败状态。
+**不把 Spec Self-review 升级为独立阶段、auditor 或 hard gate。** dgoal 已有 proposal 语义预审和 Phase / Goal auditor。吸收时只在 Work List / Plan Contract guidance 中增加轻提示，不新增模型调用、审核记录、确认 UI 或失败状态。
 
 **不让 self-review 扩张冻结契约。** 自检只能删除歧义、矛盾和非必要内容；不能因为“更完整”而新增用户未要求的功能或完成门。最终 auditor 仍只核用户确认的 acceptance contract。
 
 ### 3.2 同思路（已有，印证方向）
 
-**dgoal 已有 Agent 主导的保障路由。** `buildTaskPlanDefaultGuidance()` 已让 Agent 主动处理普通多步 Task Plan，并只在需要冻结契约或独立审核时推荐 `/dgoal`；Phase Plan / Goal Plan 再按 phase 是否有独立验收价值分流。对齐后的增强不是让用户选择路由，而是明确 Task Plan 也可承载 Agent 自主发起的有界 AFK 探索。
+**dgoal 已有 Agent 主导的保障路由。** `buildWorkListDefaultGuidance()` 让 Agent 对普通多步工作按需使用 soft Work List；确需 Until Done 时用 Execution；只有需要冻结契约或独立审核才推荐 `/dgoal`，再按 Phase 是否有独立验收价值选择 Goal Check / Staged Check。
 
-**dgoal 已有证据读取和边界声明。** `buildProposePrompt()` 要求先读相关代码/文档，理解目标、范围和风险；proposal 使用三层 Description、`nonGoals`、`guardrails`、`acceptanceCriteria` 与 `userReviewItems`，不再保留 `contextSummary`。只要 goal 与验收已明确，Phase/Goal Plan 内也可以正常加入 research、prototype 等探索 task；Plan 类型由保障需求决定，不由“有没有探索”决定。
+**dgoal 已有证据读取和边界声明。** `buildProposePrompt()` 要求先读相关代码/文档；proposal 使用 Goal / Phase / Work Item Description、`nonGoals`、`guardrails`、`acceptanceCriteria` 与 `userReviewItems`。探索 Work Item 可存在于任意 Profile，保障由验收需求决定，不由“有没有探索”决定。
 
-**dgoal 已有结构减法。** Task Plan 是最轻默认；Phase Plan 避免每 phase 审核；Goal Plan 明确禁止按代码/测试/文档机械拆 phase；运行中不新增 phase，`plan_create` 只创建完成当前目标所需的 task。ADR 0038 本身也是删除策略、预算和隐式权限组合的减法决策。这种减法主要依赖“不创建”和“提交前收敛”，不是激活后删除：Task Plan 可整份替换，而 audited Plan 的 phase 冻结、公共工具不提供删除 task/phase，因此生成时的软提示比事后补删除机制更符合当前结构。
+**dgoal 已有结构减法。** soft Work List 是最轻默认；Goal Check 避免逐 Phase 审核；Staged Check 只为真实里程碑建 Phase。`work_create` 只创建服务当前 Goal 的 Work Item 或真实 Phase，Staged backbone 确认后冻结。ADR 0051 进一步删除内部结构占位与结构/保障耦合。
 
-**dgoal 已有完整执行后建检。** task 必须带 evidence；phase/goal auditor 使用 fresh context 和受限工具；任何 Plan 写操作使旧批准失效；check 只写 CheckRecord，`plan_update` 才写 done。三个外部概念没有暴露这一层的结构性缺口。
+**dgoal 已有完整执行后建检。** 计划态 Work Item 必须带 evidence；Phase / Goal auditor 使用 fresh context 和受限工具；相关 revision 变化使旧批准失效；check 只写 CheckRecord，`work_update` 才写 done。
 
-**proposal 已有两种检查，但职责较窄。** `assessProposalReadiness()` 检查字段物证是否齐备，当前只在确认 UI 中展示 level/gaps，不是提交硬门；semantic preflight 只判断独立验收、用户复核和真实人工 blocker。两者都故意不承担完整的 Plan Quality / Spec Quality 审查。
+**proposal 已有两种检查，但职责较窄。** `assessProposalReadiness()` 只展示字段完整度；semantic preflight 只判断独立验收、用户复核、真实人工 blocker 与不可取得证据，不承担通用 Plan Quality 审查。
 
 ### 3.3 已吸收项
 
-#### 已吸收 1（guidance 向）：把 Task Plan 明确为当前 frontier 的轻量探路载体
+#### 已吸收 1（guidance 向）：soft Work List 作为当前 frontier 的轻量载体
 
-Agent 接到用户想法后，不展示路由分级，而是自行判断是否先建立探索型 Task Plan：
+Agent 不向用户展示路由分级，而自行判断是否建立探索型 Work List：
 
-- 稳定的是用户意图 / 最终效果，Task Plan objective 表达当前可验证的认知或交付结果；
-- 只有 AFK、有界、低风险、能写清停止条件的探索可自动建 Plan；
-- 需要用户意图、偏好或范围取舍的问题留在正常讨论 / grill，不伪装成 task；
-- 随证据变化可新增 task，或调用 `task_plan` 整份替换 objective/tasks；
-- 替换时不保留旧 Plan 历史，重要决定与证据按项目既有出口另行沉淀；
-- 探索后若 Task Plan 足以做完就继续；只有保障需求上升时才向用户推荐 Phase/Goal Plan；
-- 已冻结结果和验收的 Phase/Goal Plan 仍可在现有 phase 下按需新增探索 task。
+- 稳定的是用户意图 / 最终效果，当前 Goal objective 表达可验证认知或交付结果；
+- 只有 AFK、有界、低风险、能写清停止条件的探索才适合结构化跟踪；
+- 用户意图、偏好或范围取舍留在正常讨论 / grill，不伪装成 Work Item；
+- 随证据变化可用 `work_create` 增加 Work Item，或在 soft 状态原子重写 `work_list`；
+- soft Work List 不保留完整探索事件史，重要决定按项目既有出口沉淀；
+- 探索后若需要持续执行可升级 Execution；只有独立保障需求上升才推荐 Goal Check / Staged Check；
+- 已冻结的高保障 Plan 仍可在允许边界内加入必要探索 Work Item。
 
 具体落点：
 
-- `src/startup/index.ts::buildTaskPlanDefaultGuidance()` — 把“普通、明确多步”扩展为“明确执行或有界 AFK 探索”；
-- `src/runtime/index.ts::taskPlanTool.promptGuidelines` — 约束探索 objective 必须有界、可验证，不替用户作决定；
-- `src/runtime/index.ts::planCreateTool.promptGuidelines` — 明确新增探索 task 仍须服务当前 objective；
-- `test/activation-boundary.test.ts`、`test/three-plan-runtime.test.ts` — 回归默认授权边界、整份替换，以及 task 耗尽后由主 agent 显式决定新增、替换或收口。
-- `README.md` / `README-zh.md` 与 `doc/10-架构与运行/13-启动闸门与TUI浮层.md` — 只解释 Agent 可用 Task Plan 探路，不给用户新增路由操作。
+- `src/startup/index.ts::buildWorkListDefaultGuidance()`；
+- `src/runtime/index.ts::workListTool.promptGuidelines`；
+- `src/runtime/index.ts::workCreateTool.promptGuidelines`；
+- `test/activation-boundary.test.ts`、`test/work-list-runtime.test.ts`、`test/execution-plan-runtime.test.ts`；
+- `README.md` / `README-zh.md` 与启动闸门架构文档。
 
-价值：吸收 Wayfinder 的 frontier 思想，但复用现有 Task Plan，不新增 map、状态、工具或跨会话历史。
+价值：吸收 Wayfinder 的 frontier 思想，但复用唯一 Work List，不新增 map、平行状态或跨 session 历史。
 
-#### 已吸收 2（prompt 向）：在 Plan/task 生成 guidance 中加入软性 self-review 提示
+#### 已吸收 2（prompt 向）：生成 guidance 中加入软性 self-review
 
-不新增固定步骤；只提醒 LLM 在生成或新增 task 时边写边核对：
+不新增固定步骤；只提醒 LLM 在生成或新增 Work Item 时边写边核对：
 
 1. 当前 objective 是否直接服务用户意图 / 最终效果；
-2. 每个 task 是否必要，能否删掉 phase、task、验收门或顺手重构；
-3. 是否把未核实事实当成结论，或把用户决策伪装成执行 task；
-4. task 顺序与依赖是否成立；
-5. 完成后是否有可复验证据；Phase/Goal proposal 还要核对 objective、verification、acceptanceCriteria 与 phase 是否一致。
+2. 每个 Work Item 是否必要，能否删掉 Phase、Work Item、验收门或顺手重构；
+3. 是否把未核实事实当成结论，或把用户决策伪装成执行项；
+4. 顺序与 blockedBy 是否成立；
+5. 完成后是否有可复验证据；高保障 proposal 还要核对 verification / acceptanceCriteria 与真实 Phase 是否一致。
 
-边界：
+边界：它不是自检报告、独立阶段、hard gate 或 CheckRecord；不新增模型调用、确认 UI、持久字段或失败状态；发现可自行修正的问题直接修正，只有真实用户 blocker 才询问。
 
-- 这是生成提示，不是自检报告、独立阶段、hard gate 或新的 CheckRecord；
-- 不要求用户审阅自检过程，不把工作流教学转交给用户；
-- 不新增模型调用、确认 UI、持久字段或失败状态；
-- 不修改 `buildProposalSemanticReviewPrompt()` 的人工依赖三分流职责；
-- 发现可自行修正的问题就直接修正后继续，只有真实用户 blocker 才正常询问。
+具体落点：`buildWorkListDefaultGuidance()`、`workListTool` / `workCreateTool` guidance、`buildProposePrompt()` 与 activation / startup gate 回归。
 
-具体落点：
-
-- `src/startup/index.ts::buildTaskPlanDefaultGuidance()`；
-- `src/runtime/index.ts::taskPlanTool.promptGuidelines`；
-- `src/runtime/index.ts::planCreateTool.promptGuidelines`；
-- `src/runtime/index.ts::buildProposePrompt()`；
-- 回归：`test/activation-boundary.test.ts`、`test/startup-gate.test.ts`、`test/command-aliases.test.ts`。
-
-价值：以最低成本吸收 Critical Thinking 的证据意识、Wayfinder 的未知边界和 Spec Self-review 的减法检查，同时保持 Task Plan 轻量、Phase/Goal 显式授权和现有建检结构不变。
+价值：以最低成本吸收证据意识、未知边界与减法检查，同时保持 soft 轻量、Execution 自主和高保障显式授权。
 
 ### 3.4 观察项（尚不够格成为候选）
 
@@ -212,14 +200,14 @@ Agent 接到用户想法后，不展示路由分级，而是自行判断是否�
 
 ### 当前项目落点
 
-- `src/startup/index.ts::buildTaskPlanDefaultGuidance()` — 明确 Agent 可为有界 AFK 探索主动建立 Task Plan，并加入最轻自检提示；
-- `src/runtime/index.ts::taskPlanTool.promptGuidelines` — 约束探索 objective、用户决策边界与 task 最小性；
-- `src/runtime/index.ts::planCreateTool.promptGuidelines` — 提醒新增 task 直接服务当前 objective 且可复验；
-- `src/runtime/index.ts::buildProposePrompt()` — 给 Phase/Goal proposal 增加同类但更完整的软提示；
-- `src/runtime/index.ts::assessProposalReadiness()` — 继续只做结构就绪度展示，不升级成语义路由硬门；
-- `src/runtime/index.ts::buildProposalSemanticReviewPrompt()` — 保持“人工依赖三分流”的窄职责，不扩成 plan reviewer；
+- `src/startup/index.ts::buildWorkListDefaultGuidance()` — soft Work List 可承载有界探索，并加入最轻 self-review 提示；
+- `src/runtime/index.ts::workListTool.promptGuidelines` — 约束 objective、用户决策边界与 Work Item 最小性；
+- `src/runtime/index.ts::workCreateTool.promptGuidelines` — 新增 Work Item 必须直接服务当前 Goal 且可复验；
+- `src/runtime/index.ts::buildProposePrompt()` — 给 Goal Check / Staged Check proposal 更完整的收敛提示；
+- `src/runtime/proposal.ts::assessProposalReadiness()` — 继续只做结构就绪度展示，不升级成语义路由硬门；
+- `src/runtime/index.ts::buildProposalSemanticReviewPrompt()` — 保持独立验收 / user review / blocker / 不可取得证据分流的窄职责；
 - `src/runtime/index.ts::PHASE_CHECK_SYSTEM_PROMPT` / `AUDITOR_SYSTEM_PROMPT` — 当前执行后独立建检基本盘；
-- `test/activation-boundary.test.ts`、`test/three-plan-runtime.test.ts`、`test/startup-gate.test.ts`、`test/command-aliases.test.ts` — guidance 落地后的定向回归。
+- `test/activation-boundary.test.ts`、`test/work-list-runtime.test.ts`、`test/execution-plan-runtime.test.ts`、`test/startup-gate.test.ts` — guidance 与边界定向回归。
 
 ## 5. 决策记录
 

@@ -1,14 +1,15 @@
-# src/goal-runtime — Goal Runtime（可变会话状态）
+# `src/goal-runtime/` — Goal Runtime（可变 session 状态）
 
-Goal Runtime 独占当前 goal、pending proposal、续跑状态、计数器、自然语言显式启动与 Task Plan `model_error` 用户恢复的一次性授权及其精确 input 绑定、终审反馈与修复账本等可变 session 状态（ADR 0025、0050）。其他模块只通过 `goalRuntimeState` 单例对象读写状态。
+Goal Runtime 独占 current Goal / Work List / Plan Contract、pending proposal、Plan Run History、continuation、结构化活性计数、审核 workspace/check snapshot、自然语言显式授权与 Execution `model_error` 精确用户输入恢复 token。其他模块只通过 `goalRuntimeState` 单例读写这些 session 事实。
 
 ## 文件
 
-- `types.ts` — `GoalState`、`PlanProposal`、审核反馈与生命周期类型；不依赖 runtime，作为状态容器和运行时的共同类型边界。
-- `state.ts` — 可变会话状态单例对象与重置函数；同时持有每轮工具活动、持久进展指纹、硬/软停滞计数，以及不持久化的一次性输入授权。所有模块级 `let` 可变状态集中在此，避免分散在 runtime 各处。
-- `commit.ts` — 把 `currentGoal` 的内存赋值与对应持久化调用保持相邻；不接管各路径不同的 continuation、check snapshot 或 UI 后效。
+- `types.ts` — `GoalState`、`PlanContract`、`PlanProposal`、Plan Run History、审核反馈与生命周期类型；依赖 Work List 纯类型，不依赖 runtime。
+- `state.ts` — 可变 session 状态单例与重置；持有每轮 activity / durable progress、3/8 停滞计数及不持久化的一次性授权。
+- `commit.ts` — 保持 `currentGoal` 内存赋值与持久化调用相邻；不接管 continuation、check snapshot 或 UI after-effect。
 
 ## 依赖
 
-- `types.ts` 只依赖 `src/plan` 类型和审核 checkpoint 类型；`state.ts` 只依赖本目录类型。
+- `types.ts` 只依赖 `src/work-list` 类型与审核 checkpoint 类型；`state.ts` 只依赖本目录类型。
+- 不依赖 runtime、startup、isolated-pi 或 tui，避免与运行时编排形成循环依赖。
 - 不依赖 runtime、startup、isolated-pi 或 tui，避免与运行时编排形成循环依赖。

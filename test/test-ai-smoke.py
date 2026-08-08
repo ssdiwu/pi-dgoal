@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-AI 驱动 smoke：真实模型 × 隔离环境跑通 Goal Plan 全工具链（单 phase）。
+AI 驱动 smoke：真实模型 × 隔离环境跑通 Staged Check Plan 全工具链（单 Phase）。
 
 与 test-extension-rpc.py（离线、仅断言加载/命令注册）区别：
   - 不设 PI_OFFLINE（主 agent、phase check 与 goal check 都调真实模型）
   - Popen cwd 设为临时工作目录
   - 扩展 UI 自动确认启动闸门
-  - 多轮事件循环追踪八工具中的 Goal Plan 完成链
+  - 多轮事件循环追踪九工具中的最小 Staged Check 完成链
 
 ⚠️ 成本：消耗真实 token，需网络与已配置的 pi provider（API key）。不在 CI 跑。
 
 成功判据（全部满足）：
-  1. goal_plan / plan_update / phase_check / goal_check 均被调用且 isError=false
+  1. staged_plan / work_update / phase_check / goal_check 均被调用且 isError=false
   2. 目标文件产物（hello.txt）存在且内容正确
   3. 启动闸门 select 被正确回复
-  4. 最终 plan_update 返回 completed=true
+  4. 最终 work_update 返回 completed=true
 
 用法：
   python3 test/test-ai-smoke.py
@@ -64,9 +64,9 @@ def resolve_pi_executable(root: Path = ROOT, env: dict[str, str] | None = None) 
 # 不需要回复的 fire-and-forget UI 方法（rpc.md:996）
 UI_NO_REPLY_METHODS = {"notify", "setStatus", "setWidget", "setTitle", "set_editor_text"}
 
-# Goal Plan 的最小完整链；plan_update 会分别推进 task、phase 与 goal。
-REQUIRED_TOOLS = ["goal_plan", "plan_update", "phase_check", "goal_check"]
-PUBLIC_TOOLS = {"task_plan", "phase_plan", "goal_plan", "plan_create", "plan_read", "plan_update", "phase_check", "goal_check"}
+# Staged Check Plan 的最小完整链；work_update 分别推进 Work Item、Phase 与 Goal。
+REQUIRED_TOOLS = ["staged_plan", "work_update", "phase_check", "goal_check"]
+PUBLIC_TOOLS = {"work_list", "execution_plan", "goal_plan", "staged_plan", "work_create", "work_read", "work_update", "phase_check", "goal_check"}
 
 # 终止判定：agent_end 后连续 N 秒无新事件，视为 agent 自然停止。
 IDLE_AFTER_AGENT_END = 20
@@ -78,12 +78,12 @@ TOTAL_TIMEOUT = 900
 EXPECTED_FILE = "hello.txt"
 EXPECTED_CONTENT = "Hello from dgoal smoke"
 
-# 强制走 Goal Plan，以覆盖 phase_check 与 goal_check 两级审核。
+# 强制走 Staged Check Plan，以覆盖 phase_check 与 goal_check 两级审核。
 SMOKE_GOAL = (
     f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}，并验证内容完全一致。"
-    "这是 Goal Plan smoke：请只提交一个带独立 phase 验收条件的 goal_plan。"
-    "确认后用 plan_update 推进 task，并带可复验证据标 done；task 全部 done 后调用 phase_check，approved 后再用 plan_update 标 phase done；"
-    "随后调用 goal_check，approved 后用 plan_update(target=goal,status=done) 收口。不要改用 Task Plan 或 Phase Plan。"
+    "这是 Staged Check Plan smoke：请只提交一个带独立 Phase 验收条件的 staged_plan。"
+    "确认后用 work_update 推进 Work Item，并带可复验证据标 done；Work Item 全部终结后调用 phase_check，approved 后再用 work_update 标 Phase done；"
+    "随后调用 goal_check，approved 后用 work_update(target=goal,status=done) 收口。不要改用 soft Work List、Execution Plan 或 Goal Check Plan。"
 )
 
 
@@ -246,7 +246,7 @@ def handle_ui_request(session: RpcSession, event: dict[str, Any], result: SmokeR
 def run_smoke(session: RpcSession, result: SmokeResult) -> None:
     deadline = time.time() + TOTAL_TIMEOUT
     last_agent_end_at: float | None = None
-    done_ok = False  # plan_update(goal, done) 的不可逆成功信号
+    done_ok = False  # work_update(goal, done) 的不可逆成功信号
 
     session.send({"id": "smoke-prompt", "type": "prompt", "message": f"/dgoal {SMOKE_GOAL}"})
 
@@ -285,7 +285,7 @@ def run_smoke(session: RpcSession, result: SmokeResult) -> None:
                 if is_err:
                     tc.errors += 1
                 print(f"[smoke] tool {name} #{tc.count} isError={is_err}", file=sys.stderr, flush=True)
-                if name == "plan_update" and not is_err:
+                if name == "work_update" and not is_err:
                     details = (event.get("result") or {}).get("details") or {}
                     if details.get("completed") is True and details.get("status") == "done":
                         done_ok = True

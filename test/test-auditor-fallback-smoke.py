@@ -39,10 +39,10 @@ EXPECTED_FILE = "hello.txt"
 EXPECTED_CONTENT = "Hello from fallback smoke"
 SMOKE_GOAL = (
     f"在当前目录创建 {EXPECTED_FILE}，写入内容：{EXPECTED_CONTENT}，并独立验证内容完全一致。"
-    "这是候选回退 smoke：请用 goal_plan 按「实现」「验证」两个有独立验收条件的 phase 组织。"
-    "每个 task 用 plan_update 推进，并带可复验证据标 done；每阶段 task 全部 done 后调用 phase_check，approved 后再 plan_update 标 phase done。"
-    "全部 phase done 后调用 goal_check，approved 后 plan_update(target=goal,status=done) 收口。"
-    "只能通过 /dgoal 启动闸门；goal_plan 确认前不得直接创建文件。"
+    "这是候选回退 smoke：请用 staged_plan 按「实现」「验证」两个有独立验收条件的真实 Phase 组织。"
+    "每个 Work Item 用 work_update 推进，并带可复验证据标 done；每个 Phase 的 Work Item 全部终结后调用 phase_check，approved 后再用 work_update 标 Phase done。"
+    "全部 Phase done 后调用 goal_check，approved 后 work_update(target=goal,status=done) 收口。"
+    "只能通过 /dgoal 启动闸门；staged_plan 确认前不得直接创建文件。"
 )
 TOTAL_TIMEOUT = 900
 READ_TIMEOUT = 6
@@ -188,7 +188,7 @@ def run_smoke(session: RpcSession, result: dict[str, Any]) -> None:
                             "candidatesExhausted": candidates_exhausted,
                         })
 
-                if name == "plan_update" and not is_err and details.get("completed") is True and details.get("status") == "done":
+                if name == "work_update" and not is_err and details.get("completed") is True and details.get("status") == "done":
                     done_ok = True
                     result["goal_completed"] = True
                     result["error"] = None
@@ -298,7 +298,7 @@ def run_smoke_main(work_dir: str, agent_dir: str) -> int:
     if not passed:
         print("\n[smoke] 失败诊断：", file=sys.stderr)
         if not result.get("goal_completed"):
-            print("  - plan_update 未完成 goal", file=sys.stderr)
+            print("  - work_update 未完成 goal", file=sys.stderr)
         if not result.get("has_traces"):
             print("  - 无审核轨迹（auditorAttempts）", file=sys.stderr)
         if not result.get("backup_model_used"):

@@ -1,108 +1,95 @@
 # 13 - 启动闸门与 TUI 浮层
 
-> 当前权威设计：ADR 0038；proposal 语义职责见 ADR 0037。
+> 当前权威：ADR 0051；proposal 语义职责继承 ADR 0037。
 
-## 两条启动路径
+## 三条建立路径
 
-### Task Plan：默认直接建立
+### soft Work List：默认轻量入口
 
 ```text
-明确、需要跟踪的多步执行任务
-  → before_agent_start 注入 Task Plan 默认指引
-  → agent 视需要调用 task_plan
-  → 立即 active，展示 task 列表
+普通多步工作值得跟踪
+  → before_agent_start 注入 soft guidance
+  → agent 视需要调用 work_list
+  → 立即 active；不启动 continuation / no-progress / auditor
 ```
 
-Task Plan 不需要 `/dgoal`、pending proposal、语义预审或确认 UI。它不扩大权限；真正动作仍按宿主工具授权执行。再次调用 `task_plan` 会整份替换当前 Task Plan 的 objective、goal description 与全部 task。普通明确多步执行，以及 AFK、有界、低风险且有停止条件的探索，都可使用 Task Plan 承载当前 frontier；提交前只做轻量相关性/必要性/依赖/证据路径自检，不增加独立自检阶段或硬门。跨文件、命令或外部状态的交付可按需以 `deliverables` 显式声明；声明后必须逐项有 evidence。当前 task 全部完成时 Plan 保持 active，主 agent 按新证据新增 task、在目标重构时替换 Task Plan，或回读全部 task Description 与交付物后显式关闭，仍不启动独立审核。
+讨论、解释、能力问答和单步回答不建清单。`work_list` 可原子重写当前 soft Work List；全部 Work Item terminal 且真实 Phase 显式 done 后自动收口并返回总结。
 
-纯讨论、解释、能力问答和单步回答不建立 Task Plan。若 agent 判断任务需要冻结验收契约或独立审核，只能建议用户使用 `/dgoal`，不能自行调用 `phase_plan` / `goal_plan`。
+### Execution Plan：直接增加 Until Done
 
-### Phase/Goal Plan：显式启动闸门
+```text
+工作确实需要持续推进
+  → agent 调用 execution_plan
+  → 创建计划态 Work List，或原子升级当前 soft Work List
+  → active + continuation + 固定活性熔断
+```
+
+Execution 不需要 `/dgoal`、语义预审或确认 UI，也不扩大宿主权限。若真实用户已经显式授权高保障 dgoal，不能静默降级成 Execution。
+
+### Goal Check / Staged Check：显式启动闸门
 
 ```text
 /dgoal [objective]
-或用户明确祈使“使用/启动 dgoal”
-  → pending goal + propose prompt
+或真实用户明确祈使“使用/启动 dgoal”
+  → pending Goal + propose prompt
   → 主 agent 读相关文档/代码
-  → 推荐 Phase Plan 或 Goal Plan
-  → 为 goal / phase / 初始 task 写明 Description
-  → 精简核对端到端结果、适用生命周期/真实调用链、失败路径与验收契约一致性
-  → 直接修正后调用 phase_plan / goal_plan
-  → 结构校验
-  → 当前会话模型语义预审
+  → 选择 Goal Check 或 Staged Check
+  → 归一 Work List，写 Goal / Phase / Work Item Description
+  → 核对端到端结果、真实调用链、失败路径与验收契约
+  → goal_plan / staged_plan
+  → 结构校验 → 当前会话模型语义预审
   → pending proposal
-  → ui.select 确认 / 拒绝 / 反馈 / 切换 Plan 类型
-  → 确认后 active
+  → ui.select 确认 / 拒绝 / 反馈 / 切换 Profile
+  → 确认后原子 active
 ```
 
-- **Phase Plan**：phase 只组织进度；冻结 goal 验收条件，最终 `goal_check`。
-- **Goal Plan**：phase 是独立验收里程碑；冻结 phase 与 goal 条件，逐 phase check 后再 goal check。
+- **Goal Check**：允许零 Phase；只冻结 goal 条件，最终 `goal_check`。
+- **Staged Check**：至少一个真实 Phase；冻结 Phase + goal 条件，逐 Phase check 后再 goal check。
 
-用户选择切换类型时，确认 UI 返回反馈，让 agent 改用另一入口重新提交；运行时不在原 proposal 上静默改 `planType`。
+Profile 切换由确认 UI 返回反馈，要求 agent 用另一 proposal 工具重提；运行时不在原 proposal 上静默改 Profile。提案失败或 UI 异常不得改变现有 Work List / Plan Contract。
 
-### 裸 `/dgoal`
+### 裸 `/dgoal` 与自然语言授权
 
-裸命令承接前文，由 agent 归纳 objective；若没有可承接上下文，只提示用户补目标，不创建空 pending Plan。查看状态必须显式用 `/dgoal s`。
+裸命令承接前文，由 agent 归纳 objective / description；没有可承接上下文时提示补目标，不建立空合同。真实 interactive / RPC 用户输入中的明确祈使可形成一次性授权；能力问句、引用、否定、处理中追加、extension 注入与 transform 后无法精确绑定的输入不授权。
 
-### 自然语言显式启动
+## Proposal 确认内容
 
-真实用户在空闲 interactive / RPC 输入中以祈使句明确要求使用 dgoal，可获得一次性显式启动权。能力问句、引用/代码示例、解释讨论、否定句、标识符后缀、处理中追加和 extension 注入不授权。该路径仍经过语义预审和用户确认，不是隐式启动，也不得静默降级成 Task Plan。
-
-## 启动确认内容
-
-确认框展示：
-
-- Plan 类型；
-- objective、goal description 与 verification；
-- goal acceptance criteria；
-- Goal Plan 的 phase acceptance criteria；
-- `userReviewItems`；
-- phases 与 task 数，可展开查看 phase/task description、依赖；
-- `nonGoals` / `guardrails` 等已提供边界；
-- readiness 提示。
-
-不再展示或切换 verification policy、bounded/unbounded budget、implicit 权限。成本预估文本不是运行时策略。
-
-## Proposal 语义边界
-
-- 确定性代码只校验结构、状态、Plan 类型与显式授权。
-- 主 agent 提交前的精简质量检查只修正 Plan/契约覆盖，不输出报告或新增 hard gate；简单目标允许判定检查项不适用。
-- 当前会话模型判断候选条件属于独立验收、用户复核、人工 blocker，或依赖未来审核器不可取得证据的不可准入条件；最后一类必须在启动前拒绝，不扩成 Plan 质量审核器。
-- 不可准入条件包括无可导出不可变审计记录支撑的历史否定事实，以及仅依赖父会话、agent/worker/user 记忆或未文档化宿主遥测的断言；不得伪装迁移为 `userReviewItems`，应删除绝对主张或收缩至可观察、可独立复验的证据范围。
-- 主 agent 的提案提示在提交前明确同一边界，且 `guardrails` / `nonGoals` 不得重述为冻结完成门。语义审核拒绝时应在可用的 `issues` 中一次报告所有不可准入 criterion；每项包含原文、分类、原因和改写方向，避免逐条重提。
-- 高风险真实动作由执行时工具边界决定，不靠 proposal 关键词猜测。
-- 审核器只核冻结结果，不扩张完成门。
-- 语义或技术失败不得留下半激活 Plan。
+确认框展示：Profile、Goal objective / description / verification、goal criteria、Staged Phase criteria、userReviewItems、Work List / Phase / Work Item 概览、nonGoals / guardrails 与 readiness。可展开 Work Item Description。它不展示旧 verification policy、runtime budget 或隐式权限。
 
 ## 持续显示浮层
 
 使用 `setWidget("dgoal-plan", ..., { placement: "aboveEditor" })`：
 
-- Task Plan 默认显示平铺 task，隐藏 phase 永不显示；Phase/Goal Plan 默认显示 phase 主干。
-- `Ctrl+O`：仅展开 Phase/Goal Plan 未完成 phase 下的 task 与建检活性；再次按下收起。goal 完成后的 10 秒快照则完整展示所有 phase/task，不受日常 10 行限制。
-- heading 优先保留进度与耗时，objective 按当前终端显示宽度（含中文宽字符）动态裁切，禁止自动换成第二行。
-- 展开中的 active Plan 最多 10 行，过长时显示折叠提示。
-- done 文本使用删除线，状态用 `○ / ◐ / ✓ / ⚠` 字符，层级用固定基色。
-- 持续浮层不显示 description；理由与方法边界只在工具展开结果、Plan context 和 `/dgoal s` 中出现。
+- heading 显示 Profile、聚合 Work Item 进度、耗时与按终端宽度裁切的 objective；
+- flat Work List 默认显示当前 Work Item；有 Phase 时显示真实 Phase 主干；不存在隐藏 Phase；
+- `Ctrl+O` 展开 Work Item 与建检活性；active 日常视图最多 10 行；
+- done 文本使用删除线，状态用 `○ / ◐ / ✓ / ⚠ / ◌` 等字符；
+- 持续浮层不展示完整 Description；详细字段由工具展开或 Status Modal 承担；
+- Goal 完成时展示短暂 done snapshot 后隐藏；即使动画失败，状态已先清理。
 
-刷新时机包括 Plan 激活、八个工具执行结束、agent turn 结束，以及 session start/tree/compact 重同步。状态机和持久化不依赖 TUI 成功；`setWidget`、`setStatus`、notify 或 Modal 抛错只能降级。
+刷新时机包括九工具结束、agent turn、Plan 激活、session start/tree/compact 与 check 活性变化。状态机和持久化不依赖 TUI 成功。
 
-## `/dgoal s` 详细查询 Modal
+## `/dgoal s` Current / History Modal
 
-使用 `ctx.ui.custom(..., { overlay: true, anchor: "center" })`。它是列表/详情两层状态机：
+使用 `ctx.ui.custom(..., { overlay: true, anchor: "center" })`：
 
-- **列表页**：钉住 goal heading；展示完整 goal description、当前 frontier 的直接原因与下一合法动作、最新适用 goal/phase 审核投影，以及可选择的 phase/task 层级。Task Plan 平铺 task，不显示隐藏 phase。
-- **选中与浏览**：`↑/↓` 或 `j/k` 按逻辑 Plan item 移动，`g/G` 选中首尾项并让窗口跟随；`PgDn/PgUp`、`Ctrl+D/Ctrl+U` 与 `Home/End` 只滚动列表物理行，不改变选中项，确保超长 goal description 可从头浏览到尾。换行续行不成为独立选择。
-- **详情页**：`Enter` 打开所选 phase/task，显示完整 description、声明交付物及逐项证据、status、所在 phase、dependencies、evidence、blocked reason、局部 frontier；phase 还显示最新 check/反馈。长文本独立滚动。
-- **返回/关闭**：详情页 `Esc` 返回列表并保留原选择，列表页 `Esc` 关闭；`Ctrl+C` 可直接关闭。
-- Phase/Goal Plan 列表包含 done phase 的 task；审核运行时仍只展示轻量活性片段。审核终态只展示最新反馈与最新完成声明，较早 `finalAuditHistory` 修复索引不展开。
-
-持续显示浮层是 L3 widget；详细查询是 L2 overlay Modal，两者不可混叫。
+- **Current tab**：Goal heading、完整 Description、Profile、frontier、最新适用审核投影与可选 Phase / Work Item。
+- **History tab**：当前 session 分支的终态 Plan Run 列表；详情展示 Profile、终态、Goal、Description、Plan Run ID、summary / verification、结构化 check 与 Work List 快照。
+- **两层浏览**：Enter 打开详情；Esc 返回且保留选择；Ctrl+C 关闭；长文本和列表各自滚动。
+- **只读**：Modal 不修状态、不恢复 History；`/dgoal history clear` 使用独立二次确认。
+- **隐私边界**：History 与审核投影不展示 auditor 原始 report、thinking、transcript、checkpoint 或内部修复索引。
 
 ## 状态栏
 
-`setStatus("dgoal", …)` 显示 goal 级 starting / active / paused / done。check rejection 保持 active，并通过 Plan context 与工具结果推动修复；新三档 Plan 不使用预算宽限或 `budget_exhausted` 展示。
+`setStatus("dgoal", …)` 显示 starting / active / paused / done 与 Profile。business rejection 保持 active。soft Work List 不显示 Plan pause 语义。
 
 ## 启动兜底
 
-显式 `/dgoal` 后主 agent 若没有调用 `phase_plan` / `goal_plan`，运行时可提示重试；连续失败后中止 pending 启动，不以空 Plan 越过确认闸门。Task Plan 不走此兜底。
+显式 `/dgoal` 后主 agent 若未提交 `goal_plan` / `staged_plan`，运行时可有界提示重试；连续失败后中止 pending 启动，不用空 Plan 越过确认门。soft / Execution 不走该兜底。
+
+## Fail-soft 边界
+
+- proposal 确认 UI 抛错：恢复 pending proposal 或保持原状态，不半激活；
+- overlay / status / notify 抛错：跳过展示，状态事实不变；
+- check 活性渲染抛错：审核结果仍按 revision 落地；
+- completion snapshot 抛错：done / tombstone / runtime 清理已经完成，工具仍返回总结。

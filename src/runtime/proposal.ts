@@ -1,6 +1,4 @@
-import type { AcceptanceCriterion, Phase, PlanStatus, PlanType, Task, TaskPlan } from "../plan/index.ts";
-import { coerceNumberArray } from "../plan/reducer.ts";
-import type { PlanProposal } from "../goal-runtime/types.ts";
+import type { AcceptanceCriterion } from "../work-list/index.ts";
 
 export type ProposalReadinessLevel = "L0" | "L1" | "L2" | "L3";
 export type ProposalReadinessGap = "objective" | "verification" | "acceptanceCriteria" | "phases" | "nonGoals" | "guardrails";
@@ -13,8 +11,8 @@ export interface ProposalReadinessAssessment {
 export interface ProposalValidationInput {
   objective: string;
   description?: string;
-  planType?: Exclude<PlanType, "task">;
   verification?: string;
+  assuranceProfile: "goal_check" | "staged_check";
   acceptanceCriteria?: AcceptanceCriterion[];
   phaseCount: number;
   phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
@@ -55,7 +53,7 @@ export function assessProposalReadiness(input: {
   acceptanceCriteria?: AcceptanceCriterion[];
   phaseCount?: number;
   phaseAcceptanceCriteria?: Array<AcceptanceCriterion[] | undefined>;
-  planType?: Exclude<PlanType, "task">;
+  assuranceProfile: "goal_check" | "staged_check";
   nonGoals?: string[];
   guardrails?: string[];
 }): ProposalReadinessAssessment {
@@ -64,7 +62,8 @@ export function assessProposalReadiness(input: {
   const hasVerification = Boolean(input.verification?.trim());
   const hasAcceptanceCriteria = Boolean(input.acceptanceCriteria?.length);
   const hasPhases = (input.phaseCount ?? 0) > 0;
-  const hasPhaseAcceptanceCriteria = input.planType === "phase"
+  const phaseCriteriaRequired = input.assuranceProfile === "staged_check";
+  const hasPhaseAcceptanceCriteria = !phaseCriteriaRequired
     ? true
     : hasPhases
       && (input.phaseAcceptanceCriteria ?? []).length === input.phaseCount
@@ -75,46 +74,16 @@ export function assessProposalReadiness(input: {
   if (!hasObjective) gaps.push("objective");
   if (!hasVerification) gaps.push("verification");
   if (!hasAcceptanceCriteria || !hasPhaseAcceptanceCriteria) gaps.push("acceptanceCriteria");
-  if (!hasPhases) gaps.push("phases");
+  if (!hasPhases && input.assuranceProfile === "staged_check") gaps.push("phases");
   if (!hasNonGoals) gaps.push("nonGoals");
   if (!hasGuardrails) gaps.push("guardrails");
 
   if (!hasObjective) return { level: "L0", gaps };
-  if (!hasVerification || !hasPhases || !hasAcceptanceCriteria || !hasPhaseAcceptanceCriteria) return { level: "L1", gaps };
+  if (!hasVerification || (!hasPhases && input.assuranceProfile === "staged_check") || !hasAcceptanceCriteria || !hasPhaseAcceptanceCriteria) return { level: "L1", gaps };
   if (hasNonGoals && hasGuardrails) return { level: "L3", gaps };
   return { level: "L2", gaps };
 }
 
-export function proposalToPlan(proposal: PlanProposal): TaskPlan {
-  let nextId = 1;
-  const phaseIds = proposal.phases.map((_, index) => index + 1);
-  const phases: Phase[] = proposal.phases.map((phase, phaseIndex) => {
-    const phaseId = phaseIds[phaseIndex];
-    const rawTasks = phase.tasks ?? [];
-    const taskGlobalIds = rawTasks.map(() => nextId++);
-    const tasks: Task[] = rawTasks.map((task, taskIndex) => {
-      const mappedBlockedBy = coerceNumberArray(task.blockedBy)
-        .map((localOneBased) => taskGlobalIds[localOneBased - 1])
-        .filter((id): id is number => typeof id === "number");
-      return {
-        id: taskGlobalIds[taskIndex],
-        subject: task.subject,
-        description: task.description,
-        status: "pending" as PlanStatus,
-        ...(mappedBlockedBy.length ? { blockedBy: mappedBlockedBy } : {}),
-      };
-    });
-    return {
-      id: phaseId,
-      subject: phase.subject,
-      description: phase.description,
-      status: "pending" as PlanStatus,
-      tasks,
-      ...(phase.acceptanceCriteria?.length ? { acceptanceCriteria: phase.acceptanceCriteria } : {}),
-    };
-  });
-  return { phases, nextId };
-}
 
 export function validateProposalInputCore(
   input: ProposalValidationInput,
@@ -126,15 +95,16 @@ export function validateProposalInputCore(
   if (!input.verification || !input.verification.trim()) {
     return { error: "no verification", message: translate("proposal.validate.noVerification") };
   }
-  if (input.phaseCount === 0) {
+  if (input.phaseCount === 0 && input.assuranceProfile !== "goal_check") {
     return { error: "no phases", message: translate("proposal.validate.noPhases") };
   }
   const hasValidCriteria = (criteria: AcceptanceCriterion[] | undefined) => Boolean(criteria?.length)
     && criteria!.every((item) => Boolean(item.criterion?.trim()) && Boolean(item.evidence?.trim()));
   const hasGoalCriteria = hasValidCriteria(input.acceptanceCriteria);
-  const hasPhaseCriteria = input.phaseAcceptanceCriteria?.length === input.phaseCount
-    && input.phaseAcceptanceCriteria.every((criteria) => hasValidCriteria(criteria));
-  if (!hasGoalCriteria || (input.planType !== "phase" && !hasPhaseCriteria)) {
+  const requiresPhaseCriteria = input.assuranceProfile === "staged_check";
+  const hasPhaseCriteria = !requiresPhaseCriteria || (input.phaseAcceptanceCriteria?.length === input.phaseCount
+    && input.phaseAcceptanceCriteria.every((criteria) => hasValidCriteria(criteria)));
+  if (!hasGoalCriteria || !hasPhaseCriteria) {
     return { error: "no acceptance criteria", message: translate("proposal.validate.noAcceptanceCriteria") };
   }
   if (!input.description || !input.description.trim()) {

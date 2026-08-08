@@ -1,62 +1,46 @@
 # doc 文档导航
 
-> 本目录记录 dgoal 的核心原理、架构、能力参考、路线图和版本实施方案。当前主线：**三档 Plan 共享运行时——当前 task 耗尽统一先由主 agent 决定是否新增 task；Task Plan 在 goal scope 决定新增、替换或显式关闭，Phase/Goal Plan 在当前 phase scope 决定新增 task 或进入既有建检链；Phase Plan 只做 goal 终审，Goal Plan 做 phase + goal 两级独立审核；check 与完成状态分离**（ADR 0038、0047、0048）；phase/task ID 采用独立命名空间（ADR 0039）；goal / 可见 phase / task 使用必填 Description，`contextSummary` 已删除（ADR 0042）；Task Plan 可按需声明交付物、以逐项证据与显式收口自检关闭，压缩摘要不得覆盖持久 Plan（ADR 0046、0047）；自动续跑由 LLM 负责继续/暂停的语义选择，运行时只观察结构化活性并以双层熔断兜底（ADR 0045）；Task Plan 的 `model_error` 由下一条精确绑定的真实用户输入恢复同一 Plan，扩展输入与显式 Plan 不自动唤醒（ADR 0050）；当前 phase 的 `blockedBy` 还会纯派生 Task DAG 读模型供 `plan_read`、`/dgoal s` 与 prompt 共用，ready 仅声明通用执行/委派边界，不新增持久态或调度器。
+> 本目录记录 dgoal 的核心原理、当前架构、外部能力参考、路线图与版本实施方案。**v0.8.1 当前实现**以 ADR 0051 为结构权威：每个 Goal 只有一份 Work List，Phase 仅按真实串行边界可选出现，Plan Contract 以 Execution / Goal Check / Staged Check 三档单向升级；公共接口为九个两词工具，持久化为 `dgoal-work-v1` + `dgoal-plan-history-v1`。ADR 0038 的旧结构与工具面只保留历史背景。
 
 ## 阅读顺序
 
-接手 dgoal 或做架构/代码决策前，建议按这个顺序读：
+接手 dgoal 或做架构/代码决策前，按以下顺序阅读：
 
-1. `术语表.md` — dgoal 项目语言与禁用同义词；含**建检循环**第一性原理定义
-2. `10-架构与运行/10-建检循环与三层结构.md` — 核心原理、三层内容、双可见性轴、建检不可绕过性
-3. `10-架构与运行/11-状态机.md` — goal/phase/task 状态机、正交 CheckRecord 与固定技术暂停出口
-4. `10-架构与运行/12-工具命令与数据模型.md` — 八个两词工具、/dgoal 命令、数据模型、持久化
-5. `10-架构与运行/13-启动闸门与TUI浮层.md` — /dgoal 启动流程、确认 UI、持续浮层与两层状态 Modal
-6. `10-架构与运行/14-TUI边界与状态机容错.md` — TUI 渲染异常不能阻断状态机和 goal 闭环
-7. `30-路线图/30-项目路线图.md` — 实现切片排期、待拷问项（已全部完成）、暂不做/不做边界
-8. `40-版本实施方案/` — 版本级实施方案与验收记录；当前三档 Plan 破坏性升级见 ADR 0038，历史版本见 `CHANGELOG.md`
-9. `../index.ts` — 扩展入口；运行时与职责模块位于 `../src/`
-10. `决策档案/README.md` — 决策档案索引；再按需深入对应 ADR
+1. `术语表.md` — 当前项目语言、状态与禁用同义词
+2. `10-架构与运行/10-建检循环与三层结构.md` — Build-Check Loop（建检循环）、Goal / Work List / Plan Contract 的关系
+3. `10-架构与运行/11-状态机.md` — Goal、Work Item、Phase、CheckRecord、暂停与关闭状态机
+4. `10-架构与运行/12-工具命令与数据模型.md` — 九工具、`/dgoal` 命令、当前类型与双持久键
+5. `10-架构与运行/13-启动闸门与TUI浮层.md` — 软清单/Execution 直建、高保障确认门与统一 TUI
+6. `10-架构与运行/14-TUI边界与状态机容错.md` — TUI fail-soft（失败降级）与关闭清理顺序
+7. `30-路线图/30-项目路线图.md` — v0.8.1 当前里程碑与后续候选
+8. `40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md` — 当前版本规格与验收记录
+9. `../index.ts` 与 `../src/` — 当前行为事实；`src/work-list/` 是数据层，`src/runtime/` 负责九工具与生命周期
+10. `决策档案/README.md` — ADR 索引；结构先读 ADR 0051，再按主题追溯被覆盖决策
 
-需要了解设计依据和外部参考时：
-
-11. `20-能力参考/` — 外部事实参考，不决定排期
-12. `20-能力参考/20-范式对比-plan-mode-loop-goal.md` — 三范式对比，dgoal 为什么是 goal 范式
-13. `20-能力参考/21-rpiv-todo借鉴.md` — TUI 浮层/reducer/持久化借鉴
-14. `20-能力参考/22-ADaPT与建检模式.md` — 按需分解 + 独立验证的理论依据
-15. `20-能力参考/23-老金Goal×Loop搭配指南参考.md` — “愿望 vs 可验收 goal”用户教育参考（verification 必填的外部启发）
-16. `20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md` — Pi `ctx.ui.custom()` modal 选型调研
-17. `20-能力参考/25-dgoal-s-modal变体探索参考.md` — `/dgoal s` 三个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘
-18. `20-能力参考/26-Datawhale-LoopEngineering三文件循环参考.md` — Datawhale 推文三文件循环、图片机制核对与 dgoal 借鉴判断
-19. `20-能力参考/27-独立规划agent与独立审核agent参考.md` — 独立审核加深 vs 独立规划暂候选的判断
-20. `20-能力参考/28-循环工程与三层loop参考.md` — Cobus/Addy/吴恩达三层 loop 借鉴：就绪度自检 + 可核对文本候选，理清 goal/loop 概念版图
-21. `20-能力参考/29-ClaudeDevs循环类型参考.md` — ClaudeDevs 四类 loop 与 Claude Code 官方机制核实：定位 dgoal 是 goal-based 建检循环，不借 scheduler/proactive 平台
-22. `20-能力参考/30-CriticalThinking-Wayfinder与SpecSelfReview参考.md` — 从路由、探索、减法与建检四维判断，并记录已落地的 Task Plan frontier guidance 与 Plan/task 软性自检提示
-23. `20-能力参考/31-Plannotator计划审阅扩展参考.md` — 浏览器计划审阅、批注与 Diff 的机制核对；明确只作为 dgoal 可选审阅 UI 参考
-
-历史材料：
-
-- `90-归档/Task-Plan设计底稿-拷问过程.md` — 507-grill 拷问全过程（1-25 轮），稳定决策已迁入 adr，仅追溯时阅读
+需要了解外部依据时，再读 `20-能力参考/`。`90-归档/` 与被 ADR 0051 覆盖的 ADR 只用于解释历史，不得作为当前工具、状态或持久化权威。
 
 ## 目录职责
 
 | 目录 / 文件 | 职责 | 是否权威 |
 |---|---|---|
-| `术语表.md` | 项目语言、核心概念定义（含建检循环）、禁用同义词 | 是，命名权威 |
-| `决策档案/` | 架构决策记录；入口为 `决策档案/README.md`，只收"难逆转、无上下文会困惑、有真实权衡"的决策 | 是，决策权威 |
-| `经验笔记.md` | 可改的做法与避坑经验（活页）；解决换 agent 会重走的坑时记 | 否，活页参考 |
-| `10-架构与运行/` | 当前架构：建检循环、状态机、工具命令、启动闸门、TUI 边界容错 | 是，当前实现权威 |
-| `20-能力参考/` | 范式对比、rpiv-todo 借鉴、ADaPT/建检模式调研 | 是，作为事实参考；不直接决定排期 |
-| `30-路线图/` | 实现切片排期、待拷问项、暂不做/不做边界 | 是，路线图权威 |
-| `40-版本实施方案/` | 版本级实施方案和验收记录 | 受路线图约束 |
-| `90-归档/` | 已归档的拷问过程、早期设计稿 | 否，仅查历史 |
+| `术语表.md` | 当前概念、命名、状态与禁用同义词 | 是，命名权威 |
+| `决策档案/` | 难逆转且有真实权衡的架构决策；入口为 `决策档案/README.md` | 是，决策权威 |
+| `经验笔记.md` | 可变化的做法与避坑经验 | 否，活页参考 |
+| `10-架构与运行/` | 当前运行架构、状态机、工具、启动闸门与 TUI 容错 | 是，当前实现权威 |
+| `20-能力参考/` | 范式、外部项目与理论依据 | 事实参考，不决定排期 |
+| `30-路线图/` | 已完成主干、后续候选与不做边界 | 是，路线图权威 |
+| `40-版本实施方案/` | 版本级实施合同与验收记录 | 受路线图与 ADR 约束 |
+| `90-归档/` | 早期底稿与历史方案 | 否，仅查历史 |
 
-## 文档原则
+## 当前文档原则
 
-1. **建检循环是基本盘**：dgoal = 定义 goal + 完成后 check，不过继续干，过则结束。一切设计服从这个第一性原理。
-2. **心智模型不建模**：建检循环是心智模型，不是显式数据结构（ADR 0006）。
-3. **三层内容 + 按 Plan 投影**：goal/phase/task 共享持久结构并使用必填 Description；Task Plan 隐藏内部 phase 并直接展示 task，Phase/Goal Plan 展示 phase 主干；Description 进入执行上下文和两层状态 Modal，但不进入持续浮层或独立审核完成门（ADR 0042）。
-4. **check / update 不可混用**：`phase_check` / `goal_check` 只记录独立审核；只有 `plan_update` 能写完成，并必须验证当前 revision 的批准记录（ADR 0038）。
-5. **惰性创建**：目录和文件按需建立，不预建空结构。
-6. **外部参考只借轻动作**：借 UI/reducer/状态边界/理论依据，不照搬完整平台。
-7. **轻提案、硬执行**：Phase/Goal proposal 由代码校验结构、状态、Plan 类型与授权，LLM 负责语义与人工依赖分流，真实动作受执行边界约束，审核器只核冻结结果；Task Plan 不走 proposal（ADR 0037/0038）。
-8. **语义选择与活性观测分层**：自动续跑时 LLM 决定继续实际推进或在真实用户决策死锁时结构化暂停；运行时不解析 assistant / `bash` 语义，只观察 activity 与 durable progress，并在双层阈值后强制 `paused(no_progress)`（ADR 0045）。
+1. **一 Goal 一 Work List**：不得建立计划内/计划外平行清单；软清单与 Plan Contract 共享同一结构。
+2. **结构与保障正交**：Phase 只表达真实串行边界；Until Done、goal 终审、逐 Phase 建检由 Plan Contract Profile 决定。
+3. **check / update 分离**：`phase_check` / `goal_check` 只记录审核；Phase / Goal done 只能由 `work_update` 写入，并匹配当前 revision。
+4. **软清单不自动续跑**：soft Work List 跨 turn 保留，但没有 continuation、no-progress 计数或独立审核；Execution Plan 才增加 Until Done。
+5. **高保障显式授权**：Goal Check / Staged Check 必须经用户授权、结构校验、语义预审和原子确认；失败不得留下半激活状态。
+6. **Description 是执行说明**：Goal、真实 Phase、计划态 Work Item 必须有 Description；硬完成门属于 `acceptanceCriteria`，主观体验属于 `userReviewItems`。
+7. **关闭必须可靠且可见**：完成写入后必须追加 null tombstone，清理 continuation / proposal / 熔断 / check snapshot / 授权，并返回结构化完成总结。
+8. **History 只存耐久事实**：Plan Run History 保留结构、完成证据与 check 结论；不保存 auditor report、feedback、thinking 或 transcript，也不能 resume。
+9. **LLM 语义、运行时结构化**：LLM 负责取舍；运行时不解析 assistant 文本或 shell 字符串，只观察 tool result、持久状态与可验证证据。
+10. **TUI fail-soft**：状态、持久化、审核和渲染分离；UI 异常不能阻断或伪造生命周期。

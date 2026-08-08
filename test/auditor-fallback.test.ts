@@ -24,18 +24,33 @@ const failed = (errorInfo: AuditorResult["errorInfo"], error = "auditor failed")
   errorInfo,
 });
 
+function candidateGoal(id: string) {
+  return {
+    id,
+    objective: id,
+    description: "验证审核候选回退与复用。",
+    status: "active" as const,
+    startedAt: 1,
+    updatedAt: 1,
+    iteration: 0,
+    workList: {
+      items: [{ id: 1, subject: "审核候选", description: "验证候选选择。", status: "pending" as const }],
+      phases: [], nextItemId: 2, nextPhaseId: 1, revision: 0,
+    },
+    contract: {
+      id: `run-${id}`, profile: "goal_check" as const, startedAt: 1, revision: 0,
+      transitions: [{ to: "goal_check" as const, at: 1, revision: 0 }],
+      verification: "bun test test/auditor-fallback.test.ts",
+      acceptanceCriteria: [{ criterion: "候选回退可复验", evidence: "bun test test/auditor-fallback.test.ts" }],
+    },
+  };
+}
+
 describe("auditor candidate fallback", () => {
   test("persists a healthy fallback and reuses it after reload", () => {
     const writes: any[] = [];
     __setApiForTest({ appendEntry: (_type: string, data: unknown) => writes.push(data) });
-    __setGoalForTest({
-      id: "candidate-state",
-      objective: "candidate state",
-      status: "active",
-      startedAt: 1,
-      updatedAt: 1,
-      iteration: 0,
-    } as never);
+    __setGoalForTest(candidateGoal("candidate-state"));
 
     __recordAuditorCandidateResultForTest("goal", {
       approved: true,
@@ -48,11 +63,11 @@ describe("auditor candidate fallback", () => {
       ],
     });
 
-    expect(__getGoalForTest()?.auditorCandidates?.goal).toEqual({
+    expect(__getGoalForTest()?.contract?.auditorCandidates?.goal).toEqual({
       selectedModelId: "backup/model",
       failedModelIds: ["primary/model"],
     });
-    expect(writes.at(-1)?.goal?.auditorCandidates?.goal.selectedModelId).toBe("backup/model");
+    expect(writes.at(-1)?.goal?.contract?.auditorCandidates?.goal.selectedModelId).toBe("backup/model");
 
     const reloaded = JSON.parse(JSON.stringify(__getGoalForTest()));
     __setGoalForTest(reloaded);
@@ -66,14 +81,7 @@ describe("auditor candidate fallback", () => {
   test("候选 1/2 故障后候选 3 形成结论，并在 reload 后复用候选 3", async () => {
     const writes: unknown[] = [];
     __setApiForTest({ appendEntry: (_type: string, data: unknown) => writes.push(data) });
-    __setGoalForTest({
-      id: "candidate-chain-3",
-      objective: "candidate chain",
-      status: "active",
-      startedAt: 1,
-      updatedAt: 1,
-      iteration: 0,
-    } as never);
+    __setGoalForTest(candidateGoal("candidate-chain-3"));
 
     const firstCalls: string[] = [];
     const first = await runCheckWithRetry({
@@ -101,7 +109,7 @@ describe("auditor candidate fallback", () => {
     });
     expect(secondCalls).toEqual(["candidate/3"]);
     __recordAuditorCandidateResultForTest("goal", second);
-    expect(__getGoalForTest()?.auditorCandidates?.goal).toEqual({
+    expect(__getGoalForTest()?.contract?.auditorCandidates?.goal).toEqual({
       selectedModelId: "candidate/3",
       failedModelIds: ["candidate/1", "candidate/2"],
     });

@@ -153,23 +153,25 @@ def assert_tools(session: RpcSession) -> dict[str, Any]:
     if len(raw_names) != len(names):
         raise AssertionError(f"duplicate tool registration detected: {raw_names}")
     required = {
-        "task_plan",
-        "phase_plan",
+        "work_list",
+        "execution_plan",
         "goal_plan",
-        "plan_create",
-        "plan_read",
-        "plan_update",
+        "staged_plan",
+        "work_create",
+        "work_read",
+        "work_update",
         "phase_check",
         "goal_check",
     }
-    retired = {"dgoal_" + suffix for suffix in ("propose", "plan", "check", "done", "pause")}
+    retired = ({"dgoal_" + suffix for suffix in ("propose", "plan", "check", "done", "pause")} |
+               {"task_plan", "phase_plan", "plan_create", "plan_read", "plan_update"})
     missing = sorted(required - names)
     leaked = sorted(retired & names)
     # getAllTools() includes Pi built-ins, so names == required would be a false assertion.
-    # Exact extension registration count is covered by three-plan-runtime.test.ts; RPC verifies
-    # all eight names survive real host loading, are unique, and no retired public name leaks.
+    # Exact extension registration count is covered by deterministic Bun tests; RPC verifies
+    # all nine names survive real host loading, are unique, and no retired public name leaks.
     registered_contract = sorted(required & names)
-    if missing or leaked or len(registered_contract) != 8:
+    if missing or leaked or len(registered_contract) != 9:
         raise AssertionError(f"tool registration mismatch: missing={missing}, retired={leaked}, all={sorted(names)}")
     return {"required": registered_contract, "retired": leaked, "total_tools": len(names)}
 

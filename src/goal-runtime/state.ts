@@ -2,7 +2,7 @@
 // 当前 goal、pending proposal、续跑、计数器、终审反馈、修复账本等所有可变 session 状态
 // 集中在此模块的单例对象中。其他模块只通过此对象读写状态，不自行维护可变 session 状态。
 
-import type { GoalState, PlanProposal } from "./types.ts";
+import type { GoalState, PlanProposal, PlanRunHistoryRecord } from "./types.ts";
 
 export type CheckLivenessState =
   | "starting"
@@ -40,7 +40,7 @@ export interface PendingProposalState {
   goalId: string;
   proposal: PlanProposal;
 }
-export interface TaskPlanModelErrorRecoveryAuthorization {
+export interface ExecutionPlanModelErrorRecoveryAuthorization {
   goalId: string;
   input: string;
 }
@@ -49,14 +49,18 @@ export interface TaskPlanModelErrorRecoveryAuthorization {
 export interface GoalRuntimeState {
   currentGoal: GoalState | undefined;
   pendingProposal: PendingProposalState | undefined;
+  /** Read-only terminal Plan Run snapshots for the current Pi session branch. */
+  planHistory: PlanRunHistoryRecord[];
   proposalRetryCount: number;
   startGoalInProgress: boolean;
   /** One-shot authorization from the latest user input observed by dgoal that explicitly asks to use/start dgoal. */
   naturalLanguageStartAuthorized: boolean;
   /** Exact observed input, used to reject later input-transform changes before agent start. Never persisted. */
   naturalLanguageStartInput: string | undefined;
-  /** One-shot real-user authorization to resume the same Task Plan after model_error. Never persisted. */
-  taskPlanModelErrorRecovery: TaskPlanModelErrorRecoveryAuthorization | undefined;
+  /** Explicit /dgoal command authorization to upgrade the current Work List without replacing it first. */
+  explicitPlanUpgradeGoalId: string | undefined;
+  /** One-shot real-user authorization to resume the same Execution Plan after model_error. Never persisted. */
+  executionPlanModelErrorRecovery: ExecutionPlanModelErrorRecoveryAuthorization | undefined;
   consecutiveErrors: number;
   /** Consecutive normal turns with no tool execution at all. */
   consecutiveNoProgressTurns: number;
@@ -80,11 +84,13 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
   return {
     currentGoal: undefined,
     pendingProposal: undefined,
+    planHistory: [],
     proposalRetryCount: 0,
     startGoalInProgress: false,
     naturalLanguageStartAuthorized: false,
     naturalLanguageStartInput: undefined,
-    taskPlanModelErrorRecovery: undefined,
+    explicitPlanUpgradeGoalId: undefined,
+    executionPlanModelErrorRecovery: undefined,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
     consecutiveNoDurableProgressTurns: 0,
@@ -115,12 +121,20 @@ export function clearNaturalLanguageStartAuthorization(): void {
   goalRuntimeState.naturalLanguageStartInput = undefined;
 }
 
-export function authorizeTaskPlanModelErrorRecovery(goalId: string, input: string): void {
-  goalRuntimeState.taskPlanModelErrorRecovery = { goalId, input };
+export function authorizeExplicitPlanUpgrade(goalId: string): void {
+  goalRuntimeState.explicitPlanUpgradeGoalId = goalId;
 }
 
-export function clearTaskPlanModelErrorRecovery(): void {
-  goalRuntimeState.taskPlanModelErrorRecovery = undefined;
+export function clearExplicitPlanUpgradeAuthorization(): void {
+  goalRuntimeState.explicitPlanUpgradeGoalId = undefined;
+}
+
+export function authorizeExecutionPlanModelErrorRecovery(goalId: string, input: string): void {
+  goalRuntimeState.executionPlanModelErrorRecovery = { goalId, input };
+}
+
+export function clearExecutionPlanModelErrorRecovery(): void {
+  goalRuntimeState.executionPlanModelErrorRecovery = undefined;
 }
 
 // 重置全部可变状态（测试 / session_shutdown 用）。

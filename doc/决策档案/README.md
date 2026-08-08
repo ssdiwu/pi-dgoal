@@ -1,6 +1,6 @@
 # 决策档案索引
 
-> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨（写「定了什么」不写「为什么」，深读点文件）。0006 保留建检循环基本原则；当前运行机制以 0038 为主，ID 语义由 0039 补充，三层 Description 与 `contextSummary` 去留由 0042 规定，自动续跑的语义选择与活性兜底由 0045 规定，Task Plan 的交付物与显式收口由 0046、0047 规定，Task Plan 的无进展受限自恢复由 0049 规定，模型错误后的真实用户输入恢复由 0050 规定。
+> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨。**v0.8.1 当前结构权威为 ADR 0051**；ADR 0038–0050 中仍成立的 check/update 分离、Description、交付物证据、审核局部 revision、结构化熔断与恢复边界由 0051 继承，旧 PlanType、隐藏 Phase、八工具和旧持久键只作历史背景。
 
 | 编号 | 标题 | 一句话主旨 |
 |---|---|---|
@@ -41,16 +41,17 @@
 | [0035](./0035-隐式启动允许本地执行并守住高风险边界.md) | 隐式启动允许本地执行并守住高风险边界 | 已被 ADR 0038 覆盖；Task Plan 不扩大宿主权限 |
 | [0036](./0036-自然语言显式启动复用启动闸门.md) | 自然语言显式启动复用启动闸门 | 用户明确说“使用/启动 dgoal”即可建立一次性显式 pending goal，复杂计划仍经确认 UI |
 | [0037](./0037-轻提案硬执行的语义职责分层.md) | 轻提案、硬执行的语义职责分层 | 代码管结构授权、LLM 管提案语义、执行护栏管真实动作、审核器只核冻结结果 |
-| [0038](./0038-三档Plan与八工具职责分离.md) | 三档 Plan 与八工具职责分离 | Task/Phase/Goal Plan 共享运行时；八个两词工具分离建立、管理与审核，check 不再直接写完成 |
-| [0039](./0039-Phase与Task使用独立ID命名空间.md) | Phase 与 Task 使用独立 ID 命名空间 | phase 与 plan-global task 各自从 1 编号，类型化工具消除同号歧义，旧 Plan 原样兼容 |
-| [0040](./0040-工具结果人类可读投影.md) | 工具结果人类可读投影 | 公开工具以摘要与文字展开投影展示，details 不直出 |
-| [0041](./0041-TaskPlan末任务自动收口.md) | Task Plan 末任务自动收口 | 已被 ADR 0047 覆盖；保留历史的原子自动收口决策。|
-| [0042](./0042-三层Description必填并移除contextSummary.md) | 三层 Description 必填并移除 contextSummary | goal/可见 phase/task 必须说明理由与方法边界；删除背景摘要字段，状态 Modal 改为列表/详情两层 |
-| [0043](./0043-Phase审核使用局部修订号.md) | Phase 审核使用局部修订号 | Goal Plan 的 phase approval 按所属 phase 的局部修订失效，goal_check 仍匹配全局 Plan revision |
-| [0044](./0044-审核检查点只持久化稳定状态.md) | 审核检查点只持久化稳定状态 | 不再为逐工具进度追加完整 Goal 快照；终态和稳定 checkpoint 保持可恢复 |
-| [0045](./0045-LLM语义选择与运行时结构化活性熔断.md) | LLM 语义选择与运行时结构化活性熔断 | LLM 决定继续推进或结构化暂停；运行时只观察结构化活性，并以双层 `no_progress` 熔断兜底 |
-| [0046](./0046-TaskPlan交付物与末任务自检.md) | Task Plan 交付物与末任务自检 | 交付物逐项留证保留；末任务自动收口部分由 ADR 0047 覆盖。|
-| [0047](./0047-TaskPlan任务耗尽后显式收口.md) | Task Plan 任务耗尽后显式收口 | 当前 task 全部完成后由主 agent 新增、替换或显式关闭 Plan。|
-| [0048](./0048-三档Plan任务耗尽决策边界.md) | 三档 Plan 任务耗尽决策边界 | 三档 Plan 的当前 task 耗尽先决定是否新增 task，再进入原有完成链。|
-| [0049](./0049-TaskPlan无进展受限自恢复.md) | Task Plan 无进展受限自恢复 | 仅 Task Plan 的 no_progress 可原子替换或守卫收口；model_error 的用户输入恢复由 ADR 0050 补充。|
-| [0050](./0050-TaskPlan模型错误由真实用户输入恢复.md) | Task Plan 模型错误由真实用户输入恢复 | `model_error` 暂停的 Task Plan 由下一条精确绑定的真实用户输入恢复原 Plan，扩展输入与显式 Plan 不自动唤醒。|
+| [0038](./0038-三档Plan与八工具职责分离.md) | 三档 Plan 与八工具职责分离 | 已被 ADR 0051 取代其 PlanType、隐藏 Phase、旧八工具与持久结构；check/update 分离和保障分档原则保留 |
+| [0039](./0039-Phase与Task使用独立ID命名空间.md) | Phase 与 Task 使用独立 ID 命名空间 | 由 ADR 0051 继承为 Phase / Work Item 独立编号空间；Work Item ID 在 Work List 全局唯一 |
+| [0040](./0040-工具结果人类可读投影.md) | 工具结果人类可读投影 | 九个公开工具继续使用紧凑摘要与白名单化文字展开，原始 details 不直出 |
+| [0041](./0041-TaskPlan末任务自动收口.md) | Task Plan 末任务自动收口 | 历史决策；当前软性 Work List 的可靠自动收口与总结由 ADR 0051 重新定义 |
+| [0042](./0042-三层Description必填并移除contextSummary.md) | 三层 Description 必填并移除 contextSummary | 删除 contextSummary 保留；Goal / 真实 Phase / 计划态 Work Item 必填，soft Work Item 可省略 |
+| [0043](./0043-Phase审核使用局部修订号.md) | Phase 审核使用局部修订号 | Staged Check Phase approval 继续按 Phase local revision 失效；goal_check 匹配 Work List revision |
+| [0044](./0044-审核检查点只持久化稳定状态.md) | 审核检查点只持久化稳定状态 | 不为逐工具进度追加完整 Goal；终态与稳定 checkpoint 可恢复，History 不保留原报告 |
+| [0045](./0045-LLM语义选择与运行时结构化活性熔断.md) | LLM 语义选择与运行时结构化活性熔断 | Plan Contract active 时 LLM 决策、运行时只看结构化活性并以双层 no_progress 熔断；soft Work List 不参与 |
+| [0046](./0046-TaskPlan交付物与末任务自检.md) | Task Plan 交付物与末任务自检 | deliverable 逐项留证保留到计划态 Work Item；旧 Task Plan 收口链由 ADR 0051 取代 |
+| [0047](./0047-TaskPlan任务耗尽后显式收口.md) | Task Plan 任务耗尽后显式收口 | 旧 Task Plan 决策边界被 ADR 0051 的 soft 自动收口与 Execution 显式 Goal 收口分开取代 |
+| [0048](./0048-三档Plan任务耗尽决策边界.md) | 三档 Plan 任务耗尽决策边界 | 当前 Plan Contract 仍由主 agent 在耗尽时决定新增/重组或进入显式 Phase / Goal 完成链 |
+| [0049](./0049-TaskPlan无进展受限自恢复.md) | Task Plan 无进展受限自恢复 | no_progress 受限恢复由 Execution Plan 继承；soft Work List 没有 no_progress 状态 |
+| [0050](./0050-TaskPlan模型错误由真实用户输入恢复.md) | Task Plan 模型错误由真实用户输入恢复 | 精确绑定真实用户输入的恢复语义由 Execution Plan 继承，较高保障 Profile 仍显式恢复 |
+| [0051](./0051-单一工作清单与计划保障正交.md) | 单一工作清单与计划保障正交 | v0.8.1 当前权威：Goal 下唯一 Work List、可选真实 Phase、单向升级 Plan Contract、九工具、双持久键与 Plan Run History |

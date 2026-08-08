@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { validateToolArguments } from "@earendil-works/pi-ai";
 import { Compile } from "typebox/compile";
-import { goalPlanTool, phaseCheckTool, planCreateTool, planUpdateTool, taskPlanTool } from "../index.ts";
+import { executionPlanTool, goalPlanTool, phaseCheckTool, stagedPlanTool, workCreateTool, workUpdateTool } from "../index.ts";
 
 type ToolDef = { parameters: object; prepareArguments?: (args: unknown) => unknown };
 
@@ -13,41 +13,38 @@ function passes(tool: ToolDef, args: Record<string, unknown>): boolean {
   return Compile(tool.parameters as never).Check(prepare(tool, args));
 }
 
-describe("Eight-tool prepareArguments schema seam", () => {
-  test("task_plan coerces stringified initial blockedBy", () => {
-    const args = { objective: "o", description: "goal desc", tasks: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }] };
-    expect(passes(taskPlanTool, args)).toBe(true);
-    expect(((prepare(taskPlanTool, args).tasks as any[])[1].blockedBy)).toEqual([1]);
+describe("nine-tool prepareArguments schema seam", () => {
+  test("execution_plan coerces stringified root Work Item blockedBy", () => {
+    const args = { objective: "o", description: "goal desc", items: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }], phases: [] };
+    expect(passes(executionPlanTool, args)).toBe(true);
+    expect(((prepare(executionPlanTool, args).items as any[])[1].blockedBy)).toEqual([1]);
   });
 
-  test("goal_plan coerces nested task blockedBy", () => {
-    const args = {
+  test("goal_plan and staged_plan coerce nested Work Item blockedBy", () => {
+    const shared = {
       objective: "o",
       description: "goal desc",
       verification: "bun test",
       acceptanceCriteria: [{ criterion: "ok", evidence: "bun test" }],
-      phases: [{
-        subject: "p",
-        description: "phase desc",
-        acceptanceCriteria: [{ criterion: "phase ok", evidence: "bun test" }],
-        tasks: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }],
-      }],
     };
-    expect(passes(goalPlanTool, args)).toBe(true);
-    expect((((prepare(goalPlanTool, args).phases as any[])[0].tasks as any[])[1].blockedBy)).toEqual([1]);
+    const goalArgs = { ...shared, phases: [{ subject: "p", description: "phase desc", items: [{ subject: "A", description: "A desc", blockedBy: "[]" }] }] };
+    expect(passes(goalPlanTool, goalArgs)).toBe(true);
+    expect((((prepare(goalPlanTool, goalArgs).phases as any[])[0].items as any[])[0].blockedBy)).toEqual([]);
+
+    const stagedArgs = { ...shared, phases: [{ subject: "p", description: "phase desc", acceptanceCriteria: [{ criterion: "phase ok", evidence: "bun test" }], items: [{ subject: "A", description: "A desc" }, { subject: "B", description: "B desc", blockedBy: "[1]" }] }] };
+    expect(passes(stagedPlanTool, stagedArgs)).toBe(true);
+    expect((((prepare(stagedPlanTool, stagedArgs).phases as any[])[0].items as any[])[1].blockedBy)).toEqual([1]);
   });
 
-  test("plan_create coerces root blockedBy", () => {
-    const args = { subject: "B", description: "B desc", blockedBy: "[2]" };
-    expect(passes(planCreateTool, args)).toBe(true);
-    expect(prepare(planCreateTool, args).blockedBy).toEqual([2]);
-  });
+  test("work_create and work_update coerce dependency arrays", () => {
+    const createArgs = { target: "item", subject: "B", description: "B desc", blockedBy: "[2]" };
+    expect(passes(workCreateTool, createArgs)).toBe(true);
+    expect(prepare(workCreateTool, createArgs).blockedBy).toEqual([2]);
 
-  test("plan_update coerces dependency deltas", () => {
-    const args = { target: "task", id: 3, addBlockedBy: "[2]", removeBlockedBy: "[]" };
-    expect(passes(planUpdateTool, args)).toBe(true);
-    expect(prepare(planUpdateTool, args).addBlockedBy).toEqual([2]);
-    expect(prepare(planUpdateTool, args).removeBlockedBy).toEqual([]);
+    const updateArgs = { target: "item", id: 3, addBlockedBy: "[2]", removeBlockedBy: "[]" };
+    expect(passes(workUpdateTool, updateArgs)).toBe(true);
+    expect(prepare(workUpdateTool, updateArgs).addBlockedBy).toEqual([2]);
+    expect(prepare(workUpdateTool, updateArgs).removeBlockedBy).toEqual([]);
   });
 
   test("Pi validation preserves nullable strict-schema sentinels", () => {
@@ -56,8 +53,8 @@ describe("Eight-tool prepareArguments schema seam", () => {
     expect(validated).toEqual({ phaseId: null, phaseNumber: 1 });
   });
 
-  test("real arrays are left valid", () => {
-    expect(passes(planCreateTool, { subject: "B", description: "B desc", blockedBy: [2] })).toBe(true);
-    expect(passes(planUpdateTool, { target: "task", id: 3, addBlockedBy: [2] })).toBe(true);
+  test("real arrays remain valid", () => {
+    expect(passes(workCreateTool, { target: "item", subject: "B", description: "B desc", blockedBy: [2] })).toBe(true);
+    expect(passes(workUpdateTool, { target: "item", id: 3, addBlockedBy: [2] })).toBe(true);
   });
 });

@@ -2,22 +2,27 @@ import type { ExtensionUIContext, Theme } from "@earendil-works/pi-coding-agent"
 import type { Component, Focusable } from "@earendil-works/pi-tui";
 import { matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { CheckLivenessSnapshot } from "../goal-runtime/state.ts";
-import type { GoalState, GoalStatus } from "../goal-runtime/types.ts";
-import type { PlanStatus } from "../plan/index.ts";
+import type { GoalState, GoalStatus, PlanRunHistoryRecord } from "../goal-runtime/types.ts";
+import type { WorkItemStatus, WorkPhaseStatus } from "../work-list/index.ts";
 import { computeScrollOffset } from "./helpers.ts";
 
-export const STATUS_GLYPH: Record<PlanStatus, string> = {
+type DisplayStatus = WorkItemStatus | WorkPhaseStatus;
+
+export const STATUS_GLYPH: Record<DisplayStatus, string> = {
   pending: "○",
   in_progress: "◐",
   done: "✓",
   blocked: "⚠",
+  abandoned: "⊘",
 };
 
-export type PlanStatusTarget = { kind: "phase" | "task"; id: number };
-export type RenderLineType = "heading" | "spacer" | "description" | "phase" | "task";
+export type PlanStatusTarget =
+  | { kind: "phase" | "item"; id: number }
+  | { kind: "history"; id: string };
+export type RenderLineType = "heading" | "spacer" | "description" | "phase" | "item" | "history";
 export interface RenderLine {
   type: RenderLineType;
-  status?: PlanStatus;
+  status?: DisplayStatus;
   text: string;
   target?: PlanStatusTarget;
   selected?: boolean;
@@ -32,11 +37,14 @@ export interface PlanTuiDependencies {
   getCurrentGoal: () => GoalState | undefined;
   getCurrentCheckSnapshot: () => CheckLivenessSnapshot | undefined;
   isGoalRunning: (status: GoalStatus | undefined) => boolean;
-  renderPlanLines: (goal: GoalState | undefined, opts: { expandTasks: boolean; activityFrame?: number }, width?: number) => string[];
+  renderPlanLines: (goal: GoalState | undefined, opts: { expandItems: boolean; activityFrame?: number }, width?: number) => string[];
   buildHeadingLine: (goal: GoalState) => string;
   buildPlanStatusListLines: (goal: GoalState | undefined) => RenderLine[];
   buildPlanStatusDetailLines: (goal: GoalState | undefined, target: PlanStatusTarget | undefined) => string[];
   getPlanStatusTargets: (goal: GoalState | undefined) => PlanStatusTarget[];
+  getPlanHistory: () => PlanRunHistoryRecord[];
+  buildPlanHistoryListLines: (records: PlanRunHistoryRecord[]) => RenderLine[];
+  buildPlanHistoryDetailLines: (record: PlanRunHistoryRecord | undefined) => string[];
   computePlanStatusSelection: (data: string, current: number, count: number) => number | null;
   getGoalElapsedMs: (goal: GoalState) => number;
   formatCheckActivityLine: (snapshot: CheckLivenessSnapshot | undefined) => string | undefined;
@@ -88,7 +96,7 @@ function wrapModalLine(line: RenderLine, width: number, theme: Theme): string[] 
 
   const prefixWidth = line.type === "phase"
     ? visibleWidth(`${leftPad}├─ ${line.status ? STATUS_GLYPH[line.status] : "○"} `)
-    : line.type === "task"
+    : line.type === "item"
       ? visibleWidth(`${leftPad}│    ${line.status ? STATUS_GLYPH[line.status] : "○"} `)
       : visibleWidth(leftPad);
   const fullText = leftPad + colored;
@@ -103,7 +111,7 @@ function wrapModalLine(line: RenderLine, width: number, theme: Theme): string[] 
 
 export class PlanOverlayComponent {
   private ui: PlanOverlayUI | undefined;
-  private expandTasks = false;
+  private expandItems = false;
   private terminalInputUnsubscribe: (() => void) | undefined;
   private doneHideTimer: ReturnType<typeof setTimeout> | undefined;
   private doneSnapshot: GoalState | undefined;
@@ -117,12 +125,12 @@ export class PlanOverlayComponent {
       this.terminalInputUnsubscribe = undefined;
     }
     this.ui = ui;
-    this.syncExpandTasksFromToolsState();
+    this.syncExpandedState();
     if (this.ui?.onTerminalInput) {
       try {
         this.terminalInputUnsubscribe = this.ui.onTerminalInput(() => {
           setTimeout(() => {
-            if (this.syncExpandTasksFromToolsState()) this.update();
+            if (this.syncExpandedState()) this.update();
           }, 0);
           return undefined;
         });
@@ -133,11 +141,11 @@ export class PlanOverlayComponent {
     this.startTick();
   }
 
-  private syncExpandTasksFromToolsState(): boolean {
+  private syncExpandedState(): boolean {
     try {
       const expanded = this.ui?.getToolsExpanded?.();
-      if (typeof expanded !== "boolean" || expanded === this.expandTasks) return false;
-      this.expandTasks = expanded;
+      if (typeof expanded !== "boolean" || expanded === this.expandItems) return false;
+      this.expandItems = expanded;
       return true;
     } catch {
       return false;
@@ -156,18 +164,18 @@ export class PlanOverlayComponent {
   }
 
   toggleExpand(): void {
-    this.expandTasks = !this.expandTasks;
+    this.expandItems = !this.expandItems;
     this.update();
   }
 
   update(): void {
     try {
       if (!this.ui) return;
-      this.syncExpandTasksFromToolsState();
+      this.syncExpandedState();
       const goal = this.doneSnapshot ?? this.deps.getCurrentGoal();
       if (goal && this.deps.isGoalRunning(goal.status)) this.startTick();
       else this.stopTick();
-      const renderOptions = { expandTasks: this.expandTasks };
+      const renderOptions = { expandItems: this.expandItems };
       const preview = this.deps.renderPlanLines(goal, renderOptions);
       if (preview.length === 0) {
         this.ui.setWidget(this.deps.widgetKey, undefined);
@@ -240,20 +248,64 @@ export class PlanStatusDialogComponent implements Component, Focusable {
   private followSelection = false;
   private readonly maxVisible = 20;
 
+  private tab: "current" | "history" = "current";
+
   constructor(
     private readonly goal: GoalState | undefined,
     private readonly theme: Theme,
     private readonly done: () => void,
     private readonly deps: PlanTuiDependencies,
-  ) {}
+  ) {
+    if (!goal && deps.getPlanHistory().length > 0) this.tab = "history";
+  }
+
+  private historyRecords(): PlanRunHistoryRecord[] {
+    return [...this.deps.getPlanHistory()].sort((a, b) => b.endedAt - a.endedAt);
+  }
+
+  private targets(): PlanStatusTarget[] {
+    return this.tab === "history"
+      ? this.historyRecords().map((record) => ({ kind: "history" as const, id: record.id }))
+      : this.deps.getPlanStatusTargets(this.goal);
+  }
+
+  private listLines(): RenderLine[] {
+    return this.tab === "history"
+      ? this.deps.buildPlanHistoryListLines(this.historyRecords())
+      : this.deps.buildPlanStatusListLines(this.goal);
+  }
+
+  private detailLines(): string[] {
+    if (this.detailTarget?.kind === "history") {
+      return this.deps.buildPlanHistoryDetailLines(this.historyRecords().find((record) => record.id === this.detailTarget?.id));
+    }
+    return this.deps.buildPlanStatusDetailLines(this.goal, this.detailTarget);
+  }
+
+  private switchTab(tab: "current" | "history"): void {
+    if (tab === "history" && this.deps.getPlanHistory().length === 0) return;
+    if (this.tab === tab && this.view === "list") return;
+    this.tab = tab;
+    this.view = "list";
+    this.selectedIndex = 0;
+    this.detailTarget = undefined;
+    this.listScrollOffset = 0;
+    this.detailScrollOffset = 0;
+    this.followSelection = false;
+    this.invalidate();
+  }
 
   handleInput(data: string): void {
     if (matchesKey(data, "ctrl+c")) {
       this.done();
       return;
     }
-    if (!this.goal?.plan) {
-      if (matchesKey(data, "escape")) this.done();
+    if (data === "\t" || matchesKey(data, "right") || data === "l") {
+      this.switchTab(this.tab === "current" ? "history" : "current");
+      return;
+    }
+    if (matchesKey(data, "left") || data === "h") {
+      this.switchTab("current");
       return;
     }
     if (this.view === "detail") {
@@ -264,7 +316,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
         this.invalidate();
         return;
       }
-      const total = this.cachedWrappedBody?.length ?? this.deps.buildPlanStatusDetailLines(this.goal, this.detailTarget).length;
+      const total = this.cachedWrappedBody?.length ?? this.detailLines().length;
       const result = computeScrollOffset(data, this.detailScrollOffset, total, this.maxVisible);
       if (result !== null && result !== "exit" && result !== this.detailScrollOffset) {
         this.detailScrollOffset = result;
@@ -281,7 +333,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
       || matchesKey(data, "ctrl+d") || matchesKey(data, "ctrl+u")
       || matchesKey(data, "home") || matchesKey(data, "end");
     if (listScrollKey) {
-      const total = this.cachedWrappedBody?.length ?? this.deps.buildPlanStatusListLines(this.goal).length;
+      const total = this.cachedWrappedBody?.length ?? this.listLines().length;
       const result = computeScrollOffset(data, this.listScrollOffset, total, this.maxVisible);
       if (result !== null && result !== "exit" && result !== this.listScrollOffset) {
         this.listScrollOffset = result;
@@ -291,7 +343,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
       return;
     }
 
-    const targets = this.deps.getPlanStatusTargets(this.goal);
+    const targets = this.targets();
     if ((data === "\r" || data === "\n") && targets[this.selectedIndex]) {
       this.detailTarget = targets[this.selectedIndex];
       this.view = "detail";
@@ -319,9 +371,9 @@ export class PlanStatusDialogComponent implements Component, Focusable {
 
   private renderListBody(width: number): string[] {
     if (this.cachedWrappedBody && this.cachedWrappedBodyWidth === width) return this.cachedWrappedBody;
-    const targets = this.deps.getPlanStatusTargets(this.goal);
+    const targets = this.targets();
     this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, Math.max(0, targets.length - 1)));
-    const body = this.deps.buildPlanStatusListLines(this.goal);
+    const body = this.listLines();
     const wrapped: string[] = [];
     let selectableIndex = 0;
     let selectedPhysicalStart: number | undefined;
@@ -339,7 +391,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
 
   private renderDetailBody(width: number): string[] {
     if (this.cachedWrappedBody && this.cachedWrappedBodyWidth === width) return this.cachedWrappedBody;
-    const detail = this.deps.buildPlanStatusDetailLines(this.goal, this.detailTarget);
+    const detail = this.detailLines();
     const wrapped = detail.flatMap((line, index) => {
       const colored = index === 0
         ? this.theme.fg("accent", this.theme.bold(line))
@@ -376,7 +428,9 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     const th = this.theme;
     const lines: string[] = [];
     const titleKey = this.view === "detail" ? "status.dialogDetailTitle" : "status.dialogTitle";
-    const title = truncateToWidth(` ${this.deps.t(titleKey)} `, Math.max(0, width - 2));
+    const historyCount = this.deps.getPlanHistory().length;
+    const tabLabel = this.tab === "current" ? `[Current] History ${historyCount}` : `Current [History ${historyCount}]`;
+    const title = truncateToWidth(` ${this.deps.t(titleKey)} · ${tabLabel} `, Math.max(0, width - 2));
     const padLen = Math.max(0, width - visibleWidth(title) - 2);
     const padLeft = Math.floor(padLen / 2);
     const padRight = padLen - padLeft;
@@ -386,24 +440,21 @@ export class PlanStatusDialogComponent implements Component, Focusable {
         + th.fg("border", "─".repeat(padRight) + "╮"),
     );
 
-    if (!this.goal) {
-      lines.push(truncateToWidth(" " + th.fg("muted", this.deps.t("status.dialogNoGoal")), width));
-      lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogStartCommand")), width));
+    const hasCurrent = Boolean(this.goal?.workList);
+    if (this.tab === "current" && !hasCurrent) {
+      lines.push(truncateToWidth(" " + th.fg("muted", this.deps.t(this.goal ? "status.dialogEmpty" : "status.dialogNoGoal")), width));
+      if (!this.goal) lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogStartCommand")), width));
       lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogCloseHint")), width));
-      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
-      return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);
-    }
-    if (!this.goal.plan || this.goal.plan.phases.length === 0) {
-      lines.push(truncateToWidth(" " + th.fg("muted", this.deps.t("status.dialogEmpty")), width));
-      lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogCloseHint")), width));
-      lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
-      return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);
+    } else if (this.tab === "history" && historyCount === 0) {
+      lines.push(truncateToWidth(" " + th.fg("muted", this.deps.t("status.dialogHistoryEmpty")), width));
     }
 
-    const heading = " " + th.fg("accent", th.bold(this.deps.buildHeadingLine(this.goal)));
-    lines.push(...wrapModalText(heading, width, 1));
-    const activityLine = this.deps.formatCheckActivityLine(checkSnapshot);
-    if (activityLine) lines.push(...wrapModalText(" " + th.fg("dim", activityLine), width, 1));
+    if (this.tab === "current" && hasCurrent && this.goal) {
+      const heading = " " + th.fg("accent", th.bold(this.deps.buildHeadingLine(this.goal)));
+      lines.push(...wrapModalText(heading, width, 1));
+      const activityLine = this.deps.formatCheckActivityLine(checkSnapshot);
+      if (activityLine) lines.push(...wrapModalText(" " + th.fg("dim", activityLine), width, 1));
+    }
 
     const wrappedBody = this.view === "detail" ? this.renderDetailBody(width) : this.renderListBody(width);
     const total = wrappedBody.length;
@@ -426,9 +477,10 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     lines.push(...wrappedBody.slice(start, end));
 
     const shown = total === 0 ? "0-0 / 0" : `${start + 1}-${end} / ${total}`;
-    const hint = this.view === "detail"
+    const viewHint = this.view === "detail"
       ? this.deps.t("status.dialogDetailHint", { shown })
       : this.deps.t("status.dialogListHint");
+    const hint = `${viewHint} · ${this.deps.t("status.dialogTabsHint")}`;
     lines.push(truncateToWidth(th.fg("dim", " " + hint), width));
     lines.push(th.fg("border", "╰" + "─".repeat(Math.max(0, width - 2)) + "╯"));
     return this.cacheRenderedLines(lines, width, elapsedSec, checkSnapshotKey);

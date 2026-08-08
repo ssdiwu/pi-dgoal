@@ -12,19 +12,25 @@ import {
   disposePlanOverlay,
   PlanStatusDialog,
   type GoalState,
-  type Phase,
-  type TaskPlan,
+  type WorkPhase,
 } from "../index.ts";
 
-function goal(phases: Phase[] = []): GoalState {
+function phase(id = 1, subject = "phase"): WorkPhase {
+  return { id, subject, description: `${subject} description`, status: "in_progress", revision: 0, items: [] };
+}
+
+function goal(phases: WorkPhase[] = []): GoalState {
+  const now = Date.now();
   return {
     id: "g-show-status",
-    objective: "实施 v0.4.2",
+    objective: "实施 v0.8.1",
+    description: "验证 Current/History 状态查询。",
     status: "active",
-    startedAt: 1,
-    updatedAt: 1,
+    startedAt: now - 1_000,
+    updatedAt: now,
     iteration: 3,
-    plan: { phases, nextId: 100 } as TaskPlan,
+    workList: { items: [], phases, nextItemId: 1, nextPhaseId: phases.length + 1, revision: 1 },
+    contract: { id: "run-1", profile: "staged_check", startedAt: now - 1_000, revision: 1, transitions: [{ to: "staged_check", at: now - 1_000, revision: 1 }] },
   };
 }
 
@@ -81,7 +87,7 @@ describe("showStatus 回归", () => {
   });
 
   test("有 currentGoal：TUI 模式走 ctx.ui.custom + center overlay 配置", async () => {
-    __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
+    __setGoalForTest(goal([phase()]));
     const { ctx, calls } = makeCtx();
 
     __showStatusForTest(ctx);
@@ -103,7 +109,7 @@ describe("showStatus 回归", () => {
   });
 
   test("ctx.ui.custom 同步 throw：showStatus 自己吞掉并回退 notify", () => {
-    __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
+    __setGoalForTest(goal([phase()]));
     const { ctx, calls } = makeCtx();
     ctx.ui.custom = () => {
       throw new Error("sync boom");
@@ -120,7 +126,7 @@ describe("showStatus 回归", () => {
       expect(String(errors[0][0])).toContain("[dgoal] /dgoal s modal failed:");
       expect(String(errors[0][1])).toContain("sync boom");
       expect(calls.notify).toHaveLength(1);
-      expect(calls.notify[0][0]).toContain("目标：实施 v0.4.2");
+      expect(calls.notify[0][0]).toContain("目标：实施 v0.8.1");
       expect(calls.notify[0][1]).toBe("info");
     } finally {
       console.error = realError;
@@ -128,7 +134,7 @@ describe("showStatus 回归", () => {
   });
 
   test("浮层缺失时 /dgoal s 重绘 dgoal-plan；首次 setWidget 异常后可再次恢复且不改运行态", async () => {
-    const current = goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]);
+    const current = goal([phase()]);
     __setGoalForTest(current);
     const widgetCalls: unknown[] = [];
     let shouldThrow = true;
@@ -174,7 +180,7 @@ describe("showStatus 回归", () => {
   });
 
   test("ctx.ui.custom Promise reject：showStatus 不向上抛并回退 notify", async () => {
-    __setGoalForTest(goal([{ id: 1, subject: "phase", status: "in_progress", tasks: [] }] as Phase[]));
+    __setGoalForTest(goal([phase()]));
     const { ctx, calls } = makeCtx();
     ctx.ui.custom = () => Promise.reject(new Error("async boom"));
 
@@ -191,7 +197,7 @@ describe("showStatus 回归", () => {
       expect(String(errors[0][0])).toContain("[dgoal] /dgoal s modal failed:");
       expect(String(errors[0][1])).toContain("async boom");
       expect(calls.notify).toHaveLength(1);
-      expect(calls.notify[0][0]).toContain("目标：实施 v0.4.2");
+      expect(calls.notify[0][0]).toContain("目标：实施 v0.8.1");
       expect(calls.notify[0][1]).toBe("info");
     } finally {
       console.error = realError;

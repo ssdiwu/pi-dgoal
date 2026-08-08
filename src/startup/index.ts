@@ -1,11 +1,12 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
-  taskPlanTool,
-  phasePlanTool,
+  workListTool,
+  executionPlanTool,
+  workCreateTool,
+  workReadTool,
+  workUpdateTool,
   goalPlanTool,
-  planCreateTool,
-  planReadTool,
-  planUpdateTool,
+  stagedPlanTool,
   phaseCheckTool,
   goalCheckTool,
   handleDgoalCommand,
@@ -19,8 +20,6 @@ import {
   resetAuditorWorkspaceTracker,
   safeNotify,
   isGoalRunning,
-  resolvePlanType,
-  buildSystemPrompt,
   markContinuationDelivered,
   trackFileToolExecutionStart,
   trackFileToolExecutionEnd,
@@ -29,19 +28,25 @@ import {
   truncate,
   formatStatus,
   markGoalPaused,
-  persistGoal,
-  resumeTaskPlanAfterModelErrorFromUserInput,
+  resumeExecutionPlanAfterModelErrorFromUserInput,
   sendContinuation,
+  buildSoftWorkListContext,
+  buildPlanContractContext,
+  hasPlanContract,
+  persistWorkGoal,
+  isExecutionPlan,
+  persistActiveGoal,
   buildNoProgressDetail,
   setupI18n,
   setApi,
   disposePlanOverlay,
   t,
-  TASK_PLAN_TOOL_NAME,
-  PHASE_PLAN_TOOL_NAME,
+  WORK_LIST_TOOL_NAME,
+  EXECUTION_PLAN_TOOL_NAME,
+  WORK_CREATE_TOOL_NAME,
+  WORK_UPDATE_TOOL_NAME,
   GOAL_PLAN_TOOL_NAME,
-  PLAN_CREATE_TOOL_NAME,
-  PLAN_UPDATE_TOOL_NAME,
+  STAGED_PLAN_TOOL_NAME,
   PHASE_CHECK_TOOL_NAME,
   GOAL_CHECK_TOOL_NAME,
   MAX_ERROR_RETRIES,
@@ -59,9 +64,10 @@ import {
 } from "../runtime/liveness.ts";
 import {
   authorizeNaturalLanguageStart,
-  authorizeTaskPlanModelErrorRecovery,
+  authorizeExecutionPlanModelErrorRecovery,
+  clearExplicitPlanUpgradeAuthorization,
   clearNaturalLanguageStartAuthorization,
-  clearTaskPlanModelErrorRecovery,
+  clearExecutionPlanModelErrorRecovery,
   goalRuntimeState,
 } from "../goal-runtime/state.ts";
 import { commitCurrentGoal } from "../goal-runtime/commit.ts";
@@ -105,22 +111,23 @@ export function isNaturalLanguageDgoalStartRequest(text: string): boolean {
 }
 
 export function buildNaturalLanguageStartGuidance(): string {
-  return "<dgoal_natural_language_start>\n用户在本轮明确要求使用或启动 /dgoal。请分析后推荐 Phase Plan（只做 goal_check）或 Goal Plan（phase_check + goal_check），并调用对应的 phase_plan / goal_plan 提交显式提案；两者都保留语义预审与用户确认，不要求用户重复输入 /dgoal。\n</dgoal_natural_language_start>";
+  return "<dgoal_natural_language_start>\n用户在本轮明确要求启动 /dgoal。请根据真实保障需求推荐 Goal Check Plan（只做 goal_check）或 Staged Check Plan（逐 Phase phase_check + goal_check），并调用 goal_plan / staged_plan 提交显式提案；两者都经过语义预审与用户确认。\n</dgoal_natural_language_start>";
 }
 
-export function buildTaskPlanDefaultGuidance(): string {
-  return "<task_plan_default>\n普通明确的多步执行，或 AFK、有界、低风险且有停止条件的探索，应主动调用 task_plan 建立最轻量计划并持续推进，不要要求用户先输入 /dgoal。稳定用户意图与最终效果；当前 frontier 随证据变化时可整份替换 objective、description 与 tasks，不保留旧 Plan 历史。必须由用户决定的意图、偏好或范围问题继续讨论，不伪装成探索 task。生成 Plan/task 时轻量自检目标相关性、必要性、依赖和证据路径，直接修正，不输出独立报告或新增 hard gate。纯讨论、解释、能力问答不建计划；单步回答也不建计划。只有任务确实需要冻结验收契约、goal 独立终审或 phase 独立建检时，才说明结构性理由并推荐用户使用 /dgoal；未经用户显式授权不得调用 phase_plan 或 goal_plan。\n</task_plan_default>";
+export function buildWorkListDefaultGuidance(): string {
+  return "<work_list_default>\n普通多步工作先用 work_list 建立唯一软性清单；清单跨 turn 保留，但不自动续跑。确实需要 Until Done 时用 execution_plan 在同一 Work List 上增加执行保障。需要独立终审或逐 Phase 建检时，说明理由并请用户显式授权 /dgoal；未经授权不得调用 goal_plan 或 staged_plan。纯讨论、解释、单步回答不建清单。\n</work_list_default>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {
   setApi(pi);
   setupI18n(pi);
-  pi.registerTool(taskPlanTool);
-  pi.registerTool(phasePlanTool);
+  pi.registerTool(workListTool);
+  pi.registerTool(executionPlanTool);
   pi.registerTool(goalPlanTool);
-  pi.registerTool(planCreateTool);
-  pi.registerTool(planReadTool);
-  pi.registerTool(planUpdateTool);
+  pi.registerTool(stagedPlanTool);
+  pi.registerTool(workCreateTool);
+  pi.registerTool(workReadTool);
+  pi.registerTool(workUpdateTool);
   pi.registerTool(phaseCheckTool);
   pi.registerTool(goalCheckTool);
 
@@ -131,7 +138,8 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("session_start", (event, ctx) => {
     clearNaturalLanguageStartAuthorization();
-    clearTaskPlanModelErrorRecovery();
+    clearExplicitPlanUpgradeAuthorization();
+    clearExecutionPlanModelErrorRecovery();
     if (event.reason === "reload") clearAuditorModelRegistryCache();
     resyncGoalFromSession(ctx);
   });
@@ -141,7 +149,8 @@ export function registerDgoal(pi: ExtensionAPI) {
   // （阶段明明完成了还显示未完成，计时器也冻住）。与 session_start 复用同一套重同步。
   pi.on("session_tree", (_event, ctx) => {
     clearNaturalLanguageStartAuthorization();
-    clearTaskPlanModelErrorRecovery();
+    clearExplicitPlanUpgradeAuthorization();
+    clearExecutionPlanModelErrorRecovery();
     resyncGoalFromSession(ctx);
   });
 
@@ -149,16 +158,18 @@ export function registerDgoal(pi: ExtensionAPI) {
   // resync 会取消旧 continuation（它可能引用压缩前上下文）；若 Pi 不会自行重试当前 turn，
   // 必须为仍 active 的 goal 排入新 continuation，避免 Plan 保持计时却没有下一轮三选一决策。
   pi.on("session_compact", async (event, ctx) => {
-    clearTaskPlanModelErrorRecovery();
+    clearExecutionPlanModelErrorRecovery();
+    clearExplicitPlanUpgradeAuthorization();
     resyncGoalFromSession(ctx);
     const goal = goalRuntimeState.currentGoal;
-    if (goal && isGoalRunning(goal.status) && !event.willRetry) await sendContinuation(pi, ctx, goal);
+    if (goal && hasPlanContract(goal) && isGoalRunning(goal.status) && !event.willRetry) await sendContinuation(pi, ctx, goal);
   });
 
   pi.on("session_shutdown", (_event, ctx) => {
     clearNaturalLanguageStartAuthorization();
-    clearTaskPlanModelErrorRecovery();
-    if (goalRuntimeState.currentGoal) persistGoal(goalRuntimeState.currentGoal);
+    clearExplicitPlanUpgradeAuthorization();
+    clearExecutionPlanModelErrorRecovery();
+    if (goalRuntimeState.currentGoal) persistWorkGoal(goalRuntimeState.currentGoal);
     clearContinuation();
     clearCurrentCheckSnapshot();
     resetAuditorWorkspaceTracker();
@@ -169,25 +180,29 @@ export function registerDgoal(pi: ExtensionAPI) {
   pi.on("input", (event) => {
     if (event.source === "extension") {
       clearNaturalLanguageStartAuthorization();
-      clearTaskPlanModelErrorRecovery();
+      clearExplicitPlanUpgradeAuthorization();
+      clearExecutionPlanModelErrorRecovery();
       if (consumeCancelledContinuation(event.text)) return { action: "handled" as const };
       return;
     }
     if (event.source !== "interactive" && event.source !== "rpc") {
       clearNaturalLanguageStartAuthorization();
-      clearTaskPlanModelErrorRecovery();
+      clearExplicitPlanUpgradeAuthorization();
+      clearExecutionPlanModelErrorRecovery();
       return;
     }
     const directUserInput = event.streamingBehavior === undefined;
-    const pausedTaskPlan = goalRuntimeState.currentGoal;
-    if (directUserInput && pausedTaskPlan?.status === "paused" && pausedTaskPlan.pauseReason === "model_error"
-      && resolvePlanType(pausedTaskPlan) === "task") {
-      authorizeTaskPlanModelErrorRecovery(pausedTaskPlan.id, event.text);
+    const pausedExecutionPlan = goalRuntimeState.currentGoal;
+    if (directUserInput && pausedExecutionPlan?.status === "paused" && pausedExecutionPlan.pauseReason === "model_error"
+      && isExecutionPlan(pausedExecutionPlan)) {
+      authorizeExecutionPlanModelErrorRecovery(pausedExecutionPlan.id, event.text);
     } else {
-      clearTaskPlanModelErrorRecovery();
+      clearExecutionPlanModelErrorRecovery();
     }
-    const authorized = !goalRuntimeState.currentGoal
-      && directUserInput
+    const currentWorkUpgrade = Boolean(goalRuntimeState.currentGoal?.workList && goalRuntimeState.currentGoal.status === "active"
+      && goalRuntimeState.currentGoal.contract?.profile !== "staged_check");
+    const authorized = directUserInput
+      && (!goalRuntimeState.currentGoal || currentWorkUpgrade)
       && isNaturalLanguageDgoalStartRequest(event.text);
     if (authorized) authorizeNaturalLanguageStart(event.text);
     else clearNaturalLanguageStartAuthorization();
@@ -195,38 +210,36 @@ export function registerDgoal(pi: ExtensionAPI) {
 
   pi.on("before_agent_start", async (event, ctx) => {
     markContinuationDelivered(event.prompt);
-    // 真实 interactive/RPC 输入可一次性恢复同一个 paused(model_error) Task Plan。
-    // 精确绑定 goal id 与原始输入，避免 extension continuation 或后加载扩展改写 prompt 后自行唤醒。
-    const recovery = goalRuntimeState.taskPlanModelErrorRecovery;
+    // 真实 interactive/RPC 输入可一次性恢复同一个 paused(model_error) Execution Plan。
+    const recovery = goalRuntimeState.executionPlanModelErrorRecovery;
     const recoveryGoal = goalRuntimeState.currentGoal;
-    const shouldRecoverTaskPlan = Boolean(recovery
+    const shouldRecoverExecutionPlan = Boolean(recovery
       && recoveryGoal?.id === recovery.goalId
       && recoveryGoal.status === "paused"
       && recoveryGoal.pauseReason === "model_error"
-      && resolvePlanType(recoveryGoal) === "task"
+      && isExecutionPlan(recoveryGoal)
       && event.prompt === recovery.input);
-    clearTaskPlanModelErrorRecovery();
-    if (shouldRecoverTaskPlan) resumeTaskPlanAfterModelErrorFromUserInput(ctx);
+    clearExecutionPlanModelErrorRecovery();
+    if (shouldRecoverExecutionPlan) resumeExecutionPlanAfterModelErrorFromUserInput(ctx);
     // 只接受 dgoal input handler 观察到的文本；后加载扩展若 transform 了 prompt，精确绑定会 fail-closed。
     if (!goalRuntimeState.currentGoal && goalRuntimeState.naturalLanguageStartAuthorized
       && event.prompt !== goalRuntimeState.naturalLanguageStartInput) {
       clearNaturalLanguageStartAuthorization();
     }
-    // 新 agent turn 重置本轮事件标记，并冻结仅含可交付结构的起始指纹。
-    beginProgressTurn(goalRuntimeState, goalRuntimeState.currentGoal);
-    // Phase 是用户确认过的进度主干，完成后仍持久显示；不在 agent_start 自动隐藏。
+    // 只有 Plan Contract 进入结构化活性统计；软性 Work List 只跨 turn 保留。
+    beginProgressTurn(goalRuntimeState, hasPlanContract(goalRuntimeState.currentGoal) ? goalRuntimeState.currentGoal : undefined);
     if (goalRuntimeState.currentGoal) {
       if (isGoalRunning(goalRuntimeState.currentGoal.status)) {
-        return {
-          systemPrompt: `${event.systemPrompt}\n\n${buildSystemPrompt(goalRuntimeState.currentGoal)}`,
-        };
+        const context = goalRuntimeState.currentGoal.contract
+          ? buildPlanContractContext(goalRuntimeState.currentGoal)
+          : buildSoftWorkListContext(goalRuntimeState.currentGoal);
+        return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
       }
       return;
     }
 
-    // Cold sessions always expose the unprivileged Task Plan default. Explicit /dgoal authorization
-    // additionally enables the audited Phase/Goal Plan entry tools for this turn.
-    const guidance = [buildTaskPlanDefaultGuidance()];
+    // Cold sessions expose the unprivileged Work List default; explicit /dgoal authorization adds checked Plan entry guidance.
+    const guidance = [buildWorkListDefaultGuidance()];
     if (goalRuntimeState.naturalLanguageStartAuthorized) guidance.push(buildNaturalLanguageStartGuidance());
     return {
       systemPrompt: `${event.systemPrompt}\n\n${guidance.join("\n\n")}`,
@@ -234,7 +247,8 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("agent_settled", () => {
-    if (!goalRuntimeState.currentGoal) clearNaturalLanguageStartAuthorization();
+    clearNaturalLanguageStartAuthorization();
+    clearExplicitPlanUpgradeAuthorization();
   });
 
   pi.on("tool_execution_start", (event, ctx) => {
@@ -259,11 +273,12 @@ export function registerDgoal(pi: ExtensionAPI) {
     // 成功工具推进证明模型仍可调用工具；不把短暂 fetch 失败跨进展累计。
     goalRuntimeState.consecutiveErrors = 0;
     const refreshTools = new Set([
-      TASK_PLAN_TOOL_NAME,
-      PHASE_PLAN_TOOL_NAME,
+      WORK_LIST_TOOL_NAME,
+      EXECUTION_PLAN_TOOL_NAME,
       GOAL_PLAN_TOOL_NAME,
-      PLAN_CREATE_TOOL_NAME,
-      PLAN_UPDATE_TOOL_NAME,
+      STAGED_PLAN_TOOL_NAME,
+      WORK_CREATE_TOOL_NAME,
+      WORK_UPDATE_TOOL_NAME,
       PHASE_CHECK_TOOL_NAME,
       GOAL_CHECK_TOOL_NAME,
     ]);
@@ -271,23 +286,30 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   async function handleAgentEnd(event: { messages: unknown[] }, ctx: DgoalContext) {
-    // 启动闸门阶段（goal pending）——主代理应调 phase_plan 或 goal_plan 提交计划。
-    // startGoal 初始化期间（创建 pending → 投递 propose）跳过：被中断 turn 的 agent_end
-    // 会看到 pending goal，不跳过会与 startGoal 自己的 propose 投递撞车（双发）。
-    if (goalRuntimeState.currentGoal && goalRuntimeState.currentGoal.status === "pending") {
-      if (goalRuntimeState.startGoalInProgress) return;
-      await handleStartupGate(pi, ctx, goalRuntimeState.currentGoal);
+    // 启动闸门阶段（Goal pending）——主代理应调 goal_plan 或 staged_plan 提交提案。
+    // startGoal 初始化期间被中断的 agent_end 不与本函数自己的 propose 投递撞车。
+    const gateGoal = goalRuntimeState.currentGoal;
+    const hasPendingProposal = Boolean(gateGoal && goalRuntimeState.pendingProposal?.goalId === gateGoal.id);
+    if (gateGoal && (gateGoal.status === "pending" || hasPendingProposal)) {
+      if (gateGoal.status === "pending" && goalRuntimeState.startGoalInProgress) return;
+      await handleStartupGate(pi, ctx, gateGoal);
       return;
     }
 
     if (!goalRuntimeState.currentGoal || !isGoalRunning(goalRuntimeState.currentGoal.status)) return;
 
+    // 软性 Work List 只保留结构化事实，不参与 Until Done、重试或 no-progress 熔断。
+    if (goalRuntimeState.currentGoal.workList && !goalRuntimeState.currentGoal.contract) {
+      clearContinuation();
+      resetProgressStreaks(goalRuntimeState);
+      return;
+    }
+
     const finalAssistant = findFinalAssistantMessage(event.messages);
     const errorDetail = finalAssistant?.errorMessage ? `：${truncate(finalAssistant.errorMessage)}` : "";
 
-    // Task Plan 是日常执行脚手架：用户中断当前响应只停止这一轮，不能把 Plan 锁成
-    // 只能显式 resume 的状态。清掉旧 continuation 后，下一条用户输入会带着 active Plan 继续。
-    if (finalAssistant?.stopReason === "aborted" && resolvePlanType(goalRuntimeState.currentGoal) === "task") {
+    // Execution Plan 下用户中断当前响应只停止这一轮；清掉旧 continuation，下一条真实输入可继续。
+    if (finalAssistant?.stopReason === "aborted" && isExecutionPlan(goalRuntimeState.currentGoal)) {
       goalRuntimeState.consecutiveErrors = 0;
       resetProgressStreaks(goalRuntimeState);
       clearContinuation();
@@ -298,7 +320,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (finalAssistant?.stopReason === "aborted") {
       goalRuntimeState.consecutiveErrors = 0;
       resetProgressStreaks(goalRuntimeState);
-      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" }), persistGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" }), persistActiveGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
@@ -328,7 +350,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       goalRuntimeState.pendingProposal = undefined;
       const retryCount = Math.max(0, goalRuntimeState.consecutiveErrors - 1);
       goalRuntimeState.consecutiveErrors = 0;
-      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "model_error" }), persistGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "model_error" }), persistActiveGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
@@ -344,7 +366,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (finalAssistant?.stopReason !== "stop") {
       goalRuntimeState.consecutiveErrors = 0;
       resetProgressStreaks(goalRuntimeState);
-      commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);
+      commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistActiveGoal);
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);
       return;
@@ -354,7 +376,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     goalRuntimeState.consecutiveErrors = 0;
     const progress = completeProgressTurn(goalRuntimeState, goalRuntimeState.currentGoal);
     if (progress.pause) {
-      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "no_progress" }), persistGoal);
+      commitCurrentGoal(markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "no_progress" }), persistActiveGoal);
       clearContinuation();
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
@@ -365,7 +387,7 @@ export function registerDgoal(pi: ExtensionAPI) {
       }), "warning");
       return;
     }
-    commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistGoal);
+    commitCurrentGoal({ ...goalRuntimeState.currentGoal, iteration: goalRuntimeState.currentGoal.iteration + 1, updatedAt: Date.now() }, persistActiveGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
 
     await sendContinuation(pi, ctx, goalRuntimeState.currentGoal);

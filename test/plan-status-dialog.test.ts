@@ -1,19 +1,20 @@
 // 切片 4 验收：PlanStatusDialog Component 测试（render + handleInput + 边界 + 缓存）。
 // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 4。
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
 
 import {
   __setCheckSnapshotForTest,
+  __resetGoalForTest,
   __setI18nForTest,
   PlanStatusDialog,
   type GoalState,
-  type Phase,
-  type Task,
-  type TaskPlan,
+  type WorkItem,
+  type WorkPhase,
 } from "../index.ts";
 
 beforeAllSetI18n();
+beforeEach(() => __resetGoalForTest());
 
 // 在 bun:test 的 setup 里调 __setI18nForTest 让 t() 走内置中文。
 // 不能直接 top-level await（要 await import），用 helper：
@@ -34,24 +35,25 @@ function mockTheme(): any {
   };
 }
 
-// ---- goal/phase/task 工厂 ----
-function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
+// ---- goal/phase/item 工厂 ----
+function t(id: number, subject: string, status: WorkItem["status"] = "pending", extra: Partial<WorkItem> = {}): WorkItem {
   return { id, subject, description: `${subject} 的完整任务说明`, status, ...extra };
 }
-function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending", extra: Partial<Phase> = {}): Phase {
-  return { id, subject, description: `${subject} 的完整阶段说明`, tasks, status, ...extra };
+function p(id: number, subject: string, items: WorkItem[], status: WorkPhase["status"] = "pending", extra: Partial<WorkPhase> = {}): WorkPhase {
+  return { id, subject, description: `${subject} 的完整阶段说明`, items, status, revision: 0, ...extra };
 }
-function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
+function goal(phases: WorkPhase[], overrides: Partial<GoalState> = {}): GoalState {
   const now = Date.now();
   return {
     id: "g1",
-    objective: "实施 v0.4.2",
+    objective: "实施 v0.8.1",
     description: "按已确认边界完成实现并验证。",
     status: "active",
     startedAt: now - 5 * 60 * 1000,
     updatedAt: now - 5 * 60 * 1000,
     iteration: 0,
-    plan: { phases, nextId: 100 } as TaskPlan,
+    workList: { items: [], phases, nextItemId: 100, nextPhaseId: Math.max(0, ...phases.map((phase) => phase.id)) + 1, revision: 1 },
+    contract: { id: "run-1", profile: "staged_check", startedAt: now - 5 * 60 * 1000, revision: 1, transitions: [{ to: "staged_check", at: now - 5 * 60 * 1000, revision: 1 }] },
     ...overrides,
   };
 }
@@ -72,7 +74,7 @@ describe("PlanStatusDialog.render", () => {
     expect(lines[0]).toContain("╭─"); // 上边框起手
     expect(lines[0]).toContain("─╮"); // 上边框收尾
     // 第二行 = heading（钉顶，含 🎯）
-    expect(lines[1]).toContain("🎯 实施 v0.4.2");
+    expect(lines[1]).toContain("🎯 实施 v0.8.1");
     expect(lines[1]).toContain("<accent>"); // accent 染色
     expect(lines[1]).toContain("<bold>"); // bold
     expect(lines.join("\n")).toContain("按已确认边界完成实现并验证");
@@ -149,7 +151,7 @@ describe("PlanStatusDialog.render", () => {
 
   test("heading 钉顶：scroll 到第二页 heading 仍在第 2 行", () => {
     // 制造 30+ phase 让 scroll 生效
-    const phases: Phase[] = [];
+    const phases: WorkPhase[] = [];
     for (let i = 1; i <= 35; i++) {
       phases.push(p(i, `phase${i}`, [], "pending"));
     }
@@ -183,12 +185,13 @@ describe("PlanStatusDialog.render", () => {
     expect(lines.at(-1)).toContain("╰─");
   });
 
-  test("empty phases → 带边框的 fallback 状态", () => {
-    const dlg = new PlanStatusDialog(goal([]), mockTheme() as any, () => {});
-    const lines = dlg.render(80);
+  test("empty Work List → 显示 Goal Check 的零 Phase Current 状态", () => {
+    const g = goal([]);
+    g.contract = { ...g.contract!, profile: "goal_check", transitions: [{ to: "goal_check", at: g.startedAt, revision: 1 }] };
+    const lines = new PlanStatusDialog(g, mockTheme() as any, () => {}).render(80);
     expect(lines[0]).toContain("╭─");
-    expect(lines.join("\n")).toContain("无 plan");
-    expect(lines.join("\n")).toContain("ESC/Ctrl+C 关闭");
+    expect(lines.join("\n")).toContain("Work List revision 1");
+    expect(lines.join("\n")).toContain("当前候选工作已耗尽");
     expect(lines.at(-1)).toContain("╰─");
   });
 
@@ -218,7 +221,7 @@ describe("PlanStatusDialog.render", () => {
   });
 
   test("handleInput 触发 invalidate 后 render 不再缓存命中", () => {
-    const phases: Phase[] = [];
+    const phases: WorkPhase[] = [];
     for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     const before = dlg.render(80);
@@ -269,7 +272,7 @@ describe("PlanStatusDialog.handleInput", () => {
   });
 
   test("End/G 选中最后一项并滚入可见窗口", () => {
-    const phases: Phase[] = [];
+    const phases: WorkPhase[] = [];
     for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     dlg.handleInput("G");
@@ -277,7 +280,7 @@ describe("PlanStatusDialog.handleInput", () => {
   });
 
   test("Home/g 回到第一项并保留选择位置", () => {
-    const phases: Phase[] = [];
+    const phases: WorkPhase[] = [];
     for (let i = 1; i <= 25; i++) phases.push(p(i, `p${i}`, [], "pending"));
     const dlg = new PlanStatusDialog(goal(phases), mockTheme() as any, () => {});
     dlg.handleInput("G");
@@ -314,10 +317,10 @@ describe("PlanStatusDialog 两层导航", () => {
     dlg.handleInput("\r");
     const detail = dlg.render(100).join("\n");
     expect(detail).toContain("dgoal 计划项详情");
-    expect(detail).toContain("phase #1 · 实现");
+    expect(detail).toContain("Phase #1 · 实现");
     expect(detail).toContain("状态：blocked");
     expect(detail).toContain("先完成最小垂直切片，再扩大覆盖");
-    expect(detail).toContain("task 进度：0/1");
+    expect(detail).toContain("Work Item 进度：0/1");
     expect(detail).toContain("阻塞原因：等待依赖恢复");
 
     dlg.handleInput("\u001b");
@@ -327,24 +330,24 @@ describe("PlanStatusDialog 两层导航", () => {
     expect(list.find((line) => line.includes("› "))).toContain("实现");
   });
 
-  test("task 详情展示 description/status/phase/dependencies/evidence/blockedReason", () => {
-    const task = t(2, "修复回归", "blocked", {
+  test("Work Item 详情展示 description/status/Phase/dependencies/evidence/blockedReason", () => {
+    const item = t(2, "修复回归", "blocked", {
       description: "复现后只修根因，不改无关断言。",
       blockedBy: [1],
       evidence: "bun test test/regression.test.ts",
-      blockedReason: "依赖 task #1",
+      blockedReason: "依赖 Work Item #1",
     });
-    const dlg = new PlanStatusDialog(goal([p(1, "实现", [task], "blocked")]), mockTheme() as any, () => {});
-    dlg.handleInput("j"); // phase → task
+    const dlg = new PlanStatusDialog(goal([p(1, "实现", [item], "blocked")]), mockTheme() as any, () => {});
+    dlg.handleInput("j"); // Phase → Work Item
     dlg.handleInput("\r");
     const detail = dlg.render(100).join("\n");
-    expect(detail).toContain("task #2 · 修复回归");
+    expect(detail).toContain("Work Item #2 · 修复回归");
     expect(detail).toContain("状态：blocked");
-    expect(detail).toContain("所在 phase：#1 实现");
+    expect(detail).toContain("所在 Phase：#1 实现");
     expect(detail).toContain("复现后只修根因，不改无关断言");
     expect(detail).toContain("依赖：#1");
     expect(detail).toContain("证据：bun test test/regression.test.ts");
-    expect(detail).toContain("阻塞原因：依赖 task #1");
+    expect(detail).toContain("阻塞原因：依赖 Work Item #1");
   });
 
   test("详情页独立滚动，Ctrl+C 直接关闭", () => {
@@ -488,12 +491,12 @@ describe("PlanStatusDialog.render 换行", () => {
       const longSubject = "y".repeat(100);
       const g = goal([p(1, "p1", [t(1, longSubject, "in_progress")], "in_progress")]);
       const dlg = new PlanStatusDialog(g, mockTheme() as any, () => {});
-      const first = dlg.render(80);
+      const first = dlg.render(200);
       const firstBody = first.slice(2, -2).join("\n");
 
       // 推进 2 秒
       Date.now = () => baseTime + 2_000;
-      const second = dlg.render(80);
+      const second = dlg.render(200);
       const secondBody = second.slice(2, -2).join("\n");
 
       // heading 的 elapsed 应变化

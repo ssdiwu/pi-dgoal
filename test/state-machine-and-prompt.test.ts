@@ -1,26 +1,30 @@
-// Goal 状态机、Three-Plan prompt 与 Plan context 注入测试。
-// 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 6/7 验收。
+// ADR 0051：Goal 状态、Work List context 与 Plan Contract prompt 测试。
 import { describe, expect, test } from "bun:test";
 
 import {
-  buildGoalBoundaryBlock,
-  buildPlanContextBlock,
-  buildTaskGraphContextBlock,
-  buildSystemPrompt,
   buildCheckFeedbackBlock,
+  buildGoalBoundaryBlock,
+  buildPlanContractContext,
+  buildSoftWorkListContext,
+  buildStartPrompt,
   shouldAbortCurrentTurnOnClear,
   shouldDeliverContinuationNow,
   type GoalState,
-  type Phase,
-  type Task,
-  type TaskPlan,
+  type PlanContract,
+  type WorkItem,
+  type WorkPhase,
 } from "../index.ts";
 
-function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, description: `${subject} 服务于当前阶段。`, status, ...extra };
+function item(id: number, subject: string, status: WorkItem["status"] = "pending", extra: Partial<WorkItem> = {}): WorkItem {
+  return { id, subject, description: `${subject} 服务当前 Goal。`, status, ...extra };
 }
-function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending"): Phase {
-  return { id, subject, description: `${subject} 服务于整体目标。`, tasks, status };
+
+function phase(id: number, subject: string, items: WorkItem[], status: WorkPhase["status"] = "pending", extra: Partial<WorkPhase> = {}): WorkPhase {
+  return { id, subject, description: `${subject} 服务整体 Goal。`, items, status, revision: 0, ...extra };
+}
+
+function contract(profile: PlanContract["profile"], extra: Partial<PlanContract> = {}): PlanContract {
+  return { id: `run-${profile}`, profile, startedAt: 1, revision: 2, transitions: [{ to: profile, at: 1, revision: 2 }], ...extra };
 }
 
 function goal(overrides: Partial<GoalState> = {}): GoalState {
@@ -32,12 +36,19 @@ function goal(overrides: Partial<GoalState> = {}): GoalState {
     startedAt: 1,
     updatedAt: 1,
     iteration: 0,
+    workList: {
+      items: [],
+      phases: [phase(1, "实现", [item(1, "编码", "in_progress")], "in_progress")],
+      nextItemId: 2,
+      nextPhaseId: 2,
+      revision: 2,
+    },
     ...overrides,
   };
 }
 
-describe("Goal 状态机类型完整性", () => {
-  test("GoalStatus 覆盖 pending / active / paused / done", () => {
+describe("Goal state", () => {
+  test("GoalStatus covers pending / active / paused / done", () => {
     expect(goal({ status: "pending" }).status).toBe("pending");
     expect(goal({ status: "active" }).status).toBe("active");
     expect(goal({ status: "paused", pauseReason: "audit_error" }).status).toBe("paused");
@@ -45,360 +56,111 @@ describe("Goal 状态机类型完整性", () => {
   });
 });
 
-describe("Three-Plan prompt", () => {
-  test("Task Plan 在 task 耗尽后要求主 agent 显式决定下一步，并声明压缩后 Plan 优先", () => {
-    const text = buildSystemPrompt(goal({ planType: "task" }));
-    expect(text).toContain("最后一个 task done 只表示当前 task 已耗尽");
-    expect(text).toContain("plan_create 添加 task");
-    expect(text).toContain("task_plan 原子替换");
-    expect(text).toContain("plan_update(target=goal,status=done)");
-    expect(text).toContain("已有 evidence 与 goal description、已声明交付物比较");
-    expect(text).toContain("当前 <dgoal_plan> 是执行与收口的唯一结构化权威");
-    expect(text).toContain("不得覆盖 task description 或已声明 deliverables");
-  });
-
-  test("Phase Plan 在当前 phase 的 task 耗尽后先决定是否新增 task", () => {
-    const text = buildSystemPrompt(goal({ planType: "phase" }));
-    expect(text).toContain("当前是 Phase Plan");
-    expect(text).toContain("task 全 done 只形成决策边界");
-    expect(text).toContain("已有 evidence 与当前 phase description、goal 验收契约和最新 rejected feedback");
-    expect(text).toContain("plan_create 添加 task");
-    expect(text).toContain("goal_check");
-    expect(text).toContain("不要调用 phase_check");
-  });
-
-  test("Goal Plan 在当前 phase 的 task 耗尽后先决定是否新增 task", () => {
-    const text = buildSystemPrompt(goal({ planType: "goal" }));
-    expect(text).toContain("当前是 Goal Plan");
-    expect(text).toContain("task 全 done 只形成决策边界");
-    expect(text).toContain("已有 evidence 与当前 phase description、冻结验收契约和最新 rejected feedback");
-    expect(text).toContain("plan_create 添加 task");
-    expect(text).toContain("phase_check");
-    expect(text).toContain("goal_check");
-  });
-
-  test("system prompt 注入 goal description 且不再包含 contextSummary", () => {
-    const text = buildSystemPrompt(goal({ description: "采用最小修复，不重写模块。" }));
-    expect(text).toContain("<dgoal_description>\n采用最小修复，不重写模块。\n</dgoal_description>");
-    expect(text).not.toContain("contextSummary");
-    expect(text).not.toContain("dgoal_context");
-  });
-
-  test("system prompt 注入当前 Task DAG，并声明通用 ready 执行边界", () => {
-    const phase = p(1, "实现", [
-      t(1, "准备", "blocked", { blockedReason: "缺 <token>" }),
-      t(2, "执行", "pending", { blockedBy: [1] }),
-      t(3, "核对", "in_progress"),
-      t(4, "准备测试"),
-      t(5, "运行测试", "pending", { blockedBy: [4] }),
-    ], "in_progress");
-    const g = goal({ planType: "task", plan: { phases: [phase], nextId: 6, revision: 2 } });
-    const block = buildTaskGraphContextBlock(g);
-    expect(block).toContain('<dgoal_task_graph phaseId="1">');
-    expect(block).toContain("ready: #3(in_progress), #4(pending)");
-    expect(block).toContain("waiting: #2 ← #1(blocked); #5 ← #4(pending)");
-    expect(block).toContain("root_blockers: #1（缺 &lt;token&gt;）");
-    expect(block).toContain("unblocks: #4 → #5");
-
-    const text = buildSystemPrompt(g);
-    expect(text).toContain(block);
-    expect(text).toContain("<dgoal_task_graph> 的 ready 集合是当前合法执行或委派边界");
-    expect(text).toContain("ready 只表示依赖已满足，不代表 task 之间可安全并发");
-    expect(text).toContain("Plan 状态只由主 agent 写入");
-    expect(text).not.toContain("dteam");
-  });
-
-  test("phase 级 blocked 时 prompt 不暴露 ready task", () => {
-    const phase = p(1, "实现", [t(1, "待执行")], "blocked");
-    phase.blockedReason = "等待用户授权";
-    const block = buildTaskGraphContextBlock(goal({ planType: "phase", plan: { phases: [phase], nextId: 2 } }));
-    expect(block).toContain("ready: none");
-    expect(block).toContain("root_blockers: phase #1（等待用户授权）");
-  });
-});
-
-describe("切片7 · buildPlanContextBlock（plan 注入 system prompt）", () => {
-  test("无 plan 返回空字符串", () => {
-    expect(buildPlanContextBlock(goal())).toBe("");
-  });
-
-  test("空 phases 返回空", () => {
-    const g = goal({ plan: { phases: [], nextId: 1 } as TaskPlan });
-    expect(buildPlanContextBlock(g)).toBe("");
-  });
-
-  // 软遗忘（ADR 0010）：done phase（建检通过）只保留标题行，其下 task 的 subject
-  // 与 evidence 全部软遗忘；in_progress phase 全量注入（含 done task）。
-  test("混合 plan：done phase 只留标题行，in_progress phase 全量注入（含 done task）", () => {
-    const g = goal({
-      plan: {
-        phases: [
-          p(1, "修复auth", [t(1, "登录", "done", { evidence: "npm test ok" })], "done"),
-          p(2, "加回归", [
-            t(2, "CI钩子", "done", { evidence: "加了 .github/workflows" }),
-            t(3, "跑一次", "in_progress"),
-          ], "in_progress"),
-        ],
-        nextId: 4,
-      } as TaskPlan,
+describe("single Work List context", () => {
+  test("soft Work List injects one non-continuing authority block with retained Work Item detail", () => {
+    const described = item(1, "编码", "in_progress", {
+      deliverables: [{ target: "src/<output>.ts", description: "输出可读取" }],
     });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("<dgoal_plan type=\"goal\"");
-    expect(block).toContain("</dgoal_plan>");
-    // done phase：保留标题行
-    expect(block).toContain("[done] phase #1: 修复auth");
-    // done phase：软遗忘其下 task 的 subject 与 evidence
-    expect(block).not.toContain("登录");
-    expect(block).not.toContain("npm test ok");
-    expect(block).not.toContain("task #1");
-    // in_progress phase：全量注入，含已完成 task 的 subject 与 evidence（软遗忘时机是 phase 整体 done）
-    expect(block).toContain("[in_progress] phase #2: 加回归");
-    expect(block).toContain("[done] task #2: CI钩子 | ev: 加了 .github/workflows");
-    expect(block).toContain("[in_progress] task #3: 跑一次");
+    const block = buildSoftWorkListContext(goal({
+      workList: { items: [described], phases: [], nextItemId: 2, nextPhaseId: 1, revision: 2 },
+    }));
+    expect(block).toContain('<dgoal_work_list mode="soft" revision="2">');
+    expect(block).toContain("编码 服务当前 Goal。");
+    expect(block).toContain("src/&lt;output&gt;.ts");
+    expect(block).toContain("输出可读取");
+    expect(block).toContain("不启动自动续跑、no-progress 计数或独立审核");
+    expect(block).toContain("execution_plan 原子升级");
+    expect(block).not.toContain("contextSummary");
   });
 
-  test("软遗忘四态之一：done phase 不注入其 task 但保留自身标题行", () => {
-    const g = goal({
-      plan: {
-        phases: [
-          p(1, "阶段一", [
-            t(1, "任务甲", "done", { evidence: "ev-甲" }),
-            t(2, "任务乙", "done", { evidence: "ev-乙" }),
-          ], "done"),
-        ],
-        nextId: 3,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("[done] phase #1: 阶段一");
-    expect(block).not.toContain("任务甲");
-    expect(block).not.toContain("任务乙");
-    expect(block).not.toContain("ev-甲");
-    expect(block).not.toContain("ev-乙");
-    expect(block).not.toContain("task #1");
-    expect(block).not.toContain("task #2");
+  test("Execution Plan makes the Work List authoritative and requires explicit Goal close", () => {
+    const g = goal({ contract: contract("execution") });
+    const block = buildPlanContractContext(g);
+    expect(block).toContain("当前 Plan Contract：execution");
+    expect(block).toContain('<dgoal_work_list profile="execution" revision="2">');
+    expect(block).toContain("当前 Work List 是执行与收口的唯一结构化权威");
+    expect(block).toContain("work_update(target=goal,status=done,summary,verification)");
+    expect(block).toContain("成员耗尽不会自动完成 Phase");
   });
 
-  test("软遗忘四态之二：in_progress phase 全量注入（含 done task 的 subject 和 evidence）", () => {
-    const g = goal({
-      plan: {
-        phases: [p(1, "进行中", [
-          t(1, "已完成", "done", { evidence: "ev-done" }),
-          t(2, "进行中", "in_progress"),
-          t(3, "待办", "pending"),
-        ], "in_progress")],
-        nextId: 4,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("[in_progress] phase #1: 进行中");
-    expect(block).toContain("[done] task #1: 已完成 | ev: ev-done");
-    expect(block).toContain("[in_progress] task #2: 进行中");
-    expect(block).toContain("[pending] task #3: 待办");
+  test("Goal Check and Staged Check expose distinct check/update chains", () => {
+    const goalCheck = buildPlanContractContext(goal({ contract: contract("goal_check") }));
+    expect(goalCheck).toContain("不要调用 phase_check");
+    expect(goalCheck).toContain("goal_check");
+
+    const staged = buildPlanContractContext(goal({ contract: contract("staged_check") }));
+    expect(staged).toContain("按严格 Phase 顺序运行 phase_check");
+    expect(staged).toContain("work_update 显式完成 Phase");
+    expect(staged).toContain("goal_check");
   });
 
-  test("软遗忘四态之三：done phase 与 in_progress phase 混合，只后者展开 task", () => {
+  test("Goal description, Work Item evidence and deliverables are XML escaped", () => {
     const g = goal({
-      plan: {
-        phases: [
-          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
-          p(2, "当前阶段", [t(2, "新任务", "pending")], "in_progress"),
-          p(3, "未来阶段", [t(3, "未启动", "pending")], "pending"),
-        ],
-        nextId: 4,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    // done phase 只留标题行
-    expect(block).toContain("[done] phase #1: 已完成阶段");
-    expect(block).not.toContain("旧任务");
-    expect(block).not.toContain("旧证据");
-    // in_progress / pending phase 展开 task
-    expect(block).toContain("[in_progress] phase #2: 当前阶段");
-    expect(block).toContain("[pending] task #2: 新任务");
-    expect(block).toContain("[pending] phase #3: 未来阶段");
-    expect(block).toContain("[pending] task #3: 未启动");
-  });
-
-  test("软遗忘四态之四：done phase 的标题行本身不被软遗忘", () => {
-    // 防止过度软遗忘：phase 标题行必须保留，作为 phase 间认知连续性锚点
-    const g = goal({
-      plan: {
-        phases: [
-          p(1, "第一阶段", [t(1, "x", "done")], "done"),
-          p(2, "第二阶段", [t(2, "y", "pending")], "in_progress"),
-        ],
-        nextId: 3,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("[done] phase #1: 第一阶段");
-    expect(block).toContain("[in_progress] phase #2: 第二阶段");
-  });
-
-  test("当前/未来 phase 与 task 注入 description，done phase 仍软遗忘", () => {
-    const g = goal({
-      plan: {
-        phases: [
-          p(1, "已完成", [t(1, "旧任务", "done", { description: "旧任务说明", evidence: "ok" })], "done"),
-          p(2, "当前阶段", [t(2, "新任务", "in_progress", { description: "新任务说明" })], "in_progress"),
-        ],
-        nextId: 3,
+      description: "采用 <最小> 修复",
+      contract: contract("execution"),
+      workList: {
+        items: [item(1, "核对 <API>", "done", {
+          evidence: "a & b",
+          deliverables: [{ target: "out<1>.txt", description: "内容 & 格式正确" }],
+          deliverableEvidence: [{ target: "out<1>.txt", evidence: "read & compare" }],
+        })],
+        phases: [], nextItemId: 2, nextPhaseId: 1, revision: 2,
       },
     });
-    const block = buildPlanContextBlock(g);
-    expect(block).not.toContain("旧任务说明");
-    expect(block).toContain("description: 当前阶段 服务于整体目标。");
-    expect(block).toContain("description: 新任务说明");
-  });
-
-  test("blocked task 带 blockedReason", () => {
-    const g = goal({
-      plan: {
-        phases: [p(1, "p", [t(1, "需权限", "blocked", { blockedReason: "缺 token" })], "blocked")],
-        nextId: 2,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("blocked: 缺 token");
-  });
-
-  // goal_check rejected 后 finalFeedback 仍在，已完成 phase 的 task 细节不能被软遗忘。
-  test("goal_check rejected 后保留 done phase 全量 task 细节", () => {
-    const g = goal({
-      status: "active",
-      rejectedCount: 2,
-      finalFeedback: { report: "<REJECTED>", rejectedCount: 2, createdAt: Date.now() },
-      plan: {
-        phases: [
-          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
-          p(2, "当前阶段", [t(2, "新任务", "in_progress")], "in_progress"),
-        ],
-        nextId: 3,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    // done phase 的 task 细节在 goal 修复期间保留
-    expect(block).toContain("[done] phase #1: 已完成阶段");
-    expect(block).toContain("旧任务");
-    expect(block).toContain("旧证据");
-    expect(block).toContain("[in_progress] phase #2: 当前阶段");
-  });
-
-  test("正常 active（无 finalFeedback）：done phase 仍软遗忘", () => {
-    const g = goal({
-      status: "active",
-      plan: {
-        phases: [
-          p(1, "已完成阶段", [t(1, "旧任务", "done", { evidence: "旧证据" })], "done"),
-          p(2, "当前阶段", [t(2, "新任务", "pending")], "in_progress"),
-        ],
-        nextId: 3,
-      } as TaskPlan,
-    });
-    const block = buildPlanContextBlock(g);
-    expect(block).toContain("[done] phase #1: 已完成阶段");
-    expect(block).not.toContain("旧任务");
-    expect(block).not.toContain("旧证据");
+    const block = buildPlanContractContext(g);
+    expect(block).toContain("采用 &lt;最小&gt; 修复");
+    expect(block).toContain("核对 &lt;API&gt;");
+    expect(block).toContain("a &amp; b");
+    expect(block).toContain("out&lt;1&gt;.txt");
+    expect(block).toContain("内容 &amp; 格式正确");
+    expect(block).toContain("read &amp; compare");
   });
 });
 
-describe("goal 边界注入", () => {
-  test("无边界字段时返回空", () => {
-    expect(buildGoalBoundaryBlock(goal())).toBe("");
-  });
-
-  test("nonGoals / guardrails 会注入 dgoal_boundaries block", () => {
-    const block = buildGoalBoundaryBlock(goal({
-      nonGoals: ["不拆 PR", "不重构 i18n 框架"],
-      guardrails: ["不改跨会话状态"],
-    }));
+describe("frozen boundary and feedback blocks", () => {
+  test("nonGoals / guardrails come only from Plan Contract", () => {
+    const g = goal({ contract: contract("goal_check", { nonGoals: ["不拆 PR"], guardrails: ["不改跨会话状态"] }) });
+    const block = buildGoalBoundaryBlock(g);
     expect(block).toContain("<dgoal_boundaries>");
-    expect(block).toContain("不做什么：");
     expect(block).toContain("- 不拆 PR");
-    expect(block).toContain("- 不重构 i18n 框架");
-    expect(block).toContain("护栏：");
     expect(block).toContain("- 不改跨会话状态");
-    expect(block).toContain("</dgoal_boundaries>");
+  });
+
+  test("current Phase feedback is injected, unrelated Phase feedback is not", () => {
+    const current = phase(1, "当前", [item(1, "修复")], "in_progress", { feedback: { report: "当前反馈", createdAt: 1 } });
+    const future = phase(2, "未来", [item(2, "稍后")], "pending", { feedback: { report: "未来反馈", createdAt: 1 } });
+    const g = goal({ contract: contract("staged_check"), workList: { items: [], phases: [current, future], nextItemId: 3, nextPhaseId: 3, revision: 2 } });
+    const block = buildCheckFeedbackBlock(g);
+    expect(block).toContain('type="phase" phaseId="1"');
+    expect(block).toContain("当前反馈");
+    expect(block).not.toContain("未来反馈");
+  });
+
+  test("final feedback takes precedence and no feedback produces no block", () => {
+    const withFinal = goal({ contract: contract("goal_check", { finalFeedback: { report: "终审反馈", rejectedCount: 2, createdAt: 1 } }) });
+    expect(buildCheckFeedbackBlock(withFinal)).toContain('type="final" rejectedCount="2"');
+    expect(buildCheckFeedbackBlock(withFinal)).toContain("终审反馈");
+    expect(buildCheckFeedbackBlock(goal({ contract: contract("execution") }))).toBe("");
   });
 });
 
-describe("续跑发送时机", () => {
-  test("agent 仍忙时不应立刻递送 continuation", () => {
+describe("start prompt and lifecycle helpers", () => {
+  test("start prompt reflects the active Profile without contextSummary", () => {
+    const text = buildStartPrompt(goal({ contract: contract("staged_check") }));
+    expect(text).toContain("Staged Check Plan");
+    expect(text).toContain("phase_check");
+    expect(text).toContain("work_update");
+    expect(text).not.toContain("contextSummary");
+  });
+
+  test("continuation is delivered only when idle with no pending messages", () => {
     expect(shouldDeliverContinuationNow({ isIdle: () => false, hasPendingMessages: () => false })).toBe(false);
-  });
-
-  test("已有待处理消息时不应递送 continuation", () => {
     expect(shouldDeliverContinuationNow({ isIdle: () => true, hasPendingMessages: () => true })).toBe(false);
-  });
-
-  test("idle 且无待处理消息时才递送 continuation", () => {
     expect(shouldDeliverContinuationNow({ isIdle: () => true, hasPendingMessages: () => false })).toBe(true);
   });
-});
 
-describe("clear 行为", () => {
-  test("busy 时 clear 应触发一次中断", () => {
+  test("clear aborts only a busy turn", () => {
     expect(shouldAbortCurrentTurnOnClear({ isIdle: () => false })).toBe(true);
-  });
-
-  test("idle 时 clear 不需要额外中断", () => {
     expect(shouldAbortCurrentTurnOnClear({ isIdle: () => true })).toBe(false);
-  });
-});
-
-describe("v0.5.2 切片7 · buildCheckFeedbackBlock（<check_feedback> 注入）", () => {
-  function t2(id: number, subject: string, status: Task["status"] = "pending"): Task { return { id, subject, status }; }
-  function p2(id: number, subject: string, tasks: Task[], status: Phase["status"] = "in_progress"): Phase { return { id, subject, tasks, status }; }
-
-  test("active + 当前 phase 有阶段反馈：注入 phase 反馈", () => {
-    const g: GoalState = {
-      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
-      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
-      phaseFeedbackById: { "1": { phaseId: 1, report: "phase1 未通过报告", createdAt: 1 } },
-    } as GoalState;
-    const block = buildCheckFeedbackBlock(g);
-    expect(block).toContain('<check_feedback type="phase" phaseId="1">');
-    expect(block).toContain("phase1 未通过报告");
-  });
-
-  test("active + 非当前 phase 的反馈：不注入", () => {
-    const g: GoalState = {
-      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
-      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")]), p2(2, "阶段二", [t2(2, "t2", "pending")])], nextId: 3 },
-      // 反馈在 phase 2，但当前未完成是 phase 1
-      phaseFeedbackById: { "2": { phaseId: 2, report: "phase2 报告", createdAt: 1 } },
-    } as GoalState;
-    expect(buildCheckFeedbackBlock(g)).toBe("");
-  });
-
-  test("active + goal_check 反馈：注入 final 反馈", () => {
-    const g: GoalState = {
-      id: "g", objective: "o", status: "active", rejectedCount: 2, startedAt: 1, updatedAt: 1, iteration: 0,
-      finalFeedback: { report: "终审未通过报告", rejectedCount: 2, createdAt: 1 },
-    } as GoalState;
-    const block = buildCheckFeedbackBlock(g);
-    expect(block).toContain('<check_feedback type="final" rejectedCount="2">');
-    expect(block).toContain("终审未通过报告");
-  });
-
-  test("无任何反馈：不生成空 block", () => {
-    const g: GoalState = {
-      id: "g", objective: "o", status: "active", startedAt: 1, updatedAt: 1, iteration: 0,
-      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
-    } as GoalState;
-    expect(buildCheckFeedbackBlock(g)).toBe("");
-  });
-
-  test("final 优先：active 且 finalFeedback 存在时注入 final 而非 phase", () => {
-    const g: GoalState = {
-      id: "g", objective: "o", status: "active", rejectedCount: 0, startedAt: 1, updatedAt: 1, iteration: 0,
-      plan: { phases: [p2(1, "阶段一", [t2(1, "t", "in_progress")])], nextId: 2 },
-      phaseFeedbackById: { "1": { phaseId: 1, report: "phase 报告", createdAt: 1 } },
-      finalFeedback: { report: "goal_check 报告", rejectedCount: 3, createdAt: 1 },
-    } as GoalState;
-    const block = buildCheckFeedbackBlock(g);
-    expect(block).toContain('type="final"');
-    expect(block).not.toContain('type="phase"');
   });
 });

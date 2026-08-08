@@ -1,5 +1,4 @@
-// 切片 1 验收：RenderLine / buildBodyLines* / colorize / computeScrollOffset 纯函数测试。
-// 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 1 + 4。
+// ADR 0051：唯一 Work List 的纯 TUI 投影与导航测试。
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -11,611 +10,185 @@ import {
   colorize,
   computePlanStatusSelection,
   computeScrollOffset,
-  deriveLatestAuditObservation,
-  deriveCurrentTaskGraph,
-  derivePlanFrontierDiagnostic,
   getPlanStatusTargets,
   type GoalState,
-  type Phase,
-  type PlanStatus,
   type RenderLine,
-  type Task,
-  type TaskPlan,
+  type WorkItem,
+  type WorkItemStatus,
+  type WorkPhase,
+  type WorkPhaseStatus,
 } from "../index.ts";
 
-// ---- mock theme：最小可识别 fg/bold 输出（不依赖真实 pi-theme） ----
-const RESET = "\u001b[0m";
 function mockTheme(): any {
-  const fg = (color: string, s: string) => `<${color}>${s}</${color}>`;
   return {
-    fg,
-    bold: (s: string) => `<bold>${s}</bold>`,
+    fg: (color: string, value: string) => `<${color}>${value}</${color}>`,
+    bold: (value: string) => `<bold>${value}</bold>`,
   };
 }
 
-// ---- goal/phase/task 工厂（与 plan-overlay-render.test.ts 保持一致） ----
-function t(id: number, subject: string, status: Task["status"] = "pending", extra: Partial<Task> = {}): Task {
-  return { id, subject, description: `${subject} 任务说明`, status, ...extra };
+function item(id: number, subject: string, status: WorkItemStatus = "pending", extra: Partial<WorkItem> = {}): WorkItem {
+  return { id, subject, description: `${subject} 的执行说明`, status, ...extra };
 }
-function p(id: number, subject: string, tasks: Task[], status: Phase["status"] = "pending", extra: Partial<Phase> = {}): Phase {
-  return { id, subject, description: `${subject} 阶段说明`, tasks, status, ...extra };
+
+function phase(id: number, subject: string, items: WorkItem[], status: WorkPhaseStatus = "pending", extra: Partial<WorkPhase> = {}): WorkPhase {
+  return { id, subject, description: `${subject} 的阶段说明`, items, status, revision: 0, ...extra };
 }
-function goal(phases: Phase[], overrides: Partial<GoalState> = {}): GoalState {
+
+function goal(phases: WorkPhase[], rootItems: WorkItem[] = [], overrides: Partial<GoalState> = {}): GoalState {
   const now = Date.now();
   return {
     id: "g1",
-    objective: "实施 v0.4.2",
-    description: "完成两层状态查询。",
+    objective: "实施 v0.8.1",
+    description: "完成唯一 Work List 的状态查询。",
     status: "active",
-    startedAt: now - 5 * 60 * 1000, // 5m ago — elapsed 走 < 1h 分支
-    updatedAt: now - 5 * 60 * 1000,
+    startedAt: now - 5 * 60_000,
+    updatedAt: now,
     iteration: 0,
-    plan: { phases, nextId: 100 } as TaskPlan,
+    workList: { items: rootItems, phases, nextItemId: 100, nextPhaseId: 100, revision: 3 },
+    contract: {
+      id: "run-1",
+      profile: "staged_check",
+      startedAt: now - 5 * 60_000,
+      revision: 3,
+      transitions: [{ to: "staged_check", at: now - 5 * 60_000, revision: 3 }],
+    },
     ...overrides,
   };
 }
 
-// =============================================================================
-// buildBodyLines / buildBodyLinesNoHeading / buildHeadingLine
-// =============================================================================
-
-describe("切片 1 · buildBodyLines 返回 RenderLine[]", () => {
-  test("无 goal 返回空", () => {
+describe("Work List body projection", () => {
+  test("无 Goal、无 Work List 或 pending 时返回空", () => {
     expect(buildBodyLines(undefined)).toEqual([]);
+    expect(buildBodyLines({ ...goal([]), workList: undefined })).toEqual([]);
+    expect(buildBodyLines(goal([], [], { status: "pending" }))).toEqual([]);
   });
 
-  test("无 plan 返回空", () => {
-    expect(buildBodyLines({ ...goal([]), plan: undefined })).toEqual([]);
+  test("按 root Work Item、Phase、Phase Work Item 顺序投影稳定 target", () => {
+    const g = goal(
+      [phase(1, "实现", [item(2, "写代码", "in_progress")], "in_progress")],
+      [item(1, "确认边界")],
+    );
+    const lines = buildBodyLines(g);
+    expect(lines.map((line) => line.type)).toEqual(["heading", "spacer", "item", "phase", "item"]);
+    expect(lines[2].target).toEqual({ kind: "item", id: 1 });
+    expect(lines[3].target).toEqual({ kind: "phase", id: 1 });
+    expect(lines[4].target).toEqual({ kind: "item", id: 2 });
+    expect(lines[3].text).toContain("Phase #1 实现");
+    expect(lines[4].text).toContain("#2 写代码");
+    expect(buildBodyLinesNoHeading(g)).toEqual(lines.slice(2));
   });
 
-  test("空 phases 返回空", () => {
-    expect(buildBodyLines(goal([]))).toEqual([]);
-  });
-
-  test("goal pending 返回空（启动中不显示）", () => {
-    expect(buildBodyLines(goal([p(1, "p", [], "in_progress")], { status: "pending" }))).toEqual([]);
-  });
-
-  test("正常 goal：/dgoal s 详细查询 Modal 仍返回 heading + spacer + phase + task", () => {
+  test("blocked/abandoned 原因与 terminal 删除线可见", () => {
     const g = goal([
-      p(1, "phaseA", [t(1, "taskA1", "in_progress")], "in_progress"),
-      p(2, "phaseB", [], "pending"),
+      phase(1, "阶段", [
+        item(1, "完成项", "done", { evidence: "bun test" }),
+        item(2, "放弃项", "abandoned", { abandonedReason: "范围外" }),
+      ], "blocked", { blockedReason: "等待授权" }),
     ]);
     const lines = buildBodyLines(g);
-    expect(lines.length).toBe(5);
-    expect(lines[0].type).toBe("heading");
-    expect(lines[0].status).toBeUndefined();
-    expect(lines[0].text).toContain("🎯 实施 v0.4.2");
-    expect(lines[1].type).toBe("spacer");
-    expect(lines[1].text).toBe("");
-    expect(lines[2].type).toBe("phase");
-    expect(lines[2].status).toBe("in_progress");
-    expect(lines[2].text).toContain("◐ phaseA");
-    expect(lines[3].type).toBe("task");
-    expect(lines[3].status).toBe("in_progress");
-    expect(lines[3].text).toContain("◐ taskA1");
-    expect(lines[4].type).toBe("phase");
-    expect(lines[4].status).toBe("pending");
-    expect(lines[4].text).toContain("○ phaseB");
-  });
-
-  test("/dgoal s 详细查询 Modal 会保留 done phase 的 task 细节", () => {
-    const g = goal([p(1, "phaseA", [t(1, "taskA1", "done")], "done")]);
-    const lines = buildBodyLines(g);
-    const phaseLine = lines.find((l) => l.type === "phase" && l.text.includes("phaseA"));
-    const taskLine = lines.find((l) => l.type === "task" && l.text.includes("taskA1"));
-    expect(phaseLine).toBeDefined();
-    expect(taskLine).toBeDefined();
-  });
-
-  test("blocked phase 带 blockedReason 后缀", () => {
-    const g = goal([p(1, "phaseA", [], "blocked", { blockedReason: "等 X 完成" })]);
-    const lines = buildBodyLines(g);
-    const phaseLine = lines.find((l) => l.type === "phase");
-    expect(phaseLine?.text).toContain("[等 X 完成]");
-    expect(phaseLine?.text).toContain("⚠");
-  });
-
-  test("blocked task 在 Goal Plan 与 Task Plan Modal 都展示 blockedReason", () => {
-    const blockedTask = t(1, "taskA", "blocked", { blockedReason: "缺权限" });
-    const goalPlanLine = buildBodyLines(goal([p(1, "phaseA", [blockedTask], "blocked")]))
-      .find((line) => line.type === "task");
-    const taskPlanLine = buildBodyLines(goal([p(1, "hidden", [blockedTask], "blocked")], { planType: "task" }))
-      .find((line) => line.type === "task");
-    expect(goalPlanLine?.text).toContain("[缺权限]");
-    expect(taskPlanLine?.text).toContain("[缺权限]");
-  });
-
-  test("done phase 用 ✓", () => {
-    const g = goal([p(1, "p", [], "done")]);
-    expect(buildBodyLines(g)[2].text).toContain("✓");
-    const g2 = goal([p(1, "p", [], "done")]);
-    expect(buildBodyLines(g2)[2].text).toContain("✓");
-  });
-
-  test("done 状态的 goal 不被过滤（用户确认后消失由 dgoal 流程处理）", () => {
-    expect(buildBodyLines(goal([p(1, "p", [], "done")], { status: "done" })).length).toBeGreaterThan(0);
-  });
-
-  test("done phase/task 标题文本带删除线，状态字符和树形符号不带（ADR 0009）", () => {
-    const g = goal([p(1, "phaseA", [t(1, "taskA1", "done")], "done")]);
-    const lines = buildBodyLines(g);
-    const phaseLine = lines.find((l) => l.type === "phase" && l.status === "done")!;
-    const taskLine = lines.find((l) => l.type === "task" && l.status === "done")!;
-    // 标题文本被删除线 ANSI 包裹
-    expect(phaseLine.text).toContain("\u001b[9mphaseA\u001b[29m");
-    expect(taskLine.text).toContain("\u001b[9mtaskA1\u001b[29m");
-    // 状态字符 ✓ 和树形符号 ├─ / │ 不被删除线包裹
-    expect(phaseLine.text).not.toContain("\u001b[9m├─");
-    expect(phaseLine.text).not.toContain("\u001b[9m✓");
-    expect(taskLine.text).not.toContain("\u001b[9m│");
-    expect(taskLine.text).not.toContain("\u001b[9m✓");
-  });
-
-  test("长 subject / blockedReason 不再被 buildBodyLines 截断，交给 render 换行", () => {
-    const longPhase = "p".repeat(200);
-    const longReason = "r".repeat(50);
-    const longSubject = "a".repeat(50);
-    const g = goal([
-      p(1, longPhase, [], "blocked", { blockedReason: longReason }),
-      p(2, "p2", [t(1, longSubject, "in_progress")], "in_progress"),
-    ]);
-    const lines = buildBodyLines(g);
-    const phaseLine = lines.find((l) => l.type === "phase" && l.status === "blocked")!;
-    const taskLine = lines.find((l) => l.type === "task" && l.status === "in_progress")!;
-    expect(phaseLine.text).toContain(longPhase);
-    expect(phaseLine.text).toContain(longReason);
-    expect(taskLine.text).toContain(longSubject);
-    expect(phaseLine.text).not.toContain("…");
-    expect(taskLine.text).not.toContain("…");
+    expect(lines.find((line) => line.type === "phase")?.text).toContain("[等待授权]");
+    expect(lines.find((line) => line.text.includes("完成项"))?.text).toContain("\u001b[9m");
+    expect(lines.find((line) => line.text.includes("放弃项"))?.text).toContain("[范围外]");
   });
 });
 
-describe("切片 1 · buildBodyLinesNoHeading 去掉 heading + spacer", () => {
-  test("返回 body 不含 heading", () => {
-    const g = goal([
-      p(1, "p1", [t(1, "t1")], "in_progress"),
-      p(2, "p2", [], "pending"),
-    ]);
-    const all = buildBodyLines(g);
-    const noHead = buildBodyLinesNoHeading(g);
-    expect(noHead.length).toBe(all.length - 2);
-    expect(noHead.every((l) => l.type !== "heading")).toBe(true);
-  });
-});
-
-describe("切片 1 · buildHeadingLine 量化 elapsed", () => {
-  test("active goal 返回 🎯 + phase/task 进度 + ⏱️ elapsed", () => {
-    const g = goal([p(1, "p1", [t(1, "t1", "done")], "done")], {
-      status: "active",
-      startedAt: 100_000,
-      updatedAt: 100_000 + 7 * 60 * 1000 + 3 * 1000, // 7m 3s ago
-    });
+describe("heading 与 Current 状态投影", () => {
+  test("heading 显示 Profile、Work Item/Phase 进度与耗时", () => {
+    const g = goal([phase(1, "实现", [item(1, "编码", "done", { evidence: "bun test" })], "done")]);
     const line = buildHeadingLine(g);
-    expect(line).toContain("🎯");
-    expect(line).toContain("实施 v0.4.2");
-    expect(line).toContain("1/1 phases");
-    expect(line).toContain("1/1 tasks");
+    expect(line).toContain("🎯 实施 v0.8.1");
+    expect(line).toContain("Staged Check · 1/1 items · 1/1 phases");
     expect(line).toContain("⏱️");
   });
 
-  test("active elapsed 排除已累计 pausedTotalMs", () => {
-    const realNow = Date.now;
-    Date.now = () => 10_000;
-    try {
-      const g = goal([p(1, "p1", [], "done")], {
-        status: "active",
-        startedAt: 1_000,
-        updatedAt: 1_000,
-        pausedTotalMs: 4_000,
-      });
-      // 10s - 1s - 4s = 5s
-      expect(buildHeadingLine(g)).toContain("⏱️ 5s");
-    } finally {
-      Date.now = realNow;
-    }
-  });
-
-  test("objective 多行时 heading 只显示首行", () => {
-    const g = goal([p(1, "p1", [], "done")], {
-      objective: "第一行目标\n第二行说明",
-    });
-    const line = buildHeadingLine(g);
-    expect(line).toContain("第一行目标");
-    expect(line).not.toContain("第二行说明");
-  });
-
-  test("paused elapsed 冻结在 pauseStartedAt，且不把当前 pause 窗口算进去", () => {
+  test("paused 耗时冻结在 pauseStartedAt 并排除累计暂停", () => {
     const realNow = Date.now;
     Date.now = () => 99_000;
     try {
-      const g = goal([p(1, "p1", [], "done")], {
-        status: "paused",
-        startedAt: 1_000,
-        updatedAt: 9_000,
-        pauseStartedAt: 9_000,
-        pausedTotalMs: 2_000,
-      });
-      // 冻结在 9s - 1s - 2s = 6s，而不是把 99s 也算进去
+      const g = goal([], [], { status: "paused", startedAt: 1_000, updatedAt: 9_000, pauseStartedAt: 9_000, pausedTotalMs: 2_000 });
       expect(buildHeadingLine(g)).toContain("⏱️ 6s");
     } finally {
       Date.now = realNow;
     }
   });
-});
 
-// =============================================================================
-// colorize：层级基色映射（ADR 0009，状态不再靠颜色或粗体表达）
-// =============================================================================
-
-describe("共享 frontier 诊断", () => {
-  test("Task Plan 指向当前可执行 task，并要求带 evidence 完成", () => {
-    const g = goal([p(1, "隐藏 phase", [t(1, "执行", "in_progress")], "in_progress")], { planType: "task" });
-    const diagnostic = derivePlanFrontierDiagnostic(g);
-    expect(diagnostic?.reason).toContain("task #1 尚未带可复验证据完成");
-    expect(diagnostic?.nextAction).toContain("evidence");
-    expect(buildPlanStatusListLines(g).map((line) => line.text).join("\n")).toContain("当前 frontier");
-  });
-
-  test("由 blocked task 聚合出的 blocked phase 仍解释 task blocker", () => {
-    const blockedTask = t(1, "等待权限", "blocked", { blockedReason: "缺少授权" });
-    const g = goal([p(1, "实现", [blockedTask], "blocked")], { planType: "phase" });
-    const diagnostic = derivePlanFrontierDiagnostic(g);
-    expect(diagnostic?.reason).toContain("task #1 被阻塞：缺少授权");
-    expect(diagnostic?.nextAction).toContain("task #1");
-  });
-
-  test("Task DAG 派生 ready、waiting、根阻塞与立即解锁关系", () => {
-    const g = goal([p(1, "实现", [
-      t(1, "等待凭据", "blocked", { blockedReason: "缺 token" }),
-      t(2, "调用接口", "pending", { blockedBy: [1] }),
-      t(3, "核对文档", "in_progress"),
-      t(4, "准备用例"),
-      t(5, "运行用例", "pending", { blockedBy: [4] }),
-      t(6, "已完成", "done", { evidence: "bun test" }),
-      t(7, "汇总结果", "pending", { blockedBy: [2] }),
-    ], "in_progress")], { planType: "task" });
-
-    const graph = deriveCurrentTaskGraph(g)!;
-    expect(graph.ready.map((node) => node.task.id)).toEqual([3, 4]);
-    expect(graph.waiting.map((node) => node.task.id)).toEqual([2, 5, 7]);
-    expect(graph.blocked.map((node) => node.task.id)).toEqual([1]);
-    expect(graph.rootBlockers.map((task) => task.id)).toEqual([1]);
-    expect(graph.nodes.find((node) => node.task.id === 1)?.rootBlockers.map((task) => task.id)).toEqual([1]);
-    expect(graph.nodes.find((node) => node.task.id === 2)?.rootBlockers.map((task) => task.id)).toEqual([1]);
-    expect(graph.nodes.find((node) => node.task.id === 7)?.rootBlockers.map((task) => task.id)).toEqual([1]);
-    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks).toEqual([]);
-    expect(graph.nodes.find((node) => node.task.id === 2)?.unblocks).toEqual([]);
-    expect(graph.nodes.find((node) => node.task.id === 4)?.unblocks.map((task) => task.id)).toEqual([5]);
-
-    const list = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
-    expect(list).toContain("Task DAG · 当前 phase #1");
-    expect(list).toContain("可推进：#3(in_progress), #4(pending)");
-    expect(list).toContain("等待：#2 ← #1(blocked); #5 ← #4(pending); #7 ← #2(pending)");
-    expect(list).toContain("根阻塞：#1（缺 token）");
-    expect(list).toContain("完成可解锁：#4 → #5");
-    expect(list).not.toContain("#1 → #2");
-    expect(list).not.toContain("#2 → #7");
-
-    const waitingDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 2 }).join("\n");
-    expect(waitingDetail).toContain("图状态：等待");
-    expect(waitingDetail).toContain("未完成直接依赖：#1(blocked)");
-    expect(waitingDetail).toContain("传递根阻塞：#1（缺 token）");
-
-    const blockedDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 1 }).join("\n");
-    expect(blockedDetail).toContain("传递根阻塞：#1（缺 token）");
-
-    const indirectDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 7 }).join("\n");
-    expect(indirectDetail).toContain("未完成直接依赖：#2(pending)");
-    expect(indirectDetail).toContain("传递根阻塞：#1（缺 token）");
-  });
-
-  test("phase 级 blocked 会清空 ready 与立即解锁，并成为图根阻塞", () => {
-    const g = goal([p(1, "实现", [
-      t(1, "前置", "in_progress"),
-      t(2, "后续", "pending", { blockedBy: [1] }),
-    ], "blocked", { blockedReason: "等待用户授权" })], { planType: "phase" });
-    const graph = deriveCurrentTaskGraph(g)!;
-    expect(graph.ready).toEqual([]);
-    expect(graph.nodes.map((node) => node.state)).toEqual(["phase_blocked", "phase_blocked"]);
-    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks).toEqual([]);
-
-    const list = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
-    expect(list).toContain("可推进：无");
-    expect(list).toContain("根阻塞：phase #1（等待用户授权）");
-    expect(list).not.toContain("完成可解锁：");
-    expect(buildPlanStatusDetailLines(g, { kind: "task", id: 1 }).join("\n")).toContain("图状态：phase 阻塞");
-  });
-
-  test("重复 blockedBy 不会重复计数或漏掉立即解锁", () => {
-    const g = goal([p(1, "实现", [
-      t(1, "前置", "in_progress"),
-      t(2, "后续", "pending", { blockedBy: [1, 1] }),
-    ], "in_progress")], { planType: "task" });
-    const graph = deriveCurrentTaskGraph(g)!;
-    expect(graph.nodes.find((node) => node.task.id === 2)?.unresolvedDependencies.map((task) => task.id)).toEqual([1]);
-    expect(graph.nodes.find((node) => node.task.id === 1)?.unblocks.map((task) => task.id)).toEqual([2]);
-  });
-
-  test("选中 task 只解释其未完成依赖，不枚举未来 phase", () => {
-    const g = goal([p(1, "实现", [
-      t(1, "前置", "in_progress"),
-      t(2, "后续", "pending", { blockedBy: [1] }),
-    ], "in_progress")], { planType: "phase" });
-    const diagnostic = derivePlanFrontierDiagnostic(g, { kind: "task", id: 2 });
-    expect(diagnostic?.reason).toContain("等待依赖 #1(in_progress) 完成");
-    expect(diagnostic?.nextAction).toContain("先完成依赖 #1(in_progress)");
-  });
-
-  test("Phase / Goal Plan 在当前 phase 的 task 耗尽后先要求主 agent 决定是否新增 task", () => {
-    const doneTask = t(1, "编码", "done", { evidence: "bun test" });
-    const phasePlan = goal([p(1, "实现", [doneTask], "in_progress")], {
-      planType: "phase",
-      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [doneTask], "in_progress")] },
+  test("列表显示 Goal 说明、Profile/revision、frontier 与审核结论", () => {
+    const checked = phase(1, "实现", [item(1, "编码", "done", { evidence: "bun test" })], "in_progress", {
+      check: { status: "rejected", report: "需要补测试", revision: 0, checkedAt: 1 },
+      feedback: { report: "需要补测试", createdAt: 1 },
     });
-    const phaseDiagnostic = derivePlanFrontierDiagnostic(phasePlan);
-    expect(phaseDiagnostic?.reason).toContain("等待主 agent 决定下一步");
-    expect(phaseDiagnostic?.nextAction).toContain("plan_create");
-    expect(phaseDiagnostic?.nextAction).toContain("标记 done");
-
-    const goalPlan = goal([p(1, "实现", [doneTask], "in_progress")], {
-      planType: "goal",
-      plan: { revision: 3, nextId: 2, phases: [p(1, "实现", [doneTask], "in_progress")] },
-    });
-    const goalDiagnostic = derivePlanFrontierDiagnostic(goalPlan);
-    expect(goalDiagnostic?.reason).toContain("等待主 agent 决定下一步");
-    expect(goalDiagnostic?.nextAction).toContain("plan_create");
-    expect(goalDiagnostic?.nextAction).toContain("phase_check");
-  });
-
-  test("只解释当前 frontier；未来 phase 的详情指回当前 phase", () => {
-    const g = goal([
-      p(1, "当前", [t(1, "执行", "in_progress")], "in_progress"),
-      p(2, "未来", [t(2, "稍后")], "pending"),
-    ], { planType: "phase" });
-    const detail = buildPlanStatusDetailLines(g, { kind: "phase", id: 2 }).join("\n");
-    expect(detail).toContain("当前 frontier 仍在 phase #1");
-    expect(detail).not.toContain("task #2 已就绪");
-  });
-
-  test("全部 phase done 后只解释 goal_check 这一项当前完成门", () => {
-    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
-    const g = goal([donePhase], { planType: "phase", plan: { revision: 2, nextId: 2, phases: [donePhase] } });
-    expect(derivePlanFrontierDiagnostic(g)?.nextAction).toContain("goal_check");
-  });
-});
-
-describe("最新审核信息只读投影", () => {
-  test("phase 只展示该 phase 的最新 CheckRecord 与反馈", () => {
-    const phase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress", {
-      check: { status: "rejected", report: "旧 check report", modelId: "test/model", checkedAt: 1, revision: 2 },
-    });
-    const g = goal([phase], {
-      planType: "goal",
-      plan: { revision: 2, nextId: 2, phases: [phase] },
-      phaseFeedbackById: {
-        "1": { phaseId: 1, report: "当前 phase 最新反馈", createdAt: 2 },
-        "2": { phaseId: 2, report: "未来 phase 历史反馈", createdAt: 1 },
-      },
-    });
-    const observation = deriveLatestAuditObservation(g, { kind: "phase", id: 1 });
-    expect(observation?.check?.status).toBe("rejected");
-    expect(observation?.feedback).toBe("当前 phase 最新反馈");
-    const detail = buildPlanStatusDetailLines(g, { kind: "phase", id: 1 }).join("\n");
-    expect(detail).toContain("最新建检：rejected");
-    expect(detail).toContain("最新反馈：当前 phase 最新反馈");
-    expect(detail).not.toContain("未来 phase 历史反馈");
-  });
-
-  test("approved phase check 不把残留 rejected feedback 误显示为最新", () => {
-    const phase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "in_progress", {
-      check: { status: "approved", report: "通过", modelId: "test/model", checkedAt: 2, revision: 2 },
-    });
-    const g = goal([phase], {
-      planType: "goal",
-      plan: { revision: 2, nextId: 2, phases: [phase] },
-      phaseFeedbackById: { "1": { phaseId: 1, report: "旧 rejected feedback", createdAt: 1 } },
-    });
-    const observation = deriveLatestAuditObservation(g, { kind: "phase", id: 1 });
-    expect(observation?.check?.status).toBe("approved");
-    expect(observation?.feedback).toBeUndefined();
-  });
-
-  test("approved goal check 不把旧 rejected 声明误显示为最新", () => {
-    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
-    const g = goal([donePhase], {
-      planType: "phase",
-      plan: { revision: 4, nextId: 2, phases: [donePhase] },
-      goalCheck: { status: "approved", report: "通过", modelId: "test/model", checkedAt: 4, revision: 4 },
-      finalAuditHistory: [{ attempt: 1, report: "旧反馈", summary: "旧失败声明", verification: "旧验证", createdAt: 1 }],
-    });
-    const observation = deriveLatestAuditObservation(g);
-    expect(observation?.check?.status).toBe("approved");
-    expect(observation?.latestClaim).toBeUndefined();
-    expect(buildPlanStatusListLines(g).map((line) => line.text).join("\n")).not.toContain("旧失败声明");
-  });
-
-  test("goal 只展示最新反馈与最新完成声明，内部旧账本不泄露", () => {
-    const donePhase = p(1, "实现", [t(1, "编码", "done", { evidence: "bun test" })], "done");
-    const g = goal([donePhase], {
-      planType: "phase",
-      plan: { revision: 4, nextId: 2, phases: [donePhase] },
-      goalCheck: { status: "rejected", report: "最新终审反馈", modelId: "test/model", checkedAt: 3, revision: 4 },
-      finalFeedback: { report: "最新终审反馈", rejectedCount: 2, createdAt: 3 },
-      finalAuditHistory: [
-        { attempt: 1, report: "旧报告", summary: "旧完成声明", verification: "旧验证", createdAt: 1 },
-        { attempt: 2, report: "最新终审反馈", summary: "最新完成声明", verification: "最新验证", createdAt: 3 },
-      ],
-    });
+    const g = goal([checked]);
     const text = buildPlanStatusListLines(g).map((line) => line.text).join("\n");
-    expect(text).toContain("最新反馈：最新终审反馈");
-    expect(text).toContain("最新完成声明：第 2 次 · 最新完成声明｜验证：最新验证");
-    expect(text).not.toContain("旧完成声明");
-    expect(text).not.toContain("旧报告");
+    expect(text).toContain("完成唯一 Work List 的状态查询");
+    expect(text).toContain("Staged Check · Work List revision 3");
+    expect(text).toContain("当前 frontier");
+    expect(buildPlanStatusDetailLines(g, { kind: "phase", id: 1 }).join("\n")).toContain("最新反馈：需要补测试");
   });
 });
 
-describe("两层 `/dgoal s` 纯函数", () => {
-  test("列表页包含 goal description，并给 phase/task 提供稳定 target", () => {
-    const g = goal([p(1, "实现", [t(3, "写测试")], "in_progress")]);
-    const lines = buildPlanStatusListLines(g);
-    expect(lines[0]).toMatchObject({ type: "description", text: "说明：完成两层状态查询。" });
+describe("Current targets 与详情", () => {
+  test("Phase 与 Work Item 使用各自 namespace target", () => {
+    const g = goal([phase(1, "实现", [item(1, "写测试")], "in_progress")]);
     expect(getPlanStatusTargets(g)).toEqual([
       { kind: "phase", id: 1 },
-      { kind: "task", id: 3 },
+      { kind: "item", id: 1 },
     ]);
   });
 
-  test("Task Plan 不暴露内部 phase target", () => {
-    const g = goal([p(1, "隐藏 phase", [t(1, "执行")])], { planType: "task" });
-    expect(getPlanStatusTargets(g)).toEqual([{ kind: "task", id: 1 }]);
+  test("Work Item 详情显示位置、依赖、证据、原因与交付物", () => {
+    const work = item(2, "修复", "blocked", {
+      blockedBy: [1],
+      blockedReason: "等待 Work Item #1",
+      evidence: "定向测试输出",
+      deliverables: [{ target: "src/x.ts", description: "实现完成" }],
+      deliverableEvidence: [{ target: "src/x.ts", evidence: "文件存在" }],
+    });
+    const text = buildPlanStatusDetailLines(goal([phase(1, "实现", [work], "blocked")]), { kind: "item", id: 2 }).join("\n");
+    expect(text).toContain("Work Item #2 · 修复");
+    expect(text).toContain("所在 Phase：#1 实现");
+    expect(text).toContain("依赖：#1");
+    expect(text).toContain("证据：定向测试输出");
+    expect(text).toContain("阻塞原因：等待 Work Item #1");
+    expect(text).toContain("src/x.ts：实现完成");
+    expect(text).toContain("src/x.ts：文件存在");
+  });
+});
+
+describe("colorize hierarchy", () => {
+  const theme = mockTheme();
+  const line = (type: RenderLine["type"], status?: WorkItemStatus | WorkPhaseStatus, text = "X"): RenderLine => ({ type, status, text });
+
+  test("heading 为 accent+bold，Phase 为 text，Work Item 为 dim", () => {
+    expect(colorize(line("heading", undefined, "🎯 Goal"), theme)).toContain("<accent><bold>");
+    expect(colorize(line("phase", "in_progress", "Phase"), theme)).toContain("<text>");
+    expect(colorize(line("item", "in_progress", "Work Item"), theme)).toContain("<dim>");
   });
 
-  test("phase/task 详情按字段投影并对缺失运行字段显示无", () => {
-    const g = goal([p(1, "实现", [t(2, "写代码", "done", { blockedBy: [1], evidence: "bun test" })], "in_progress")]);
-    expect(buildPlanStatusDetailLines(g, { kind: "phase", id: 1 }).join("\n"))
-      .toContain("实现 阶段说明");
-    const taskDetail = buildPlanStatusDetailLines(g, { kind: "task", id: 2 }).join("\n");
-    expect(taskDetail).toContain("所在 phase：#1 实现");
-    expect(taskDetail).toContain("依赖：#1");
-    expect(taskDetail).toContain("证据：bun test");
-    expect(taskDetail).toContain("阻塞原因：无");
+  test("状态不额外改变层级粗细", () => {
+    expect(colorize(line("phase", "in_progress", "Phase"), theme)).not.toContain("<bold>");
+    expect(colorize(line("item", "done", "Work Item"), theme)).not.toContain("<bold>");
   });
+});
 
-  test("选中索引支持上下与 vim 首尾；翻页键留给列表物理滚动", () => {
+describe("selection 与 scroll 纯函数", () => {
+  test("选择支持上下与 vim 首尾；翻页键留给物理滚动", () => {
     expect(computePlanStatusSelection("j", 0, 25)).toBe(1);
     expect(computePlanStatusSelection("k", 0, 25)).toBe(0);
     expect(computePlanStatusSelection("\u001b[6~", 1, 25)).toBeNull();
     expect(computePlanStatusSelection("G", 1, 25)).toBe(24);
     expect(computePlanStatusSelection("g", 24, 25)).toBe(0);
-    expect(computePlanStatusSelection("?", 2, 25)).toBeNull();
-  });
-});
-
-describe("切片 1 · colorize 按 line.type 分配层级基色", () => {
-  const th = mockTheme();
-
-  function lineOf(type: RenderLine["type"], status?: PlanStatus, text = "X"): RenderLine {
-    return { type, status, text };
-  }
-
-  test("heading → accent + bold", () => {
-    const out = colorize(lineOf("heading", undefined, "🎯 hello"), th);
-    expect(out).toContain("<bold>");
-    expect(out).toContain("<accent>");
-    expect(out).toContain("🎯 hello");
   });
 
-  test("spacer → 原样 text", () => {
-    expect(colorize(lineOf("spacer", undefined, ""), th)).toBe("");
-  });
-
-  test("phase → text（层级基色，与状态无关）", () => {
-    // 四种 status 都应该走 text，不再走 success/warning/muted
-    for (const status of ["pending", "in_progress", "done", "blocked"] as const) {
-      const out = colorize(lineOf("phase", status, "├─ p"), th);
-      expect(out).toContain("<text>");
-    }
-  });
-
-  test("phase in_progress 不再加 bold（状态只靠字符）", () => {
-    const out = colorize(lineOf("phase", "in_progress", "├─ ◐ p"), th);
-    expect(out).not.toContain("<bold>");
-  });
-
-  test("task → dim（层级基色，与状态无关）", () => {
-    for (const status of ["pending", "in_progress", "done", "blocked"] as const) {
-      const out = colorize(lineOf("task", status, "│ ○ p"), th);
-      expect(out).toContain("<dim>");
-    }
-  });
-
-  test("task in_progress 不再加 bold（状态只靠字符）", () => {
-    const out = colorize(lineOf("task", "in_progress", "◐"), th);
-    expect(out).not.toContain("<bold>");
-  });
-
-  test("层级区分：phase 是 text，task 是 dim，不混淆", () => {
-    const phaseOut = colorize(lineOf("phase", "in_progress", "├─ ◐ p"), th);
-    const taskOut = colorize(lineOf("task", "in_progress", "│ ◐ t"), th);
-    expect(phaseOut).toContain("<text>");
-    expect(phaseOut).not.toContain("<dim>");
-    expect(taskOut).toContain("<dim>");
-    expect(taskOut).not.toContain("<text>");
-  });
-});
-
-// =============================================================================
-// computeScrollOffset：9 种键 + clamp 边界
-// =============================================================================
-
-describe("切片 1 · computeScrollOffset 9 种键", () => {
-  test("escape → 'exit'", () => {
+  test("scroll 支持退出、逐行、翻页、首尾与 clamp", () => {
     expect(computeScrollOffset("\u001b", 0, 100, 20)).toBe("exit");
-  });
-  test("ctrl+c → 'exit'", () => {
-    expect(computeScrollOffset("\u0003", 5, 100, 20)).toBe("exit");
-  });
-  test("down → +1", () => {
-    expect(computeScrollOffset("\u001b[B", 0, 100, 20)).toBe(1);
-  });
-  test("j → +1（vim）", () => {
+    expect(computeScrollOffset("\u0003", 0, 100, 20)).toBe("exit");
     expect(computeScrollOffset("j", 5, 100, 20)).toBe(6);
-  });
-  test("up → -1", () => {
-    expect(computeScrollOffset("\u001b[A", 5, 100, 20)).toBe(4);
-  });
-  test("k → -1（vim）", () => {
     expect(computeScrollOffset("k", 5, 100, 20)).toBe(4);
-  });
-  test("pagedown → +10", () => {
     expect(computeScrollOffset("\u001b[6~", 0, 100, 20)).toBe(10);
-  });
-  test("ctrl+d → +10", () => {
-    expect(computeScrollOffset("\u0004", 0, 100, 20)).toBe(10);
-  });
-  test("pageup → -10", () => {
     expect(computeScrollOffset("\u001b[5~", 15, 100, 20)).toBe(5);
-  });
-  test("ctrl+u → -10", () => {
-    expect(computeScrollOffset("\u0015", 15, 100, 20)).toBe(5);
-  });
-  test("end → maxOffset", () => {
-    expect(computeScrollOffset("\u001b[F", 0, 100, 20)).toBe(80);
-  });
-  test("G → maxOffset", () => {
     expect(computeScrollOffset("G", 0, 100, 20)).toBe(80);
-  });
-  test("home → 0", () => {
-    expect(computeScrollOffset("\u001b[H", 50, 100, 20)).toBe(0);
-  });
-  test("g → 0", () => {
     expect(computeScrollOffset("g", 50, 100, 20)).toBe(0);
-  });
-  test("未识别键 → null", () => {
-    expect(computeScrollOffset("x", 5, 100, 20)).toBeNull();
-    expect(computeScrollOffset("zzz", 5, 100, 20)).toBeNull();
-  });
-
-  test("clamp：下到顶不变", () => {
-    expect(computeScrollOffset("\u001b[B", 0, 100, 20)).toBe(1); // 0+1=1 OK
-    expect(computeScrollOffset("\u001b[A", 0, 100, 20)).toBe(0); // 0-1 clamp 到 0
-    expect(computeScrollOffset("k", 0, 100, 20)).toBe(0);
-  });
-
-  test("clamp：下到底不变", () => {
-    const max = 100 - 20; // 80
-    expect(computeScrollOffset("\u001b[B", max, 100, 20)).toBe(max); // 不超
-    expect(computeScrollOffset("j", max, 100, 20)).toBe(max);
-    expect(computeScrollOffset("\u001b[6~", max, 100, 20)).toBe(max); // pageDown 不超
-  });
-
-  test("空 plan (totalLines=0) → maxOffset=0", () => {
-    expect(computeScrollOffset("\u001b[B", 0, 0, 20)).toBe(0);
-    expect(computeScrollOffset("G", 0, 0, 20)).toBe(0);
-  });
-
-  test("maxVisible > totalLines 时 maxOffset=0", () => {
-    expect(computeScrollOffset("\u001b[B", 0, 10, 20)).toBe(0);
+    expect(computeScrollOffset("j", 80, 100, 20)).toBe(80);
+    expect(computeScrollOffset("j", 0, 0, 20)).toBe(0);
   });
 });

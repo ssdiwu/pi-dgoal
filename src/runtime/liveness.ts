@@ -24,35 +24,39 @@ export interface NoProgressDecision {
 }
 
 export function buildDurableProgressFingerprint(goal: GoalState | undefined): string | undefined {
-  if (!goal) return undefined;
+  if (!goal?.workList) return undefined;
+  const itemState = (item: NonNullable<GoalState["workList"]>["items"][number]) => ({
+    id: item.id,
+    status: item.status,
+    blockedBy: item.blockedBy,
+    evidence: item.evidence,
+    deliverableEvidence: item.deliverableEvidence,
+    blockedReason: item.blockedReason,
+    abandonedReason: item.abandonedReason,
+  });
   return JSON.stringify({
     id: goal.id,
     status: goal.status,
-    planType: goal.planType ?? "goal",
-    phases: goal.plan?.phases.map((phase) => ({
+    profile: goal.contract?.profile ?? "soft",
+    rootItems: goal.workList.items.map(itemState),
+    phases: goal.workList.phases.map((phase) => ({
       id: phase.id,
       status: phase.status,
       blockedReason: phase.blockedReason,
-      tasks: phase.tasks.map((task) => ({
-        id: task.id,
-        status: task.status,
-        blockedBy: task.blockedBy,
-        evidence: task.evidence,
-        blockedReason: task.blockedReason,
-      })),
+      items: phase.items.map(itemState),
     })),
   });
 }
 
 export function buildContinuationProgressNudge(noToolTurns: number, stalledTurns: number): string {
   if (noToolTurns >= MAX_NO_PROGRESS_TURNS - 1) {
-    return "\n\n已连续两轮没有调用工具。下一轮必须直接执行或委派当前合法任务；只有确实需要用户决策时，才用 plan_update(target=goal,status=paused,reason=...) 结构化暂停。不要只汇报状态。";
+    return "\n\n已连续两轮没有调用工具。下一轮必须直接执行或委派当前合法 Work Item；只有确实需要用户决策时，才用 work_update(target=goal,status=paused,reason=...) 结构化暂停。不要只汇报状态。";
   }
   if (noToolTurns === 1) {
-    return "\n\n上一轮没有调用工具。当前 task 有合法动作时请直接执行，不要只汇报尚未完成。";
+    return "\n\n上一轮没有调用工具。当前 Work Item 有合法动作时请直接执行，不要只汇报尚未完成。";
   }
   if (stalledTurns >= Math.ceil(MAX_STALLED_PROGRESS_TURNS / 2)) {
-    return `\n\n已连续 ${stalledTurns} 轮只有工具活动、没有观察到文件或 Plan 持久进展。不要重复读取或查询状态；请实施、委派 fresh worker，或在真实用户决策死锁时结构化暂停。`;
+    return `\n\n已连续 ${stalledTurns} 轮只有工具活动、没有观察到文件或 Work List 持久进展。不要重复读取或查询状态；请实施、委派 fresh worker，或在真实用户决策死锁时结构化暂停。`;
   }
   return "";
 }

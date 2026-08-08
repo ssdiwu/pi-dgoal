@@ -8,6 +8,31 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-08
+
+### Breaking
+
+- **单一 Work List 与九工具**（ADR 0051）：公共 agent 工具改为 `work_list` / `execution_plan` / `goal_plan` / `staged_plan` / `work_create` / `work_read` / `work_update` / `phase_check` / `goal_check`。删除 `task_plan`、`phase_plan`、`plan_create`、`plan_read`、`plan_update` 及旧语义 alias；原 Goal Plan 的 Phase + Goal 双审语义由 `staged_plan` 承接。
+- **新持久态，不迁移旧活动计划**：当前 Goal / Work List / Plan Contract 写入 `dgoal-work-v1`，当前 session 的脱敏 Plan Run History 写入 `dgoal-plan-history-v1`。`dgoal-plan-v2` 及更早活动状态不读取、不迁移；升级后需重新建立当前工作清单。
+
+### Added
+
+- **正交保障 Profile**：同一 Work List 可保持 soft（软清单），或单向升级为 Execution Plan、Goal Check Plan、Staged Check Plan；Phase 只在真实串行边界存在，且永不因成员耗尽自动完成。
+- **Plan Run History**：已关闭或被取代的 Plan Contract 在当前 session 内追加归档；状态页可查看、清空历史。归档保留结构化完成证据与审核结论，裁掉 auditor 原始报告、feedback、thinking 与 transcript。
+
+### Changed
+
+- **check / update 分离保持不变**：`phase_check` / `goal_check` 只记录当前 revision 的独立审核结果；Phase 与 Goal 的完成状态仍只能由 `work_update` 显式写入。Profile、Work List 与 Phase revision 均按单调规则失效旧审核。
+- **软清单与持续执行分离**：`work_list` 只做跨 turn 的轻量跟踪，不启动 continuation（自动续跑）、no-progress 计数或独立审核；`execution_plan` 才增加 Until Done（持续执行）保障。
+- **统一 TUI 与完成投影**：浮层、状态页和工具详情统一显示 Work Item / Phase / Profile；已完成 Phase 在执行上下文中软遗忘为标题，历史记录不再膨胀主上下文。
+
+### Fixed
+
+- **关闭可靠清理与用户反馈**：软性 Work List 的全部 Work Item 终结且真实 Phase 显式完成后会自动收口；任何 Profile 关闭均按 done → null tombstone → continuation / proposal / 熔断 / 审核快照 / 授权清理的顺序完成，并返回结构化 `dgoal 完成信号`，不再遗留已完成清单或静默结束。
+- **跨分支与迟到审核隔离**：`session_tree` / `session_compact` 只恢复 `dgoal-work-v1`，并继续用 session generation + Goal ID + revision 隔离旧分支审核结果与 continuation。
+- **Staged 修复回环与 Phase 不变量**：Staged Check 只在全部 Phase 显式完成后允许新增 goal-level 根 Work Item，且该 follow-up 可跨 compact / reload 恢复；非终态 Phase 的状态或说明变化会失效 local approval，done Phase 不再允许同状态改写。Goal Check → Staged Check 的 `acceptanceCriteria` / `nonGoals` / `guardrails` 在输入、语义预审结果、待确认提案与恢复边界均保持冻结。
+- **原子替换、完整回读与损坏状态隔离**：无效 Execution 替换不再提前归档仍 active 的旧 Plan Run；`work_read`、主 agent context 与独立 check prompt 现完整投影 Description、deliverables 与逐项证据；损坏或带未知字段的 Work List / CheckRecord 在恢复时 fail-closed，不再抛出类型异常或恢复伪造 approval。
+
 ## [0.8.0] - 2026-07-31
 
 ### Changed

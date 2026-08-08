@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
-  __finalizeGoalForTest,
+  __clearActiveGoalForTest,
   __getRuntimeStateForTest,
   __resetAuditorWorkspaceTrackerForTest,
   __resetGoalForTest,
@@ -167,7 +167,7 @@ describe("auditor workspace cwd", () => {
     __setGoalForTest(makeActiveGoal("goal-a"));
     __trackFileToolExecutionStartForTest("call-1", "edit", { path: "worktrees/stout-quail/Curio/ContentView.swift" }, mainRepo);
     __trackFileToolExecutionEndForTest("call-1", false);
-    __finalizeGoalForTest(makeCtx() as never);
+    __clearActiveGoalForTest(makeCtx() as never);
 
     __setGoalForTest(makeActiveGoal("goal-b"));
     const cwd = resolveAuditorWorkspaceCwd({

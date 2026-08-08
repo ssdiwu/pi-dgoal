@@ -88,7 +88,7 @@ class HandleUiRequestTest(unittest.TestCase):
 
 
 class SmokeResultPassedTest(unittest.TestCase):
-    """负向回归：只有最终 plan_update 明确 completed 才算通过。"""
+    """负向回归：只有最终 work_update 明确 completed 才算通过。"""
 
     def _base_result(self) -> SMOKE.SmokeResult:
         r = SMOKE.SmokeResult(tmp_dir="/tmp", work_dir="/tmp", duration=0.0)

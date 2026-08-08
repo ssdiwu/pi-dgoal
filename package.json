@@ -1,16 +1,17 @@
 {
   "name": "pi-dgoal",
-  "version": "0.8.0",
-  "description": "Pi extension for everyday Task Plans and independently audited Phase and Goal Plans.",
+  "version": "0.8.1",
+  "description": "Pi extension with one Work List and independently selectable execution, goal-check, and staged-check assurance.",
   "type": "module",
   "keywords": [
     "pi-package",
     "pi",
     "extension",
     "goal",
-    "task-plan",
-    "phase-plan",
-    "goal-plan",
+    "work-list",
+    "execution-plan",
+    "goal-check",
+    "staged-check",
     "agent"
   ],
   "license": "MIT",

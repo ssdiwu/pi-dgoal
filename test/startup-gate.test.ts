@@ -1,10 +1,30 @@
-// 切片 4：启动闸门——proposal 格式化 + proposalToPlan 转换测试（纯函数）。
-// 见 doc/40-版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md 切片 4 验收。
+// Goal Check / Staged Check 启动闸门、结构校验、语义预审与确认 UI 回归。
 import { describe, expect, test } from "bun:test";
 
-import { __executePlanProposalForTest as executeRawPlanProposalForTest, __getPendingProposalForTest, __handleProposalConfirmationForTest, __resetGoalForTest, __setGoalForTest, __setI18nForTest, __setProposalSemanticCompletionForTest, __setProposalSemanticReviewForTest, __setProposalSemanticReviewTimeoutForTest, __setProposalSemanticStreamForTest, assessProposalReadiness, buildProposalConfirmationOptions, buildProposePrompt, formatProposalConfirmTitle, formatProposalForConfirm, proposalToPlan, validateProposalInput, type AcceptanceCriterion, type AssistantMessageEventLike, type GoalState, type PlanProposal } from "../index.ts";
-
-// proposalToPlan 已 export；这里同时覆盖确认展示与提案转 plan 的纯函数行为。
+import {
+  __executePlanProposalForTest as executeRawPlanProposalForTest,
+  __getPendingProposalForTest,
+  __handleProposalConfirmationForTest,
+  __resetGoalForTest,
+  __setGoalForTest,
+  __setI18nForTest,
+  __setProposalSemanticCompletionForTest,
+  __setProposalSemanticReviewForTest,
+  __setProposalSemanticReviewTimeoutForTest,
+  __setProposalSemanticStreamForTest,
+  assessProposalReadiness as assessProposalReadinessRaw,
+  buildProposalConfirmationOptions,
+  buildProposePrompt,
+  formatProposalConfirmTitle,
+  formatProposalForConfirm,
+  validateProposalInput as validateProposalInputRaw,
+  type AcceptanceCriterion,
+  type AssistantMessageEventLike,
+  type GoalState,
+  type PlanProposal,
+  type WorkItem,
+  type WorkList,
+} from "../index.ts";
 
 const criteria: AcceptanceCriterion[] = [{ criterion: "测试通过", evidence: "npm test" }];
 const approvedReview = { decision: "approve" as const, acceptanceCriteria: criteria, phaseAcceptanceCriteria: [criteria] };
@@ -13,19 +33,59 @@ function goal(): GoalState {
   return { id: "g1", objective: "修测试", description: "修复测试并保持既有行为。", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 };
 }
 
+function profileOf(input: Record<string, any>): "goal_check" | "staged_check" {
+  return input.assuranceProfile === "goal_check" ? "goal_check" : "staged_check";
+}
+
+function validateProposalInput(input: Record<string, any>) {
+  return validateProposalInputRaw({ ...input, assuranceProfile: profileOf(input) });
+}
+
+function assessProposalReadiness(input: Record<string, any>) {
+  return assessProposalReadinessRaw({ ...input, assuranceProfile: profileOf(input) });
+}
+
 function describeProposal(params: Record<string, any>): Record<string, any> {
   const objective = String(params.objective ?? "目标");
+  const assuranceProfile = profileOf(params);
+  let nextItemId = 1;
+  const rawPhases = Array.isArray(params.phases) ? params.phases : [];
+  const workPhases = rawPhases.map((rawPhase: Record<string, any>, phaseIndex: number) => {
+    const rawItems = Array.isArray(rawPhase.items) ? rawPhase.items : Array.isArray(rawPhase.tasks) ? rawPhase.tasks : [];
+    const items: WorkItem[] = rawItems.map((rawItem: Record<string, any>, itemIndex: number) => ({
+      id: nextItemId++,
+      subject: String(rawItem.subject ?? ""),
+      description: rawItem.description ?? `第 ${itemIndex + 1} 个 Work Item 推进当前阶段。`,
+      status: rawItem.status ?? "pending",
+      ...(rawItem.blockedBy ? { blockedBy: rawItem.blockedBy } : {}),
+      ...(rawItem.evidence ? { evidence: rawItem.evidence } : {}),
+    }));
+    return {
+      id: phaseIndex + 1,
+      subject: String(rawPhase.subject ?? ""),
+      description: rawPhase.description ?? `第 ${phaseIndex + 1} 阶段服务于 ${objective}。`,
+      status: rawPhase.status ?? "pending",
+      revision: 0,
+      items,
+      ...(assuranceProfile === "staged_check" && rawPhase.acceptanceCriteria ? { acceptanceCriteria: rawPhase.acceptanceCriteria } : {}),
+    };
+  });
+  const rootItems: WorkItem[] = (Array.isArray(params.items) ? params.items : []).map((rawItem: Record<string, any>, index: number) => ({
+    id: nextItemId++, subject: String(rawItem.subject ?? ""),
+    description: rawItem.description ?? `第 ${index + 1} 个 Work Item 服务于 ${objective}。`, status: rawItem.status ?? "pending",
+  }));
+  const workList: WorkList = { items: rootItems, phases: workPhases, nextItemId, nextPhaseId: workPhases.length + 1, revision: 0 };
   return {
     ...params,
+    objective,
     description: params.description ?? `推进 ${objective} 并保持方法边界。`,
-    phases: Array.isArray(params.phases) ? params.phases.map((phase: Record<string, any>, phaseIndex: number) => ({
-      ...phase,
-      description: phase.description ?? `第 ${phaseIndex + 1} 阶段服务于 ${objective}。`,
-      tasks: Array.isArray(phase.tasks) ? phase.tasks.map((task: Record<string, any>, taskIndex: number) => ({
-        ...task,
-        description: task.description ?? `第 ${taskIndex + 1} 个任务推进当前阶段。`,
-      })) : phase.tasks,
-    })) : params.phases,
+    assuranceProfile,
+    workList,
+    phases: workPhases.map((phase) => ({
+      subject: phase.subject,
+      description: phase.description,
+      ...(assuranceProfile === "staged_check" ? { acceptanceCriteria: phase.acceptanceCriteria } : {}),
+    })),
   };
 }
 
@@ -104,15 +164,16 @@ describe("提案就绪度评估", () => {
 });
 
 describe("验收契约校验", () => {
-  test("真实 proposal execute 拒绝缺失 goal/phase/task description", async () => {
+  test("真实 proposal execute 拒绝计划态 Work List 中缺失的 Phase/Work Item description", async () => {
     __setGoalForTest(goal());
     __setProposalSemanticReviewForTest(() => ({ decision: "approve" }));
-    const base = { objective: "o", description: "goal desc", verification: "v", acceptanceCriteria: criteria };
-    const missingPhase = await executeRawPlanProposalForTest({ ...base, phases: [{ subject: "p", acceptanceCriteria: criteria }] });
-    expect(missingPhase.details.error).toBe("invalid phase description");
-    const missingTask = await executeRawPlanProposalForTest({ ...base, phases: [{ subject: "p", description: "phase desc", acceptanceCriteria: criteria, tasks: [{ subject: "t" }] }] });
-    expect(missingTask.details.error).toBe("invalid task graph");
-    expect(String(missingTask.content[0].text)).toContain("task #1 description is required");
+    const base = describeProposal({ objective: "o", description: "goal desc", verification: "v", acceptanceCriteria: criteria, phases: [{ subject: "p", description: "phase desc", acceptanceCriteria: criteria, tasks: [{ subject: "t", description: "item desc" }] }] });
+    const missingPhase = structuredClone(base);
+    missingPhase.workList.phases[0].description = "";
+    expect((await executeRawPlanProposalForTest(missingPhase)).details.error).toBe("invalid proposed work list");
+    const missingItem = structuredClone(base);
+    missingItem.workList.phases[0].items[0].description = "";
+    expect((await executeRawPlanProposalForTest(missingItem)).details.error).toBe("invalid proposed work list");
   });
 
   test("真实 proposal execute 拒绝混合空 criterion/evidence", async () => {
@@ -143,10 +204,10 @@ describe("验收契约校验", () => {
   });
 
   test("非空 evidence 不靠魔法词过结构门并进入 LLM 语义预审", async () => {
-    const evidenceWithoutMagicWords = [{ criterion: "task 状态可读取", evidence: "plan_read 的工具返回" }];
+    const evidenceWithoutMagicWords = [{ criterion: "Work Item 状态可读取", evidence: "work_read 的工具返回" }];
     expect(validateProposalInput({
       objective: "o", description: "验证工具返回，不扩张范围。", verification: "v", acceptanceCriteria: evidenceWithoutMagicWords,
-      phaseCount: 1, phaseAcceptanceCriteria: [undefined], planType: "phase",
+      phaseCount: 1, phaseAcceptanceCriteria: [undefined], assuranceProfile: "goal_check",
     })).toBeNull();
 
     __resetGoalForTest();
@@ -157,7 +218,7 @@ describe("验收契约校验", () => {
       return { decision: "approve" };
     });
     const result = await __executePlanProposalForTest({
-      objective: "o", planType: "phase", verification: "v",
+      objective: "o", assuranceProfile: "goal_check", verification: "v",
       acceptanceCriteria: evidenceWithoutMagicWords,
       phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
     });
@@ -171,16 +232,16 @@ describe("验收契约校验", () => {
     __setGoalForTest({ id: "pending-rewrite-evidence-semantics", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => ({
       decision: "rewrite",
-      acceptanceCriteria: [{ criterion: "task 状态可读取", evidence: "plan_read 的工具返回" }],
+      acceptanceCriteria: [{ criterion: "Work Item 状态可读取", evidence: "work_read 的工具返回" }],
       migratedUserReviewItems: [{ sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" }],
     }));
     const result = await __executePlanProposalForTest({
-      objective: "o", planType: "phase", verification: "v",
+      objective: "o", assuranceProfile: "goal_check", verification: "v",
       acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "npm test" }],
       phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
     });
     expect(result.details?.error).toBeUndefined();
-    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria?.[0].evidence).toBe("plan_read 的工具返回");
+    expect(__getPendingProposalForTest()?.proposal.acceptanceCriteria?.[0].evidence).toBe("work_read 的工具返回");
     __resetGoalForTest();
   });
 
@@ -227,8 +288,8 @@ describe("验收契约校验", () => {
     const historical = "没有任何实现者曾打开受限上游文件";
     const subjective = "双载体视觉气质一致且令人满意";
     const authorPrompt = buildProposePrompt(goal());
-    expect(authorPrompt).toContain("当前可观察状态或未来可复现结果");
-    expect(authorPrompt).toContain("Guardrails and non-goals constrain execution");
+    expect(authorPrompt).toContain("项目工件、命令或可观察外部状态");
+    expect(authorPrompt).toContain("nonGoals 与 guardrails 约束执行");
     __setProposalSemanticReviewForTest((_proposal, prompt) => {
       expect(prompt).toContain("report every inadmissible criterion");
       return {
@@ -279,27 +340,34 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
-  test("语义预审可将混合条件改写为独立条件并合并 userReviewItems", async () => {
+  test("语义预审把 goal/phase 混合条件同步改写到冻结 Work List 并合并 userReviewItems", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-rewrite", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
+    const rewrittenGoal = { criterion: "Goal 测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" };
+    const rewrittenPhase = { criterion: "Phase 测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" };
     __setProposalSemanticReviewForTest(() => ({
       decision: "rewrite",
-      acceptanceCriteria: [{ criterion: "测试命令退出码为 0", evidence: "bun test test/startup-gate.test.ts" }],
-      phaseAcceptanceCriteria: [[criteria[0]]],
-      userReviewItems: ["甲方签字属于完成后的人工复核"],
-      migratedUserReviewItems: [{ sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" }],
+      acceptanceCriteria: [rewrittenGoal],
+      phaseAcceptanceCriteria: [[rewrittenPhase]],
+      userReviewItems: ["甲方签字属于完成后的人工复核", "验收员确认属于完成后的人工复核"],
+      migratedUserReviewItems: [
+        { sourceCriterion: "由甲方验收并签字认可", userReviewItem: "甲方签字属于完成后的人工复核" },
+        { sourceCriterion: "由验收员确认阶段完成", userReviewItem: "验收员确认属于完成后的人工复核" },
+      ],
     }));
     const result = await __executePlanProposalForTest({
       objective: "o",
       verification: "bun test test/startup-gate.test.ts",
       acceptanceCriteria: [{ criterion: "由甲方验收并签字认可", evidence: "bun test 通过" }],
       userReviewItems: ["保留原有人工复核项"],
-      phases: [{ subject: "p", acceptanceCriteria: [criteria[0]] }],
+      phases: [{ subject: "p", acceptanceCriteria: [{ criterion: "由验收员确认阶段完成", evidence: "bun test 通过" }] }],
     });
     expect(result.details?.semanticReview).toBe("rewrite");
     const pending = __getPendingProposalForTest();
-    expect(pending?.proposal.acceptanceCriteria?.[0].criterion).toBe("测试命令退出码为 0");
-    expect(pending?.proposal.userReviewItems).toEqual(["保留原有人工复核项", "甲方签字属于完成后的人工复核"]);
+    expect(pending?.proposal.acceptanceCriteria).toEqual([rewrittenGoal]);
+    expect(pending?.proposal.phases[0].acceptanceCriteria).toEqual([rewrittenPhase]);
+    expect(pending?.proposal.workList.phases[0].acceptanceCriteria).toEqual([rewrittenPhase]);
+    expect(pending?.proposal.userReviewItems).toEqual(["保留原有人工复核项", "甲方签字属于完成后的人工复核", "验收员确认属于完成后的人工复核"]);
     __resetGoalForTest();
   });
 
@@ -852,391 +920,158 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
-  test("确认摘要展示冻结验收条件与完成后用户复核", () => {
-    const proposal: PlanProposal = {
+
+  test("确认摘要展示冻结验收条件、Profile 与完成后用户复核", () => {
+    const proposal = describeProposal({
+      assuranceProfile: "staged_check",
       objective: "修复 UI",
       description: "修复 UI 逻辑但不扩张视觉验收门。",
       verification: "测试与代码证据满足要求",
       acceptanceCriteria: criteria,
       userReviewItems: ["在真实 TUI 确认浮层观感"],
-      phases: [{ subject: "实现修复", acceptanceCriteria: criteria }],
-    };
+      phases: [{ subject: "实现修复", description: "完成可复验修复。", acceptanceCriteria: criteria, tasks: [{ subject: "实现", description: "修改实现。" }] }],
+    }) as PlanProposal;
     const text = formatProposalForConfirm(goal(), proposal);
     expect(text).toContain("说明：修复 UI 逻辑但不扩张视觉验收门。");
     expect(text).toContain("独立验收条件：");
     expect(text).toContain("测试通过");
     expect(text).toContain("完成后用户复核：在真实 TUI 确认浮层观感");
+    expect(text).toContain("保障档：Staged Check Plan");
     expect(text).toContain("就绪度：L2");
   });
 
-  test("buildProposePrompt 引导选择 Phase/Goal Plan 并保持独立验收边界", () => {
+  test("buildProposePrompt 引导选择 Goal Check / Staged Check 并保持独立验收边界", () => {
     const prompt = buildProposePrompt(goal());
-    expect(prompt).toContain("Phase Plan");
-    expect(prompt).toContain("Goal Plan");
-    expect(prompt).toContain("read/grep/find/ls/bash");
+    expect(prompt).toContain("Goal Check Plan（goal_plan）");
+    expect(prompt).toContain("Staged Check Plan（staged_plan）");
+    expect(prompt).toContain("项目工件、命令或可观察外部状态");
     expect(prompt).toContain("userReviewItems");
-    expect(prompt).toContain("goal、每个可见 phase 和每个 task 都必须提供 description");
-    expect(prompt).toContain("提交前做一次精简质量检查并直接修正");
-    expect(prompt).toContain("端到端可观察结果");
-    expect(prompt).toContain("对象/状态生命周期");
-    expect(prompt).toContain("生产者—消费者真实调用链");
-    expect(prompt).toContain("失败/恢复路径");
-    expect(prompt).toContain("verification/acceptanceCriteria 与这些路径一致");
-    expect(prompt).toContain("简单目标允许判定某项不适用");
-    expect(prompt).toContain("不要输出单独自检报告，也不要新增 hard gate");
+    expect(prompt).toContain("Goal、可见 Phase 与 Work Item 的 Description");
+    expect(prompt).toContain("端到端结果");
+    expect(prompt).toContain("真实调用链");
+    expect(prompt).toContain("失败路径");
     expect(prompt).not.toContain("contextSummary");
-    expect(prompt).toContain("phase_plan 或 goal_plan");
   });
 });
 
-describe("切片4 · buildProposalConfirmationOptions", () => {
-  test("默认摘要态与 task 明细态使用短切换文案", () => {
+describe("proposal confirmation options and interaction", () => {
+  const proposal = () => describeProposal({
+    assuranceProfile: "staged_check",
+    objective: "修好 auth 测试",
+    description: "修复认证回归，不改无关会话机制。",
+    verification: "npm test auth 全过",
+    acceptanceCriteria: criteria,
+    phases: [{ subject: "修复登录", description: "覆盖认证路径。", acceptanceCriteria: criteria, tasks: [{ subject: "修登录用例", description: "覆盖 token 过期。" }] }],
+  }) as PlanProposal;
+
+  test("摘要/明细选项短且可按 Profile 提供单向切换", () => {
     expect(buildProposalConfirmationOptions(false)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "展开 task"]);
     expect(buildProposalConfirmationOptions(true)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "收起 task"]);
+    expect(buildProposalConfirmationOptions(false, proposal()).at(-1)).toBe("切换为 Goal Check Plan");
   });
 
-  test("pi-di18n 可覆盖切换文案为英文短标签", () => {
-    __setI18nForTest({
-      t(fullKey, params) {
-        const messages: Record<string, string> = {
-          "dgoal.proposal.confirmStart": "Confirm and start",
-          "dgoal.proposal.reject": "Reject and abandon goal",
-          "dgoal.proposal.feedback": "Enter feedback",
-          "dgoal.proposal.viewTasks": "Show tasks",
-          "dgoal.proposal.backToSummary": "Hide tasks",
-        };
-        return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
-      },
-    });
-    try {
-      expect(buildProposalConfirmationOptions(false)).toEqual(["Confirm and start", "Reject and abandon goal", "Enter feedback", "Show tasks"]);
-      expect(buildProposalConfirmationOptions(true)).toEqual(["Confirm and start", "Reject and abandon goal", "Enter feedback", "Hide tasks"]);
-    } finally {
-      __setI18nForTest(undefined);
-    }
-  });
-});
-
-describe("切片4 · handleProposalConfirmation", () => {
-  test("可在摘要/明细间往返切换，再执行拒绝", async () => {
-    const proposal: PlanProposal = {
-      objective: "修好 auth 测试",
-      verification: "npm test auth 全过",
-      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
-    };
+  test("可在摘要/明细间往返，再拒绝", async () => {
     const titles: string[] = [];
-    const optionsSeen: string[][] = [];
     const choices = ["展开 task", "收起 task", "拒绝，放弃目标"];
-    const result = await __handleProposalConfirmationForTest(
-      {
-        cwd: process.cwd(),
-        ui: {
-          confirm: async () => true,
-          notify: () => {},
-          setStatus: () => {},
-          select: async (title: string, options: string[]) => {
-            titles.push(title);
-            optionsSeen.push(options);
-            return choices.shift();
-          },
-          editor: async () => undefined,
-        },
-      } as never,
-      goal(),
-      proposal,
-    );
-    expect(result).toBe("rejected");
-    expect(titles).toHaveLength(3);
-    expect(titles[0]).not.toContain("- task 1: 修登录用例");
-    expect(titles[1]).toContain("- task 1: 修登录用例");
-    expect(titles[2]).not.toContain("- task 1: 修登录用例");
-    expect(optionsSeen[0][3]).toBe("展开 task");
-    expect(optionsSeen[1][3]).toBe("收起 task");
-    expect(optionsSeen[2][3]).toBe("展开 task");
-  });
-
-  test("Phase Plan 切换为 Goal Plan 时返回重新提案反馈", async () => {
-    const proposal: PlanProposal = {
-      objective: "修好 auth 测试",
-      planType: "phase",
-      verification: "npm test auth 全过",
-      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
-    };
     const result = await __handleProposalConfirmationForTest({
       cwd: process.cwd(),
       ui: {
-        notify: () => {},
-        setStatus: () => {},
-        select: async () => "切换为 Goal Plan",
-        editor: async () => undefined,
+        notify: () => {}, setStatus: () => {},
+        select: async (title: string) => { titles.push(title); return choices.shift(); },
       },
-    } as never, goal(), proposal);
-    expect(result).toEqual({ feedback: expect.stringContaining("goal_plan") });
-  });
-
-  test("选择反馈意见时调用 editor 并返回去首尾空白后的反馈", async () => {
-    const proposal: PlanProposal = {
-      objective: "修好 auth 测试",
-      verification: "npm test auth 全过",
-      phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
-    };
-    const editorCalls: Array<{ title: string; prefill: string }> = [];
-    const result = await __handleProposalConfirmationForTest(
-      {
-        cwd: process.cwd(),
-        ui: {
-          confirm: async () => true,
-          notify: () => {},
-          setStatus: () => {},
-          select: async () => "输入反馈意见",
-          editor: async (title: string, prefill: string) => {
-            editorCalls.push({ title, prefill });
-            return "  请先补一个回归测试  ";
-          },
-        },
-      } as never,
-      goal(),
-      proposal,
-    );
-    expect(result).toEqual({ feedback: "请先补一个回归测试" });
-    expect(editorCalls).toEqual([{ title: "反馈意见（agent 会据此调整计划）：", prefill: "" }]);
-  });
-
-  test("兼容旧主机：无 select 时 fallback 到 confirm 为 true，直接确认启动", async () => {
-    const result = await __handleProposalConfirmationForTest(
-      {
-        cwd: process.cwd(),
-        ui: {
-          confirm: async () => true,
-          notify: () => {},
-          setStatus: () => {},
-          editor: async () => "不应命中",
-        },
-      } as never,
-      goal(),
-      {
-        objective: "修好 auth 测试",
-        verification: "npm test auth 全过",
-        phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
-      },
-    );
-    expect(result).toBe("confirmed");
-  });
-
-  test("兼容旧主机：无 select 且 confirm false 时拒绝目标", async () => {
-    const result = await __handleProposalConfirmationForTest(
-      {
-        cwd: process.cwd(),
-        ui: {
-          confirm: async () => false,
-          notify: () => {},
-          setStatus: () => {},
-        },
-      } as never,
-      goal(),
-      {
-        objective: "修好 auth 测试",
-        verification: "npm test auth 全过",
-        phases: [{ subject: "修复登录", tasks: [{ subject: "修登录用例" }] }],
-      },
-    );
+    } as never, goal(), proposal());
     expect(result).toBe("rejected");
+    expect(titles).toHaveLength(3);
+    expect(titles[0]).not.toContain("- #1 修登录用例");
+    expect(titles[1]).toContain("- #1 修登录用例");
+    expect(titles[2]).not.toContain("- #1 修登录用例");
+  });
+
+  test("Profile 切换、文字反馈与旧 host confirm 都有确定结果", async () => {
+    const switched = await __handleProposalConfirmationForTest({
+      cwd: process.cwd(), ui: { notify: () => {}, setStatus: () => {}, select: async () => "切换为 Goal Check Plan" },
+    } as never, goal(), proposal());
+    expect(switched).toEqual({ feedback: expect.stringContaining("goal_plan") });
+
+    const feedback = await __handleProposalConfirmationForTest({
+      cwd: process.cwd(), ui: { notify: () => {}, setStatus: () => {}, select: async () => "输入反馈意见", editor: async () => "  请先补回归测试  " },
+    } as never, goal(), proposal());
+    expect(feedback).toEqual({ feedback: "请先补回归测试" });
+
+    const confirmed = await __handleProposalConfirmationForTest({ cwd: process.cwd(), ui: { confirm: async () => true } } as never, goal(), proposal());
+    const rejected = await __handleProposalConfirmationForTest({ cwd: process.cwd(), ui: { confirm: async () => false } } as never, goal(), proposal());
+    expect(confirmed).toBe("confirmed");
+    expect(rejected).toBe("rejected");
   });
 });
 
-describe("切片4 · formatProposalForConfirm", () => {
-  test("默认只显示目标 + phase 列表 + task 计数，不展开 task 明细", () => {
-    const proposal: PlanProposal = {
+describe("formatProposalForConfirm", () => {
+  test("summary shows Profile, boundaries, Phase counts, and hides Work Item details", () => {
+    const proposal = describeProposal({
+      assuranceProfile: "staged_check",
       objective: "修好 auth 测试",
       description: "修复认证回归，不改无关会话机制。",
       verification: "npm test auth 全过",
+      acceptanceCriteria: criteria,
+      nonGoals: ["不拆 PR"],
+      guardrails: ["不改跨会话状态"],
       phases: [
-        {
-          subject: "修复登录",
-          tasks: [
-            { subject: "修登录用例", description: "覆盖 token 过期", blockedBy: [1] },
-            { subject: "修权限用例" },
-          ],
-        },
-        { subject: "加回归测试" },
+        { subject: "修复登录", description: "覆盖认证路径。", acceptanceCriteria: criteria, tasks: [{ subject: "修登录用例", description: "覆盖 token 过期。" }, { subject: "修权限用例", description: "覆盖权限。" }] },
+        { subject: "加回归测试", description: "补齐回归。", acceptanceCriteria: criteria },
       ],
-    };
+    }) as PlanProposal;
     const text = formatProposalForConfirm(goal(), proposal);
     expect(text).toContain("目标：修好 auth 测试");
     expect(text).toContain("说明：修复认证回归，不改无关会话机制。");
     expect(text).toContain("验证：npm test auth 全过");
-    expect(text).toContain("就绪度：L1");
-    expect(text).toContain("缺口提示：");
-    expect(text).toContain("non-goals：未显式声明这个 goal 不做什么");
-    expect(text).toContain("阶段计划（2 个 phase）");
-    expect(text).toContain("1. 修复登录（2 个 task）");
-    expect(text).not.toContain("- task 1: 修登录用例");
-    expect(text).not.toContain("说明：覆盖 token 过期");
-    expect(text).not.toContain("依赖：#1");
-    expect(text).not.toContain("- task 2: 修权限用例");
-    expect(text).toContain("2. 加回归测试"); // 无 task 不显示计数
-  });
-
-  test("showTasks=true 时显示 task 明细与已提供的边界字段", () => {
-    const proposal: PlanProposal = {
-      objective: "修好 auth 测试",
-      planType: "phase",
-      verification: "npm test auth 全过",
-      nonGoals: ["不拆 PR"],
-      guardrails: ["不改跨会话状态"],
-      phases: [
-        {
-          subject: "修复登录",
-          tasks: [
-            { subject: "修登录用例", description: "覆盖 token 过期", blockedBy: [1] },
-            { subject: "修权限用例" },
-          ],
-        },
-      ],
-    };
-    const text = formatProposalForConfirm(goal(), proposal, { showTasks: true });
-    expect(text).toContain("就绪度：L1");
     expect(text).toContain("不做什么：不拆 PR");
     expect(text).toContain("护栏：不改跨会话状态");
-    expect(text).toContain("Plan 类型：Phase Plan");
-    expect(text).toContain("1. 修复登录（2 个 task）");
-    expect(text).toContain("- task 1: 修登录用例");
-    expect(text).toContain("说明：覆盖 token 过期");
-    expect(text).toContain("依赖：#1");
-    expect(text).toContain("- task 2: 修权限用例");
+    expect(text).toContain("保障档：Staged Check Plan");
+    expect(text).toContain("Work List（2 个 Work Item，2 个 Phase）");
+    expect(text).toContain("Phase #1：修复登录（2 个 Work Item）");
+    expect(text).not.toContain("- #1 修登录用例");
+    expect(text).not.toContain("覆盖 token 过期。");
   });
 
-  test("无 verification 时不显示验证行", () => {
-    const proposal: PlanProposal = {
-      objective: "目标",
-      phases: [{ subject: "p1" }],
-    };
-    const text = formatProposalForConfirm(goal(), proposal);
-    expect(text).not.toContain("验证：");
-  });
-
-  test("phase 带 description 显示", () => {
-    const proposal: PlanProposal = {
-      objective: "o",
-      phases: [{ subject: "p1", description: "阶段说明" }],
-    };
-    const text = formatProposalForConfirm(goal(), proposal);
-    expect(text).toContain("阶段说明");
-  });
-
-  test("空 phases 也能格式化（虽工具层会拒）", () => {
-    const proposal: PlanProposal = { objective: "o", phases: [] };
-    const text = formatProposalForConfirm(goal(), proposal);
-    expect(text).toContain("阶段计划（0 个 phase）");
-  });
-
-  test("确认标题默认只包含阶段概览，查看 task 明细时才展开", () => {
-    const proposal: PlanProposal = {
+  test("expanded view exposes Work Item identity and descriptions", () => {
+    const proposal = describeProposal({
+      assuranceProfile: "goal_check",
       objective: "修好 auth 测试",
-      verification: "npm test auth 全过",
-      phases: [{ subject: "修复登录", description: "覆盖 token 过期", tasks: [{ subject: "修登录用例" }] }],
-    };
-    const summaryTitle = formatProposalConfirmTitle(goal(), proposal);
-    expect(summaryTitle).toContain("确认 /dgoal 计划？");
-    expect(summaryTitle).toContain("目标：修好 auth 测试");
-    expect(summaryTitle).toContain("验证：npm test auth 全过");
-    expect(summaryTitle).toContain("就绪度：L1");
-    expect(summaryTitle).toContain("1. 修复登录（1 个 task）");
-    expect(summaryTitle).not.toContain("- task 1: 修登录用例");
-    expect(summaryTitle).toContain("覆盖 token 过期");
-
-    const detailTitle = formatProposalConfirmTitle(goal(), proposal, { showTasks: true });
-    expect(detailTitle).toContain("- task 1: 修登录用例");
+      description: "完成最小修复。",
+      verification: "npm test",
+      acceptanceCriteria: criteria,
+      items: [{ subject: "修登录用例", description: "覆盖 token 过期。" }],
+      phases: [],
+    }) as PlanProposal;
+    const text = formatProposalForConfirm(goal(), proposal, { showTasks: true });
+    expect(text).toContain("保障档：Goal Check Plan");
+    expect(text).toContain("Work List（1 个 Work Item，0 个 Phase）");
+    expect(text).toContain("- #1 修登录用例");
+    expect(text).toContain("覆盖 token 过期。");
+    expect(text).not.toContain("缺少真实 phase");
+    const title = formatProposalConfirmTitle(goal(), proposal, { showTasks: true });
+    expect(title).toContain("确认 /dgoal 计划？");
+    expect(title).toContain("- #1 修登录用例");
   });
 
-  test("pi-di18n 可覆盖确认 UI 文案为英文", () => {
+  test("pi-di18n can override confirmation option labels", () => {
     __setI18nForTest({
-      t(fullKey, params) {
+      t(fullKey) {
         const messages: Record<string, string> = {
-          "dgoal.proposal.objective": "Goal: {objective}",
-          "dgoal.proposal.verification": "Verification: {verification}",
-          "dgoal.proposal.readiness": "Readiness: {level} ({meaning})",
-          "dgoal.proposal.readiness.meaning.L2": "goal, acceptance, and phase plan exist; boundary declarations still have gaps",
-          "dgoal.proposal.gapsHeading": "Gaps:",
-          "dgoal.proposal.gap.nonGoals": "  - non-goals: the plan never states what this goal will not do",
-          "dgoal.proposal.gap.guardrails": "  - guardrails: high-risk boundaries / explicit do-not-touch areas are missing",
-          "dgoal.proposal.planHeading": "Phase plan ({count} phases):",
-          "dgoal.proposal.taskCount": " ({count} tasks)",
-          "dgoal.proposal.taskLine": "     - task {index}: {subject}",
-          "dgoal.proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
-          "dgoal.replaceConfirm.title": "Replace current dgoal?",
-          "dgoal.replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
+          "dgoal.proposal.confirmStart": "Confirm and start",
+          "dgoal.proposal.reject": "Reject goal",
+          "dgoal.proposal.feedback": "Enter feedback",
+          "dgoal.proposal.viewTasks": "Show items",
+          "dgoal.proposal.backToSummary": "Hide items",
         };
-        return (messages[fullKey] ?? fullKey).replace(/\{([a-zA-Z0-9_]+)\}/g, (_m, name) => String(params?.[name] ?? `{${name}}`));
+        return messages[fullKey] ?? fullKey;
       },
     });
     try {
-      const proposal: PlanProposal = {
-        objective: "fix tests",
-        verification: "npm test",
-        phases: [{ subject: "repair", tasks: [{ subject: "update assertions" }] }],
-      };
-      const text = formatProposalForConfirm(goal(), proposal);
-      const detailText = formatProposalForConfirm(goal(), proposal, { showTasks: true });
-      const title = formatProposalConfirmTitle(goal(), proposal);
-      expect(text).toContain("Goal: fix tests");
-      expect(text).toContain("Verification: npm test");
-      expect(text).toContain("Readiness: L1");
-      expect(text).toContain("Gaps:");
-      expect(text).toContain("Phase plan (1 phases):");
-      expect(text).toContain("1. repair (1 tasks)");
-      expect(text).not.toContain("- task 1: update assertions");
-      expect(detailText).toContain("- task 1: update assertions");
-      expect(text).not.toContain("Confirm /dgoal plan?");
-      expect(title).toContain("Confirm /dgoal plan?");
-      expect(title).toContain("Goal: fix tests");
+      expect(buildProposalConfirmationOptions(false)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Show items"]);
+      expect(buildProposalConfirmationOptions(true)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Hide items"]);
     } finally {
       __setI18nForTest(undefined);
     }
-  });
-});
-
-describe("切片4 · proposalToPlan 转换（id 分配）", () => {
-  test("phase/task 独立从 1 分配，nextId 只推进 task", () => {
-    const proposal: PlanProposal = {
-      objective: "o",
-      acceptanceCriteria: criteria,
-      phases: [
-        { subject: "p1", acceptanceCriteria: criteria, tasks: [{ subject: "t1" }, { subject: "t2" }] },
-        { subject: "p2", acceptanceCriteria: criteria, tasks: [{ subject: "t3" }] },
-      ],
-    };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases.map((phase) => phase.id)).toEqual([1, 2]);
-    expect(plan.phases.map((phase) => phase.acceptanceCriteria)).toEqual([criteria, criteria]);
-    expect(plan.phases.flatMap((phase) => phase.tasks.map((task) => task.id))).toEqual([1, 2, 3]);
-    expect(plan.nextId).toBe(4);
-  });
-
-  test("初始 task 状态为 pending", () => {
-    const proposal: PlanProposal = {
-      objective: "o",
-      phases: [{ subject: "p", tasks: [{ subject: "t" }] }],
-    };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases[0].tasks[0].status).toBe("pending");
-  });
-
-  test("phase 无 task 时 tasks 为空数组", () => {
-    const proposal: PlanProposal = { objective: "o", phases: [{ subject: "p" }] };
-    const plan = proposalToPlan(proposal);
-    expect(plan.phases[0].tasks).toEqual([]);
-    expect(plan.phases[0].status).toBe("pending");
-  });
-
-  test("task blockedBy 为字符串 '[1]' → 解析成局部索引 1", () => {
-    // 模型可能把 tasks[].blockedBy stringify 成 "[1]"，proposalToPlan 要 coerce 回数组。
-    const proposal: PlanProposal = {
-      objective: "o",
-      phases: [{ subject: "p", tasks: [{ subject: "t1" }, { subject: "t2", blockedBy: "[1]" }] }],
-    };
-    const plan = proposalToPlan(proposal);
-    // phase 与 task 使用独立 namespace；t2 局部索引 1 → plan-global task id 1。
-    expect(plan.phases[0].tasks[1].blockedBy).toEqual([1]);
   });
 });

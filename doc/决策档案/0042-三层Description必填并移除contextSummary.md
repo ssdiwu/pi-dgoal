@@ -1,6 +1,6 @@
 # ADR 0042：三层 Description 必填并移除 contextSummary
 
-> Status：已实施。覆盖 ADR 0007；覆盖 ADR 0033 中 `contextSummary` 的字段、持久化、注入与兼容语义，但保留“取消独立背景摘要子进程、由主 LLM 直接建立 Plan”的结论。
+> Status：已实施于 v0.8.0。覆盖 ADR 0007 与 ADR 0033 的 `contextSummary` 链路；ADR 0051 进一步把软性 Work Item 从计划态三层 Description 硬要求中分离，Goal、真实 Phase、计划态 Work Item、删除 `contextSummary` 与两层详情浏览的结论继续保留。
 
 ## 背景
 

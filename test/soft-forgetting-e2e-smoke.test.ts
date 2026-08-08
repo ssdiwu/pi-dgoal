@@ -1,17 +1,13 @@
-// 软遗忘端到端 smoke：通过 public plan_update 推进 Phase Plan，
-// 验证 phase 标为 done 后，Plan context 只保留 phase 标题而隐藏其 task 细节。
+// ADR 0051：完成 Phase 的明细在持续 Plan Contract context 中软遗忘。
 import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
   __getGoalForTest,
   __resetGoalForTest,
   __setApiForTest,
-  __setGoalForTest,
-  buildPlanContextBlock,
-  planUpdateTool,
-  proposalToPlan,
-  type GoalState,
-  type PlanProposal,
+  buildPlanContractContext,
+  executionPlanTool,
+  workUpdateTool,
 } from "../index.ts";
 
 const ctx = {
@@ -20,25 +16,8 @@ const ctx = {
   sessionManager: { getBranch: () => [] },
 } as never;
 
-function baseGoal(plan: GoalState["plan"]): GoalState {
-  return {
-    id: "smoke-1",
-    objective: "软遗忘 smoke 目标",
-    planType: "phase",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    plan,
-  };
-}
-
-async function update(params: Record<string, unknown>) {
-  return planUpdateTool.execute("call", params as never, undefined, undefined, ctx);
-}
-
-function taskId(goal: GoalState, phaseIdx: number, taskIdx: number): number {
-  return goal.plan!.phases[phaseIdx].tasks[taskIdx].id;
+async function execute(tool: { execute: Function }, params: Record<string, unknown>) {
+  return tool.execute("call", params, undefined, undefined, ctx);
 }
 
 beforeEach(() => {
@@ -46,71 +25,53 @@ beforeEach(() => {
   __setApiForTest({ appendEntry: () => {} });
 });
 
-describe("软遗忘 e2e smoke · public plan_update 推进序列", () => {
-  test("Phase Plan 的 phase 由 plan_update 标 done 后只注入标题行", async () => {
-    const proposal: PlanProposal = {
+describe("Work List soft forgetting e2e", () => {
+  test("explicitly done Phase keeps its heading but hides member Work Item details", async () => {
+    await execute(executionPlanTool, {
       objective: "软遗忘 smoke",
-      planType: "phase",
-      verification: "注入里 done phase 只剩标题行",
+      description: "控制持续上下文体积。",
+      items: [],
       phases: [
-        { subject: "阶段一", tasks: [{ subject: "任务甲" }, { subject: "任务乙" }] },
-        { subject: "阶段二", tasks: [{ subject: "任务丙" }] },
+        { subject: "阶段一", description: "完成第一阶段。", items: [{ subject: "任务甲", description: "完成甲。" }, { subject: "任务乙", description: "完成乙。" }] },
+        { subject: "阶段二", description: "继续第二阶段。", items: [{ subject: "任务丙", description: "完成丙。" }] },
       ],
-    };
-    __setGoalForTest(baseGoal(proposalToPlan(proposal)));
-
-    const initial = __getGoalForTest()!;
-    const t1 = taskId(initial, 0, 0);
-    const t2 = taskId(initial, 0, 1);
+    });
     for (const step of [
-      { target: "task", id: t1, status: "in_progress" },
-      { target: "task", id: t1, status: "done", evidence: "ev-甲" },
-      { target: "task", id: t2, status: "in_progress" },
-      { target: "task", id: t2, status: "done", evidence: "ev-乙" },
+      { target: "item", id: 1, status: "in_progress" },
+      { target: "item", id: 1, status: "done", evidence: "ev-甲" },
+      { target: "item", id: 2, status: "in_progress" },
+      { target: "item", id: 2, status: "done", evidence: "ev-乙" },
     ]) {
-      const result = await update(step);
-      expect(result.details?.error).toBeUndefined();
+      expect((await execute(workUpdateTool, step)).details?.error).toBeUndefined();
     }
 
-    let goal = __getGoalForTest()!;
-    let block = buildPlanContextBlock(goal);
+    let block = buildPlanContractContext(__getGoalForTest()!);
     expect(block).toContain("任务甲");
     expect(block).toContain("ev-甲");
     expect(block).toContain("任务乙");
     expect(block).toContain("ev-乙");
 
-    const phase1Id = goal.plan!.phases[0].id;
-    const phaseDone = await update({ target: "phase", id: phase1Id, status: "done" });
-    expect(phaseDone.details?.error).toBeUndefined();
-    goal = __getGoalForTest()!;
-    expect(goal.plan!.phases[0].status).toBe("done");
-
-    block = buildPlanContextBlock(goal);
-    expect(block).toContain(`[done] phase #${phase1Id}: 阶段一`);
+    expect((await execute(workUpdateTool, { target: "phase", id: 1, status: "done" })).details?.error).toBeUndefined();
+    block = buildPlanContractContext(__getGoalForTest()!);
+    expect(block).toContain("phase #1 [done] 阶段一");
     expect(block).not.toContain("任务甲");
     expect(block).not.toContain("任务乙");
     expect(block).not.toContain("ev-甲");
     expect(block).not.toContain("ev-乙");
-
-    const phase2Id = goal.plan!.phases[1].id;
-    expect(block).toContain(`[pending] phase #${phase2Id}: 阶段二`);
+    expect(block).toContain("phase #2 [pending] 阶段二");
     expect(block).toContain("任务丙");
   });
 
-  test("当前 phase 内 done task 仍保留 subject 与 evidence", async () => {
-    const proposal: PlanProposal = {
-      objective: "当前 phase 内 done task",
-      planType: "phase",
-      verification: "phase 未 done 时，其内 done task 仍注入",
-      phases: [{ subject: "进行中阶段", tasks: [{ subject: "已完成任务" }, { subject: "待办任务" }] }],
-    };
-    __setGoalForTest(baseGoal(proposalToPlan(proposal)));
-    const t1 = taskId(__getGoalForTest()!, 0, 0);
-
-    expect((await update({ target: "task", id: t1, status: "in_progress" })).details?.error).toBeUndefined();
-    expect((await update({ target: "task", id: t1, status: "done", evidence: "内 done 证据" })).details?.error).toBeUndefined();
-
-    const block = buildPlanContextBlock(__getGoalForTest()!);
+  test("done Work Item remains visible while its Phase is still active", async () => {
+    await execute(executionPlanTool, {
+      objective: "当前 Phase 保留证据",
+      description: "未收口阶段继续提供执行上下文。",
+      items: [],
+      phases: [{ subject: "进行中阶段", description: "继续推进。", items: [{ subject: "已完成任务", description: "先完成。" }, { subject: "待办任务", description: "稍后完成。" }] }],
+    });
+    await execute(workUpdateTool, { target: "item", id: 1, status: "in_progress" });
+    await execute(workUpdateTool, { target: "item", id: 1, status: "done", evidence: "内 done 证据" });
+    const block = buildPlanContractContext(__getGoalForTest()!);
     expect(block).toContain("已完成任务");
     expect(block).toContain("内 done 证据");
     expect(block).toContain("待办任务");

@@ -26,6 +26,42 @@ afterEach(() => {
   }
 });
 
+function setCheckpointGoal(id: string, checkpoint: ReturnType<typeof applyCheckpointEvent>, evidence: string): void {
+  __setGoalForTest({
+    id,
+    objective: id,
+    description: "验证阶段审核检查点的工作区复用边界。",
+    status: "active",
+    startedAt: 1,
+    updatedAt: 1,
+    iteration: 0,
+    workList: {
+      items: [],
+      phases: [
+        {
+          id: 1, subject: "验收", description: "复验当前阶段。", status: "in_progress", revision: 0,
+          acceptanceCriteria: [{ criterion: "阶段可测试", evidence }],
+          items: [{ id: 1, subject: "实现", description: "完成实现。", status: "done", evidence }],
+        },
+        { id: 2, subject: "后续", description: "后续串行工作。", status: "pending", revision: 0, acceptanceCriteria: [{ criterion: "后续可测试", evidence }], items: [] },
+      ],
+      nextItemId: 2,
+      nextPhaseId: 3,
+      revision: 0,
+    },
+    contract: {
+      id: `run-${id}`,
+      profile: "staged_check",
+      startedAt: 1,
+      revision: 0,
+      transitions: [{ to: "staged_check", at: 1, revision: 0 }],
+      verification: evidence,
+      acceptanceCriteria: [{ criterion: "目标可测试", evidence }],
+      auditCheckpoints: { phase: checkpoint },
+    },
+  });
+}
+
 test("工作区变化后生产审核路径不注入旧检查点", async () => {
   const repo = mkdtempSync(join(tmpdir(), "pi-dgoal-audit-checkpoint-prod-"));
   tempRoots.push(repo);
@@ -71,25 +107,7 @@ test("工作区变化后生产审核路径不注入旧检查点", async () => {
     return proc;
   });
   __setApiForTest({ appendEntry: () => {} });
-  __setGoalForTest({
-    id: "checkpoint-workspace-change",
-    objective: "工作区变化检查点回归",
-    planType: "goal",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "printf after",
-    acceptanceCriteria: [{ criterion: "目标可测试", evidence: "printf after" }],
-    auditCheckpoints: { phase: checkpoint },
-    plan: {
-      phases: [
-        { id: 1, subject: "验收", status: "in_progress", acceptanceCriteria: [{ criterion: "目标可测试", evidence: "printf after" }], tasks: [{ id: 2, subject: "实现", status: "done", evidence: "printf after" }] },
-        { id: 3, subject: "后续", status: "pending", tasks: [] },
-      ],
-      nextId: 4,
-    },
-  } as never);
+  setCheckpointGoal("checkpoint-workspace-change", checkpoint, "printf after");
 
   const result = await phaseCheckTool.execute(
     "test", { phaseId: 1 }, undefined, undefined,
@@ -101,7 +119,14 @@ test("工作区变化后生产审核路径不注入旧检查点", async () => {
 });
 
 test("重启后的阶段审核会把同工作区的成功命令检查点交给新的独立审核器", async () => {
-  const cwd = process.cwd();
+  const cwd = mkdtempSync(join(tmpdir(), "pi-dgoal-audit-checkpoint-resume-"));
+  tempRoots.push(cwd);
+  execFileSync("git", ["-C", cwd, "init", "-q"]);
+  execFileSync("git", ["-C", cwd, "config", "user.email", "test@example.com"]);
+  execFileSync("git", ["-C", cwd, "config", "user.name", "pi-dgoal-test"]);
+  writeFileSync(join(cwd, "tracked.txt"), "stable\n");
+  execFileSync("git", ["-C", cwd, "add", "tracked.txt"]);
+  execFileSync("git", ["-C", cwd, "commit", "-qm", "init"]);
   const checkpoint = applyCheckpointEvent(
     { workspaceFingerprint: __fingerprintAuditWorkspaceForTest(cwd), records: [] },
     {
@@ -132,25 +157,7 @@ test("重启后的阶段审核会把同工作区的成功命令检查点交给�
     return proc;
   });
   __setApiForTest({ appendEntry: () => {} });
-  __setGoalForTest({
-    id: "checkpoint-resume",
-    objective: "恢复检查点",
-    planType: "goal",
-    status: "active",
-    startedAt: 1,
-    updatedAt: 1,
-    iteration: 0,
-    verification: "npm test",
-    acceptanceCriteria: [{ criterion: "阶段可测", evidence: "npm test" }],
-    auditCheckpoints: { phase: checkpoint },
-    plan: {
-      phases: [
-        { id: 1, subject: "验证", status: "in_progress", acceptanceCriteria: [{ criterion: "阶段可测", evidence: "npm test" }], tasks: [{ id: 2, subject: "实现", status: "done", evidence: "npm test" }] },
-        { id: 3, subject: "后续", status: "pending", tasks: [] },
-      ],
-      nextId: 4,
-    },
-  } as never);
+  setCheckpointGoal("checkpoint-resume", checkpoint, "npm test");
 
   const result = await phaseCheckTool.execute(
     "test", { phaseId: 1 }, undefined, undefined,

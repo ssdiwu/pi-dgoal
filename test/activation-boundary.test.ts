@@ -1,28 +1,26 @@
 import { describe, expect, test } from "bun:test";
-import { buildNaturalLanguageStartGuidance, buildTaskPlanDefaultGuidance, isNaturalLanguageDgoalStartRequest } from "../src/startup/index.ts";
-import { phasePlanTool, goalPlanTool, taskPlanTool } from "../index.ts";
+import { buildNaturalLanguageStartGuidance, buildWorkListDefaultGuidance, isNaturalLanguageDgoalStartRequest } from "../src/startup/index.ts";
+import { executionPlanTool, goalPlanTool, stagedPlanTool, workListTool } from "../index.ts";
 
-describe("Three-Plan activation boundary", () => {
-  test("cold guidance makes Task Plan the default and keeps /dgoal explicit", () => {
-    const task = buildTaskPlanDefaultGuidance();
-    expect(task).toContain("主动调用 task_plan");
-    expect(task).toContain("AFK、有界、低风险且有停止条件的探索");
-    expect(task).toContain("当前 frontier 随证据变化时可整份替换 objective、description 与 tasks");
-    expect(task).toContain("意图、偏好或范围问题继续讨论，不伪装成探索 task");
-    expect(task).toContain("轻量自检目标相关性、必要性、依赖和证据路径");
-    expect(task).toContain("不输出独立报告或新增 hard gate");
-    expect(task).toContain("纯讨论、解释、能力问答不建计划");
-    expect(task).toContain("推荐用户使用 /dgoal");
-    expect(task).toContain("不得调用 phase_plan 或 goal_plan");
-    expect(task).not.toContain("对象/状态生命周期");
-    expect(task).not.toContain("生产者—消费者真实调用链");
+describe("ADR 0051 activation boundary", () => {
+  test("cold guidance defaults to one soft Work List and keeps higher assurance explicit", () => {
+    const guidance = buildWorkListDefaultGuidance();
+    expect(guidance).toContain("work_list");
+    expect(guidance).toContain("唯一软性清单");
+    expect(guidance).toContain("不自动续跑");
+    expect(guidance).toContain("execution_plan");
+    expect(guidance).toContain("显式授权 /dgoal");
+    expect(guidance).toContain("未经授权不得调用 goal_plan 或 staged_plan");
+    expect(guidance).toContain("纯讨论、解释、单步回答不建清单");
 
     const explicit = buildNaturalLanguageStartGuidance();
-    expect(explicit).toContain("phase_plan / goal_plan");
+    expect(explicit).toContain("Goal Check Plan");
+    expect(explicit).toContain("Staged Check Plan");
+    expect(explicit).toContain("goal_plan / staged_plan");
     expect(explicit).toContain("语义预审与用户确认");
   });
 
-  test("natural-language /dgoal authorization still rejects questions, quotes and negation", () => {
+  test("natural-language /dgoal authorization rejects questions, quotes and negation", () => {
     for (const text of ["请用 dgoal 完成这个任务", "启动 /dgoal", "please use dgoal for this task"]) {
       expect(isNaturalLanguageDgoalStartRequest(text)).toBe(true);
     }
@@ -31,22 +29,21 @@ describe("Three-Plan activation boundary", () => {
     }
   });
 
-  test("audited Plan guidance adds concise flow and contract checks without a new gate", () => {
-    const phaseGuidance = phasePlanTool.promptGuidelines.join("\n");
-    const goalGuidance = goalPlanTool.promptGuidelines.join("\n");
-    for (const guidance of [phaseGuidance, goalGuidance]) {
-      expect(guidance).toContain("精简质量检查");
-      expect(guidance).toContain("对象/状态生命周期");
-      expect(guidance).toContain("真实调用链");
-      expect(guidance).toContain("失败路径");
-      expect(guidance).toContain("不输出自检报告或新增 hard gate");
-    }
-    expect(phaseGuidance).toContain("Plan 结构和 goal 验收契约一致");
-    expect(goalGuidance).toContain("Plan 结构和 phase/goal 验收契约一致");
+  test("public tool guidance preserves assurance boundaries", () => {
+    expect(workListTool.promptGuidelines.join("\n")).toContain("不自动续跑");
+    expect(executionPlanTool.promptGuidelines.join("\n")).toContain("没有独立 check");
+    expect(goalPlanTool.promptGuidelines.join("\n")).toContain("不调用 phase_check");
+    expect(stagedPlanTool.promptGuidelines.join("\n")).toContain("每个 Phase 先 phase_check");
+    expect(stagedPlanTool.promptGuidelines.join("\n")).toContain("主干冻结");
   });
 
-  test("public entry schemas no longer expose implicit or runtime budget", () => {
-    const serialized = JSON.stringify({ task: taskPlanTool.parameters, phase: phasePlanTool.parameters, goal: goalPlanTool.parameters });
+  test("public entry schemas expose no implicit or runtime budget bypass", () => {
+    const serialized = JSON.stringify({
+      work: workListTool.parameters,
+      execution: executionPlanTool.parameters,
+      goal: goalPlanTool.parameters,
+      staged: stagedPlanTool.parameters,
+    });
     expect(serialized).not.toContain("implicitFinalOnly");
     expect(serialized).not.toContain("runtimeBudget");
     expect(serialized).not.toContain("budgetPolicy");

@@ -2,35 +2,26 @@
 
 [English](./README.md) | 中文
 
-Pi 扩展：让计划保障强度匹配工作本身。**Task Plan** 是 agent 处理日常多步任务的轻量默认；用户显式启动 dgoal 后，可选择带独立审核的 **Phase Plan** 或 **Goal Plan**，为更重要的交付冻结完成契约。
+Pi 扩展：每个 session Goal 只维护**一份 Work List**，并只增加当前工作真正需要的保障。普通任务可保持软清单；持续执行与独立建检是附着在同一清单上的正交、单向升级。
 
-> **下一版本是破坏性升级**（ADR 0042）：goal、用户可见 phase 与 task 的 Description 改为必填；删除 `contextSummary`；持久化升级到 `dgoal-plan-v2`，不迁移 `dgoal-plan-v1` 活动状态。
+> **v0.8.1 是破坏性版本**（ADR 0051）：公共接口改为九个新工具；持久化切换到 `dgoal-work-v1` 与 `dgoal-plan-history-v1`；v0.8.1 之前的活动状态明确不迁移。
 
-## 选择合适的 Plan
+## 选择合适的保障
 
-| Plan | 适用场景 | 谁能启动 | 独立审核 |
-|---|---|---|---|
-| **Task Plan** | 明确多步工作需要可见进度，但不值得走完整仪式 | agent 可按需主动建立 | 无 |
-| **Phase Plan** | 目标需要冻结完成契约和一次最终独立核验 | 用户显式 `/dgoal` 或明确要求使用 dgoal | `goal_check` |
-| **Goal Plan** | 每个交付阶段和最终结果都需要独立验证 | 同上 | `phase_check` + `goal_check` |
+| 模式 | 适用场景 | 自动续跑 | 独立建检 |
+|---|---|---:|---|
+| **软性 Work List** | 普通多步工作值得跨 turn 跟踪 | 无 | 无 |
+| **Execution Plan** | agent 必须 Until Done（持续执行） | 有 | 无 |
+| **Goal Check Plan** | 最终结果需要独立终审 | 有 | `goal_check` |
+| **Staged Check Plan** | 真实串行 Phase 与最终结果都需要独立建检 | 有 | `phase_check` + `goal_check` |
 
-### 先从 Task Plan 开始
+结构与保障彼此正交：Work List 可以完全平铺，也可以包含可选的真实 Phase。Phase 只代表真实串行边界，不再有隐藏 Phase。Plan Contract 只允许 `execution → goal_check → staged_check` 单向升级，并保持既有 ID、终态和证据。
 
-Task Plan 是日常结构化执行入口：agent 可以把普通请求转成可见、带证据的 task 列表，并持续推进直到关闭。它跳过提案预审、确认 UI 与 auditor 开销，适合实现、调试、文档、迁移等明确的多步工作。
-
-它不是每条消息都要走的仪式：讨论、解释、能力问答和单步回答不建计划。AI 不得自行升级到 Phase Plan / Goal Plan；若用户需要冻结验收契约或独立审核，只能建议用户启动 `/dgoal`。
-
-### 有意识地升级保障
-
-Phase Plan 为整个目标增加一次最终独立审核；Goal Plan 则在**每个 phase**和最终完成时各做一次独立审核。二者都必须由用户通过 `/dgoal` 显式选择，保障强度不会变成隐藏的流程负担。
+讨论、解释、能力问答和单步回答不建清单。带独立建检的 Profile 必须由用户通过 `/dgoal` 或同等明确的祈使句授权；agent 不得静默增加保障。
 
 ### 与 dteam 组合
 
-Plan 类型决定进度结构与独立审核密度；[`dteam`](https://github.com/ssdiwu/pi-dteam) 是可选的模型分级路由与 fresh 上下文执行层，可独立使用，也可嵌入 Task、Phase 或 Goal Plan。非极小仓库任务仍需事实时，主代理可以先派有界、互补、只读的 T3 探测，再综合带来源的报告，决定收口、实施、复验或升级。
-
-### Task DAG 执行 frontier
-
-当前 phase 还会暴露纯派生的 Task DAG 读模型：ready task、waiting 依赖、传递根阻塞，以及 ready task 完成后会立即解锁的 task。ready 集合是当前合法执行或委派边界；waiting 与 blocked task 不能推进。ready 只表示已声明依赖满足，不表示 task 之间可安全并发。主代理仍负责选择执行方式、核对范围冲突、验证结果并更新 Plan 状态。
+[`dteam`](https://github.com/ssdiwu/pi-dteam) 仍是可选的模型分级路由与 fresh context（新上下文）执行层，可在任意 Work List / Plan Contract 内使用。主代理始终负责范围、证据综合、冲突裁决和最终状态写入。
 
 ## 安装
 
@@ -46,105 +37,110 @@ pi -e ./index.ts
 
 ## 用法
 
-### 普通任务：Task Plan
+### 普通任务：软性 Work List
 
-用户正常提出明确多步任务即可。agent 认为值得跟踪时调用 `task_plan`，随后用 `plan_create` / `plan_update` 推进。再次调用 `task_plan` 会原子替换 objective、goal description 与全部 task。AFK、有界、低风险且有明确停止条件的探索也可走同一轻量入口。
+值得跟踪时，agent 调用 `work_list`，再用 `work_create` / `work_update` 推进 Work Item。
 
 ```text
-task_plan
-→ plan_create / plan_update(task)
-→ 当前 task 全部完成：主 agent 决定
-   → plan_create 新增 task / task_plan 替换 / 显式关闭 goal
-→ plan_update(goal, done)：summary + verification
+work_list
+→ work_create / work_update(item)
+→ 全部 Work Item 终结，全部真实 Phase 显式 done
+→ 自动收口 + 用户可见完成总结
 ```
 
-Task Plan 不经过启动审核、用户确认或独立 auditor，也不扩大宿主 agent 的工具权限。task 可选声明具名交付物（文件、命令结果或可观察外部状态）及其完成事实；声明后 done 必须逐项提供证据。当前 task 全部完成时 Plan 保持 active：主 agent 要么按新证据新增 task、要么在目标重构时替换 Task Plan、要么回读全部 task Description 与声明交付物后显式关闭 goal；这是自检，不是独立审核。
+软清单跨 turn 持久化，但不启动 continuation（自动续跑）、no-progress 计数或 auditor（独立审核）。保持 soft 时，Work Item 的 Description 与 evidence 可省略。全部 Work Item 进入 `done` / `abandoned` 且真实 Phase 已显式完成后，当前 Goal 会原子清除，并返回结构化完成信号。
 
-### 显式 dgoal：Phase Plan / Goal Plan
+### 持续工作：Execution Plan
+
+`execution_plan` 直接建立或把同一 Work List 升级为 Until Done（持续执行）合同。计划态 Work Item 必须有 Description；`done` 必须有可复验证据；声明 deliverable 后还必须逐项提供 `deliverableEvidence`。
+
+```text
+execution_plan
+→ work_create / work_update(item)
+→ 用 work_update(phase, done) 显式关闭每个真实 Phase
+→ work_update(goal, done)：summary + verification
+```
+
+Execution Plan 有固定的模型错误与结构化 no-progress 熔断，但不启用独立建检。
+
+### 显式 dgoal：Goal Check / Staged Check
 
 ```text
 /dgoal <明确目标>
 ```
 
-也可以在空闲会话中明确说“请使用 dgoal 完成这个目标”。两种入口都进入同一启动闸门：agent 先读相关代码/文档，推荐 Phase Plan 或 Goal Plan，并对端到端结果、适用时的生命周期/真实调用链、失败路径和验收契约一致性做一次精简质量检查；直接修正 proposal 后提交冻结验收条件，经过 proposal 语义预审，再由用户确认。该检查不生成报告、模型调用、状态或 hard gate。
+也可明确说“请使用 dgoal 完成这个目标”。agent 读取相关代码与文档，选择 Goal Check 或 Staged Check，提交可独立复验的验收条件，通过语义预审后等待用户确认。提案被拒或确认 UI 失败都不得改变当前 Work List。
 
 ```text
-Phase Plan
-phase_plan → [当前 phase task 耗尽：主 agent 决定 plan_create / phase done] × N
-→ goal_check → plan_update(goal, done)
+Goal Check Plan
+goal_plan → work_update(item/phase) → goal_check → work_update(goal, done)
 
-Goal Plan
-goal_plan → [当前 phase task 耗尽：主 agent 决定 plan_create / phase_check → phase done] × N
-→ goal_check → plan_update(goal, done)
+Staged Check Plan
+staged_plan
+→ [work_update(item) → phase_check → work_update(phase, done)] × N
+→ goal_check → work_update(goal, done)
 ```
 
-`check` 只写审核结果；它不会把 phase 或 goal 标为完成。只有 `plan_update` 能改完成状态和浮层显示。任何计划写操作都会增加 revision，使旧 approval 自动失效；若审核运行期间 revision 已变化，本轮结果会被丢弃并要求重审。
+`check` 只记录 `CheckRecord`，不会把 Phase / Goal 标为完成。只有 `work_update` 能写完成状态；相关 revision、Goal 或 session 分支变化后，迟到审核结果会被丢弃。
 
-### 命令
+Staged Check 中，只要仍有未完成 Phase，非终态工作就必须进入已确认的 Phase 主干。全部 Phase 显式 done 后，`work_create` 可以新增 goal-level 根 follow-up，而不重开或改写 done Phase；这些工作必须在下一次 `goal_check` 前终结，并可跨 session reload 恢复。
 
-```text
-/dgoal <objective>   启动 Phase/Goal Plan 选择与确认
-/dgoal               承接前文启动
-/dgoal status | s    查看完整 Plan
-/dgoal pause  | p    暂停
-/dgoal resume | r    恢复
-/dgoal clear  | c    清除
-/dgoal help   | h    查看说明
-```
-
-## 八个工具
+## 九个工具
 
 | 工具 | 职责 |
 |---|---|
-| `task_plan` | 直接建立或整份替换 Task Plan，包含 goal/task description 与可选 task deliverables |
-| `phase_plan` | 显式启动 Phase Plan；提交必填 goal/phase description，冻结 goal 验收契约并进入确认 UI |
-| `goal_plan` | 显式启动 Goal Plan；提交必填三层 description，冻结 phase + goal 验收契约并进入确认 UI |
-| `plan_create` | 新增带必填 description 与可选声明交付物的 task；不能新增 phase |
-| `plan_read` | 读取 Plan、goal、phase 或 task；纯读：聚合/单项结果会解释当前 frontier 的直接原因、下一合法动作与当前 phase 的 Task DAG 投影（ready/waiting/根阻塞/立即解锁），并只组合现有证据中最新的适用 check、反馈与完成声明；task 详情还显示声明交付物与逐项证据；不回传原始 Plan payload（Task Plan 隐藏 phase） |
-| `plan_update` | 唯一 agent 写工具：task / phase / goal 进度、phase/task description 修订、完成与主动暂停；末 Task Plan 收口另需结构化自检 |
-| `phase_check` | Goal Plan 的 phase 独立审核；只写 CheckRecord |
-| `goal_check` | Phase/Goal Plan 的整体独立审核；只写 CheckRecord |
+| `work_list` | 创建或原子重写当前软性 Work List |
+| `execution_plan` | 创建或升级为 Until Done 的 Execution Plan |
+| `goal_plan` | 提交只有 goal 独立终审的 Goal Check Plan proposal |
+| `staged_plan` | 提交 Phase + goal 均独立建检的 Staged Check Plan proposal |
+| `work_create` | 新增 Work Item；当前 Profile 允许时也可新增真实 Phase |
+| `work_read` | 读取完整 Goal、Work List、Phase、Work Item、交付物/证据详情或 session Plan Run History |
+| `work_update` | Work Item / Phase / Goal 状态与完成的唯一 agent 写入口 |
+| `phase_check` | 独立检查当前 Staged Check Phase；只记录结论 |
+| `goal_check` | 独立检查完整 Goal；只记录结论 |
 
-工具名遵循“两词原则”，不带 `dgoal_` 前缀；`dgoal` 只保留为产品名与用户命令。
+工具名遵循“两词原则”，不带 `dgoal_` 前缀；`dgoal` 保留为产品名与用户命令。
 
-phase 与 task 使用独立 ID namespace：二者都从 `1` 开始；task ID 在整个 Plan 内保持唯一，使 `blockedBy` 可引用同 phase 或更早 phase 的 task。类型化工具入口可区分 phase `#1` 与 task `#1`；`nextId` 只分配 task。`plan_read(target=plan|goal)` 会聚合整个 Plan 的 phase/task 进度（done/total），而 `target=phase|task` 只返回对应单项。
+Work Item ID 在整份 Work List 内唯一；Phase ID 使用独立命名空间，二者都从 `1` 开始。`blockedBy` 只引用 Work Item ID，不能成环，也不能让较早 Phase 依赖未来 Phase。
 
-goal、用户可见 phase 与 task 都有必填 **Description**：说明为什么存在、如何服务上层、为什么采用当前方法，以及要避免哪些方法偏移。它是权威执行说明，不是平行审核门。Phase/Goal Plan 的 goal description 随确认冻结；phase/task description 可通过 `plan_update` 显式修订，并使旧审核失效。硬方法约束应写入 `guardrails` 或 `acceptanceCriteria`。
+Goal 与真实 Phase 的 Description 必填；进入任意 Plan Contract 后，Work Item Description 也必填。Description 说明目的与方法，是执行指导，不是额外验收门。硬完成条件进入 `acceptanceCriteria`；主观复核进入 `userReviewItems`。
 
-## 完成守卫
+## 完成与状态守卫
 
-- **Task Plan**：全部 task 必须带可复验 evidence 并进入 done；已声明交付物的 task 还必须逐项有证据。最后一个 task 的更新另带同会话 completion review，随后原子关闭 goal；blocked task 不算完成。
-- **Phase Plan**：phase 的 task 全部 done 后才可更新 phase done；blocked 表示尚未完成。所有 phase done、当前 revision 的 `goal_check` approved 后才可完成 goal。
-- **Goal Plan**：phase 还必须有当前 revision 的 `phase_check` approved；goal 同样需要 `goal_check` approved。
-- check 结果为 `approved | rejected | audit_error`。rejected 让 agent 修复并重审；audit_error 会安全暂停。
+- `done` 不回退；`abandoned`、`blocked` 与 agent 主动 `paused` 必须说明原因。
+- 真实 Phase 不会因成员耗尽自动完成；必须显式调用 `work_update(target=phase,status=done)`。
+- Goal Check / Staged Check 的 Goal 完成要求当前 Work List revision 的 `goal_check` approved。
+- Staged Check Phase 完成前，必须有当前 Phase local revision 的 `phase_check` approved。
+- 业务 rejected 保持 active 供修复；`audit_error` 安全暂停。
+- 任何收口都按 done → null tombstone → 清 continuation / proposal / 活性计数 / check snapshot / 授权 → UI 后效的顺序执行。返回的 `dgoal 完成信号` 带 summary 与 verification，不再静默关闭。
 
-## 启动语义与边界
-
-Phase/Goal Plan 的 proposal 采用“轻提案、硬执行”（ADR 0037）：
-
-- 代码校验结构、状态、Plan 类型和显式授权；
-- 当前会话模型判断计划是否可自主闭环，把主观体验迁移到 `userReviewItems`，真实人工 blocker 才拒绝；
-- 真实动作权限由宿主工具和执行边界决定，不靠 proposal 关键词猜测；
-- 独立审核器只核用户确认的冻结条件，不在执行中扩张完成门。
-
-隐式 proposal、`implicitFinalOnlyStart`、`implicitFinalOnlyBudget`、bounded/unbounded runtime budget 与 verification policy 已删除。仍保留固定技术熔断：模型错误、连续无进展、审核器错误与审核 timeout。无进展采用 ADR 0045 的职责分层：LLM 判断继续实际推进还是在真实用户决策死锁时结构化暂停；运行时不解析 assistant 文本或 `bash` 命令语义，只观察结构化 activity。连续 3 轮无工具会暂停；连续 8 轮虽有工具活动、但没有观察到文件、Plan 或独立 check 终态也会暂停。用户中断会暂停显式 Phase/Goal Plan，而 Task Plan 保持 active，等待下一条用户输入继续。Task Plan 达到模型错误阈值后保持 paused，下一条真实 interactive/RPC 输入会一次性恢复同一 Plan；extension 注入和 prompt 改写不能唤醒，Phase/Goal Plan 仍需 `/dgoal resume`。agent 需要用户决策时用：
+## 命令
 
 ```text
-plan_update(target=goal, status=paused, reason="具体 blocker")
+/dgoal <objective>       启动 Goal Check / Staged Check 选择与确认
+/dgoal                   承接前文进入启动闸门
+/dgoal status | s        查看当前 Work List 与 session History
+/dgoal pause  | p        暂停 active Plan Contract
+/dgoal resume | r        恢复 paused Plan Contract
+/dgoal clear  | c        清除当前 Goal / Work List
+/dgoal history clear     二次确认后清空当前 session 的 Plan Run History
+/dgoal help   | h        查看当前行为说明
 ```
+
+软性 Work List 不进入 Plan pause 状态。固定 continuation 熔断只在 Plan Contract active 时工作。no-progress 只观察结构化工具活动与持久状态变化，不解析 assistant 文本或 shell 命令字符串。
 
 ## TUI
 
-- **持续显示浮层**：Task Plan 默认列 task；Phase/Goal Plan 默认列 phase；heading 按当前终端显示宽度裁切目标标题。
-- **`Ctrl+O`**：展开 Phase/Goal Plan 的 task 与建检活性；完成后的十秒快照展示全部 phase/task。
-- **`/dgoal s` Modal**：两层浏览。列表页显示完整 goal description、当前 frontier 原因/下一合法动作、当前 phase 的 Task DAG 投影、最新适用审核投影与可选择的 phase/task；Enter 打开所选项的完整 description、声明交付物与逐项证据、status、dependency、evidence、blocked reason、局部 frontier/graph state 及最新 phase check/反馈，Esc 返回且保留选择。只展示最新反馈/完成声明，内部修复索引不展开；Task Plan 不显示内部隐藏 phase。
-- **状态栏**：显示 starting / active / paused / done。
+- **持续浮层**：显示当前 Profile、聚合进度、真实 Phase 与当前 Work Item。
+- **`Ctrl+O`**：展开 Work Item 与当前审核活性。
+- **`/dgoal s` Modal**：同时浏览当前 Work List 与 Plan Run History；详情展示 Description、状态、依赖、证据、原因、deliverable 与适用 check。
+- **fail-soft（失败降级）**：widget、Modal、status 或 notify 异常只能影响展示，不能阻断持久化、完成或恢复。
 
-状态机与持久化不依赖 TUI 渲染成功。`setWidget`、Modal、status 或 notify 抛错只能降级展示，不能阻断完成或恢复。
+完成 Phase 在 TUI 与 History 中保持可见；进入执行 prompt 时只保留标题行，避免旧细节持续膨胀上下文。
 
-## 独立审核
+## 独立建检
 
-`phase_check` / `goal_check` 运行 fresh context 的隔离 Pi 子进程，可使用受限核验工具。默认继承当前会话模型，也可配置最多 3 个有序候选：
+`phase_check` / `goal_check` 使用 fresh context（新上下文）与受限只读/核验工具运行隔离 Pi 子进程。默认继承当前 session 模型，也可配置最多 3 个有序候选：
 
 ```json
 {
@@ -154,33 +150,36 @@ plan_update(target=goal, status=paused, reason="具体 blocker")
 }
 ```
 
-配置位置：全局 `~/.pi/agent/pi-dgoal.json`，或受信任项目 `.pi/pi-dgoal.json`。候选格式为 `provider/model[:thinking]`。业务 rejected 不切换模型；只有网络、协议、timeout、零输出等技术异常才换候选，全部耗尽后暂停。
+配置位置：全局 `~/.pi/agent/pi-dgoal.json`，或受信任项目 `.pi/pi-dgoal.json`。候选格式为 `provider/model[:thinking]`。业务 rejected 不切换模型；只有技术失败才回退，候选耗尽后安全暂停。旧单模型配置键继续兼容。
 
-旧单值 `phaseAuditorModel`、`goalAuditorModel`、`auditorModel` 仍作配置兼容。历史配置中的 `implicitFinalOnlyStart` / `implicitFinalOnlyBudget` 已无效，可以删除。
+## 持久化与 History
 
-## 持久化
-
-当前 Plan 使用 `dgoal-plan-v2` custom entry。旧 `dgoal-state`、`dgoal-goal-vnext` 与 `dgoal-plan-v1` 不读取、不迁移；重载时严格复验必填 description、可选声明交付物与逐项证据、各 Plan 类型的冻结验收契约、ID、状态、依赖图、已删除字段和 pending proposal，任一处非法都会拒绝整条 entry。升级后需要重新建立活动 Plan。一个 Pi session 同时只维护一个当前 Plan。`session_compact` 后持久化的结构化 Plan 原样恢复并重新作为执行权威；若 Pi 未自行 retry 被打断的 turn，active Plan 还会收到新的 continuation，避免压缩后只保留计时却遗失执行 frontier。压缩摘要只能补背景，不能覆盖 task Description 或声明交付物。
+- `dgoal-work-v1` 保存唯一当前 Goal、Work List、可选 Plan Contract 与 pending proposal。
+- `dgoal-plan-history-v1` 保存当前 session 分支的 append-only（只追加）Plan Run History。
+- History 保留结构化完成证据与 check 结论，但删除 auditor 原始报告、feedback、thinking、transcript 和 mutation log；只读且不能 resume。
+- v0.8.1 之前的活动状态明确忽略、不迁移。升级后需重新建立当前 Work List。
+- `session_tree` / `session_compact` 只恢复严格校验后的结构化状态。压缩后，Pi 未自行 retry 时 active Plan Contract 会恢复 continuation；软性 Work List 不会。
 
 ## 设计边界
 
-- 不做多目标池、后台 daemon、定时任务或跨 session 调度。
-- 不自动执行 Git commit、回滚、push 或发布。
-- 不替代项目自己的测试命令；审核器会独立复验已有证据。
-- Phase/Goal Plan 运行中不新增 phase，只能新增 task。
-- 用户体验与视觉确认放 `userReviewItems`，不伪装成机器完成门。
+- 每个 session 只有一个当前 Goal / Work List；不做多目标池、daemon、定时器或跨 session 后台执行。
+- 不自动执行 Git commit、rollback、push、publish 或部署。
+- 项目测试仍是权威；dgoal 不替代目标项目测试。
+- 视觉与体验检查放入 `userReviewItems`，不伪装为机器完成门。
+- Staged Check 的 Phase 主干确认后冻结；其他 Profile 只在仍属真实串行边界时新增 Phase。
 
 ## 测试
 
 ```bash
 npm test                    # Bun 单元与集成测试
-npm run test:rpc            # RPC 加载与工具注册
-npm run test:context        # context 注入测试
-npm run test:smoke:runtime  # smoke 运行时选择逻辑
+npm run test:rpc            # RPC 加载与九工具注册
+npm run test:context        # context 与验收 prompt 测试
+npm run test:smoke:runtime  # 确定性 smoke runtime 逻辑
+npm run test:smoke:cleanup  # auditor 子进程清理 smoke
 npm run test:smoke          # 真实模型隔离 smoke（消耗 token）
 ```
 
-真实 TUI 的启动确认、Modal、浮层和交互仍建议人工 smoke，不作为机器完成门。
+真实 TUI 的启动确认、Modal、浮层与交互仍需人工复核；自动测试通过不等于人工 TUI 已验收。
 
 ## 项目结构
 
@@ -188,18 +187,18 @@ npm run test:smoke          # 真实模型隔离 smoke（消耗 token）
 pi-dgoal/
 ├── index.ts
 ├── src/
-│   ├── plan/          # 数据结构与纯 helper
-│   ├── runtime/       # 三档 Plan、启动闸门、工具与生命周期
+│   ├── work-list/     # Work List 数据模型、校验与 reducer
+│   ├── runtime/       # 九工具、生命周期、启动闸门、持久化、prompt 与 TUI 组合
 │   ├── startup/       # 扩展事件注册与默认 guidance
-│   ├── goal-runtime/  # 当前 session 的 goal、proposal、续跑与审核活性状态
-│   ├── audit/         # 独立审核协议与检查点
+│   ├── goal-runtime/  # session Goal、Plan Contract、continuation、History 与审核活性
+│   ├── audit/         # 独立审核协议与 checkpoint
 │   ├── isolated-pi/   # 隔离 Pi 子进程
 │   └── tui/           # 无状态滚动、宽度、耗时与文本样式 helper
 ├── test/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)，术语权威见 [`doc/术语表.md`](./doc/术语表.md)，核心决策见 [ADR 0038](./doc/决策档案/0038-三档Plan与八工具职责分离.md)、[ADR 0039](./doc/决策档案/0039-Phase与Task使用独立ID命名空间.md)、[ADR 0042](./doc/决策档案/0042-三层Description必填并移除contextSummary.md)、[ADR 0045](./doc/决策档案/0045-LLM语义选择与运行时结构化活性熔断.md)、[ADR 0046](./doc/决策档案/0046-TaskPlan交付物与末任务自检.md) 与 [ADR 0047](./doc/决策档案/0047-TaskPlan任务耗尽后显式收口.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)、[`doc/术语表.md`](./doc/术语表.md)、[ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md) 与 [v0.8.1 实施方案](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md)。
 
 ## 协议
 
