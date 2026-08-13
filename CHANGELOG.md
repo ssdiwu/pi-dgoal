@@ -8,6 +8,16 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **同 session 未完成计划恢复**（ADR 0052）：冷 `session_start(startup|resume)` 会恢复当前分支的完整 pending proposal，或把已确认但未结束的 active Plan Contract 原地持久化为 `paused(session_recovery)`。新增 `/dgoal review` 手动查看、反馈、延后、拒绝或确认保存提案；恢复不会自动弹窗、续跑或跨 session / History 搜索，`fork` 新 session 也不会继承宿主复制的 Plan / History。
+
+### Changed
+
+- **恢复后禁止猜测重放**：`/dgoal resume` 与恢复出的 upgrade proposal 确认都保留同一 Goal、Plan Run、Work List、revision、check 与 evidence；若来源是 session recovery，首轮必须先核对 `in_progress` 与工作区/外部副作用，不确定时 blocked/询问。
+- **取消确认不再丢计划**：Esc、空反馈与旧宿主 confirm=false 改为延后并保留 pending proposal；确认 UI 以 session generation + Goal/Contract/revision/proposal 隔离并发和迟到选择。
+- **跨分支与旧快照 fail-closed**：resume、START 与反馈重提通过一次性 input marker 绑定原 session generation；streaming 期间只排队，等 `agent_settled` 后以独立 turn 投递，并在精确 user `message_end` 的有效 abort 边界提交 active。未开跑、prompt 被改写或切换分支时保持 pending / paused。Pi 会先推进内存 leaf 再持久化，因此任一 `appendEntry()` 抛错都会硬锁当前 `SessionManager`：不追加补偿子节点或 continuation，extension reload、tree 与 compact 均不解锁；真正重建 manager 后才从磁盘最后完整记录恢复，JSONL 尾部不完整/不可读时继续 fail-closed。状态、History、前文承接与审核工作区推断不再从整棵 tree 的 `getEntries()` 猜测当前分支；fork 通过只含 session ID 的 scope marker 隔离复制状态。upgrade proposal 绑定 Goal/Work List/Contract 基线：延后后只暂停/恢复仍可 review，新进度或审核事实则使旧提案失效，绝不回滚当前状态。
+
 ### Fixed
 
 - **交付任务不再误降级为软清单**：默认 agent 指引现在将修复、实现、验证和其他无需继续等待用户决策的明确交付路由到 `execution_plan`；soft `work_list` 仅用于记录或等待后续输入。

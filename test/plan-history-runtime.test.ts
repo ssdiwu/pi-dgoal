@@ -20,7 +20,7 @@ function makeHarness() {
   const entries: Entry[] = [];
   const handlers = new Map<string, Function>();
   const notifications: Array<[string, string | undefined]> = [];
-  let historyConfirmation = true;
+  let historyConfirmation: boolean | Promise<boolean> = true;
   const ctx = {
     cwd: process.cwd(),
     ui: {
@@ -50,7 +50,7 @@ function makeHarness() {
     notifications,
     ctx,
     pi,
-    setHistoryConfirmation(value: boolean) { historyConfirmation = value; },
+    setHistoryConfirmation(value: boolean | Promise<boolean>) { historyConfirmation = value; },
   };
 }
 
@@ -131,6 +131,41 @@ describe("Plan Run History", () => {
     await handleDgoalCommand("history clear", harness.pi, harness.ctx);
     expect((await execute(workReadTool, { target: "history" }, harness.ctx)).details.count).toBe(0);
     expect(historyRecords(harness.entries)).toEqual([]);
+  });
+
+  test("a late history-clear confirmation cannot erase the newly selected branch", async () => {
+    const harness = makeHarness();
+    await execute(executionPlanTool, {
+      objective: "分支 A 历史",
+      description: "建立待清理的原分支历史。",
+      items: [{ subject: "A", description: "只用于归档。" }],
+      phases: [],
+    }, harness.ctx);
+    archivePlanRun(__getGoalForTest()!, "cleared");
+    const recordA = structuredClone(historyRecords(harness.entries)[0]);
+    let release: ((confirmed: boolean) => void) | undefined;
+    const confirmation = new Promise<boolean>((resolve) => { release = resolve; });
+    harness.setHistoryConfirmation(confirmation);
+    const clearing = handleDgoalCommand("history clear", harness.pi, harness.ctx);
+    await Promise.resolve();
+
+    const recordB = {
+      ...recordA,
+      id: "run-history-branch-b",
+      goalId: "goal-history-branch-b",
+      objective: "分支 B 历史",
+      contract: { ...recordA.contract, id: "run-history-branch-b" },
+    };
+    harness.entries.push({ type: "custom", customType: "dgoal-plan-history-v1", data: { records: [recordB] } });
+    harness.handlers.get("session_tree")!({}, harness.ctx);
+    const historyEntryCount = harness.entries.filter((entry) => entry.customType === "dgoal-plan-history-v1").length;
+    release!(true);
+    await clearing;
+
+    expect(harness.entries.filter((entry) => entry.customType === "dgoal-plan-history-v1")).toHaveLength(historyEntryCount);
+    const read = await execute(workReadTool, { target: "history" }, harness.ctx);
+    expect(read.details).toMatchObject({ count: 1 });
+    expect(read.content[0].text).toContain("分支 B 历史");
   });
 
   test("superseded and cleared plans archive once in session order", async () => {

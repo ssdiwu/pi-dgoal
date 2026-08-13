@@ -39,16 +39,105 @@ export interface ContinuationState {
 export interface PendingProposalState {
   goalId: string;
   proposal: PlanProposal;
+  /** Hash of the existing Goal/Work List/Contract this upgrade was derived from. Absent only for a new pending Goal. */
+  baseFingerprint?: string;
+}
+
+export interface GoalRuntimeGuardSnapshot {
+  pendingProposal: PendingProposalState | undefined;
+  sessionGeneration: number;
+  goalId: string;
+  goalStatus: GoalState["status"];
+  goalUpdatedAt: number;
+  pauseReason: GoalState["pauseReason"];
+  contractId?: string;
+  revision?: number;
+}
+
+export type PendingPlanDelivery =
+  | {
+    kind: "start" | "resume";
+    marker: string;
+    cleanPrompt: string;
+    prompt: string;
+    phase: "queued" | "sent" | "input_observed" | "preflight_validated";
+    guard: GoalRuntimeGuardSnapshot;
+    targetGoal: GoalState;
+    /** Safe durable checkpoint written at input interception before START is allowed onward. */
+    preparedCheckpoint?: GoalState;
+  }
+  | {
+    kind: "feedback";
+    marker: string;
+    cleanPrompt: string;
+    prompt: string;
+    phase: "queued" | "sent" | "input_observed" | "preflight_validated";
+    guard: GoalRuntimeGuardSnapshot;
+    preserveExistingWorkGoal: boolean;
+  };
+
+export interface PlanDeliveryRun {
+  outcome: "accepted" | "rejected";
+  prompt: string;
+  kind?: PendingPlanDelivery["kind"];
+}
+
+export interface ProposalFeedbackFlow {
+  goalId: string;
+  sessionGeneration: number;
+  baseline: PendingProposalState;
+}
+
+export interface UncertainSessionScope {
+  sessionId: string;
+  branchAnchorMode: "contains_entry" | "exact_leaf";
+  originEntryId?: string;
+  originEntryIds?: string[];
+  exactLeafId?: string | null;
+}
+
+export interface DurabilityQuarantine {
+  sessionId?: string;
+  sessionGeneration?: number;
+  /** contains_entry survives descendants on the same branch; exact_leaf prevents ancestor/sibling ambiguity. */
+  branchAnchorMode?: "contains_entry" | "exact_leaf";
+  originEntryId?: string;
+  /** All leaves that may contain an uncertain append from this transition. */
+  originEntryIds?: string[];
+  exactLeafId?: string | null;
+  safeGoal?: GoalState;
+  unsafeGoal?: GoalState;
+  safePendingProposal?: PendingProposalState;
+  unsafePendingProposal?: PendingProposalState;
+}
+
+export interface ProposalReviewLock {
+  pending: PendingProposalState;
 }
 export interface ExecutionPlanModelErrorRecoveryAuthorization {
   goalId: string;
   input: string;
 }
 
+export interface PendingExecutionPlanUserResume {
+  prompt: string;
+  guard: GoalRuntimeGuardSnapshot;
+  targetGoal: GoalState;
+}
+
+export interface ExecutionPlanUserResumeRun {
+  prompt: string;
+  outcome: "accepted" | "rejected";
+}
+
 
 export interface GoalRuntimeState {
   currentGoal: GoalState | undefined;
   pendingProposal: PendingProposalState | undefined;
+  /** Fresh proposal/start authorization for the current process only. Restored proposals require explicit /dgoal review. */
+  startupGateGoalId: string | undefined;
+  /** Unique per-dialog lock. Prevents an older dialog from releasing a newer review of the same proposal object. Never persisted. */
+  proposalReviewInProgress: ProposalReviewLock | undefined;
   /** Read-only terminal Plan Run snapshots for the current Pi session branch. */
   planHistory: PlanRunHistoryRecord[];
   proposalRetryCount: number;
@@ -61,6 +150,10 @@ export interface GoalRuntimeState {
   explicitPlanUpgradeGoalId: string | undefined;
   /** One-shot real-user authorization to resume the same Execution Plan after model_error. Never persisted. */
   executionPlanModelErrorRecovery: ExecutionPlanModelErrorRecoveryAuthorization | undefined;
+  /** Exact real-user model_error recovery waiting for cancellable user message_end commit. */
+  pendingExecutionPlanUserResume: PendingExecutionPlanUserResume | undefined;
+  /** Direct recovery run retained through agent_settled so a session switch can abort stale Plan context. */
+  executionPlanUserResumeRun: ExecutionPlanUserResumeRun | undefined;
   consecutiveErrors: number;
   /** Consecutive normal turns with no tool execution at all. */
   consecutiveNoProgressTurns: number;
@@ -72,18 +165,42 @@ export interface GoalRuntimeState {
   pendingContinuation: ContinuationState | undefined;
   continuationDeliveryTimer: ReturnType<typeof setTimeout> | undefined;
   cancelledMarkers: Set<string>;
+  /** A START/resume/feedback state change waiting for the host to observe its marked extension input. */
+  pendingPlanDelivery: PendingPlanDelivery | undefined;
+  /** The marked run currently crossing Pi's agent_start/message_end boundary. */
+  planDeliveryRun: PlanDeliveryRun | undefined;
+  /** Markers invalidated by session switches or replacement requests; late host inputs are consumed. */
+  cancelledPlanDeliveryMarkers: Set<string>;
+  /** Exact transformed prompts rejected at preflight and waiting for cancellable user message_end. */
+  rejectedPlanDeliveryPrompts: Map<string, number>;
+  /** Run-order rejection tokens for later message_end transforms that no longer preserve the rejected prompt text. */
+  rejectedPlanDeliveryRuns: number;
+  /** Old proposal retained until feedback produces and durably supersedes it. */
+  proposalFeedbackBaseline: PendingProposalState | undefined;
+  /** Tracks one feedback rewrite turn so agent_end never falls through into Plan execution continuation. */
+  proposalFeedbackFlow: ProposalFeedbackFlow | undefined;
+  /** Fail-closed checkpoint used when appendEntry may have changed the branch before throwing. */
+  durabilityQuarantines: DurabilityQuarantine[];
+  /** Branch-scoped fork markers whose append may have advanced SessionManager memory without durable persistence. */
+  uncertainSessionScopes: UncertainSessionScope[];
   latestSuccessfulModifiedFilePath: string | undefined;
   latestSuccessfulReadFilePath: string | undefined;
   pendingFileToolExecutions: Map<string, PendingFileToolExecution>;
   currentCheckSnapshot: CheckLivenessSnapshot | undefined;
-  /** Increments after every successful session/tree resync; guards old async work from writing into a new branch. */
+  /** Increments before every session/tree resync attempt; even a stale read must invalidate old async work. */
   sessionGeneration: number;
+  /** False after a stale/failed resync or shutdown; mutation paths must fail closed. */
+  sessionProjectionValid: boolean;
+  /** Closes a status modal whose captured Goal/History belongs to an invalidated session projection. */
+  dismissStatusDialog: (() => void) | undefined;
 }
 
 function createInitialGoalRuntimeState(): GoalRuntimeState {
   return {
     currentGoal: undefined,
     pendingProposal: undefined,
+    startupGateGoalId: undefined,
+    proposalReviewInProgress: undefined,
     planHistory: [],
     proposalRetryCount: 0,
     startGoalInProgress: false,
@@ -91,6 +208,8 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     naturalLanguageStartInput: undefined,
     explicitPlanUpgradeGoalId: undefined,
     executionPlanModelErrorRecovery: undefined,
+    pendingExecutionPlanUserResume: undefined,
+    executionPlanUserResumeRun: undefined,
     consecutiveErrors: 0,
     consecutiveNoProgressTurns: 0,
     consecutiveNoDurableProgressTurns: 0,
@@ -100,11 +219,22 @@ function createInitialGoalRuntimeState(): GoalRuntimeState {
     pendingContinuation: undefined,
     continuationDeliveryTimer: undefined,
     cancelledMarkers: new Set(),
+    pendingPlanDelivery: undefined,
+    planDeliveryRun: undefined,
+    cancelledPlanDeliveryMarkers: new Set(),
+    rejectedPlanDeliveryPrompts: new Map(),
+    rejectedPlanDeliveryRuns: 0,
+    proposalFeedbackBaseline: undefined,
+    proposalFeedbackFlow: undefined,
+    durabilityQuarantines: [],
+    uncertainSessionScopes: [],
     latestSuccessfulModifiedFilePath: undefined,
     latestSuccessfulReadFilePath: undefined,
     pendingFileToolExecutions: new Map(),
     currentCheckSnapshot: undefined,
     sessionGeneration: 0,
+    sessionProjectionValid: true,
+    dismissStatusDialog: undefined,
   };
 }
 

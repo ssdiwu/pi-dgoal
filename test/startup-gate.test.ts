@@ -608,7 +608,7 @@ describe("验收契约校验", () => {
     __resetGoalForTest();
   });
 
-  test("新的预审拒绝会清理同一 goal 的旧 pendingProposal", async () => {
+  test("新的预审拒绝会保留同一 goal 的旧 pendingProposal 供再次 review", async () => {
     __resetGoalForTest();
     __setGoalForTest({ id: "pending-semantic-stale", objective: "o", status: "pending", startedAt: 1, updatedAt: 1, iteration: 0 });
     __setProposalSemanticReviewForTest(() => approvedReview);
@@ -618,7 +618,7 @@ describe("验收契约校验", () => {
     __setProposalSemanticReviewForTest(() => ({ decision: "reject", reason: "human-only completion condition" }));
     const rejected = await __executePlanProposalForTest({ objective: "o", verification: "bun test", acceptanceCriteria: [{ criterion: "由甲方签字", evidence: "bun test" }], phases: [{ subject: "p", acceptanceCriteria: criteria }] });
     expect(rejected.details?.error).toBe("semantic review rejected");
-    expect(__getPendingProposalForTest()).toBeUndefined();
+    expect(__getPendingProposalForTest()?.goalId).toBe("pending-semantic-stale");
     __resetGoalForTest();
   });
 
@@ -965,8 +965,9 @@ describe("proposal confirmation options and interaction", () => {
   }) as PlanProposal;
 
   test("摘要/明细选项短且可按 Profile 提供单向切换", () => {
-    expect(buildProposalConfirmationOptions(false)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "展开 task"]);
-    expect(buildProposalConfirmationOptions(true)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "收起 task"]);
+    expect(buildProposalConfirmationOptions(false)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "暂不处理，保留计划", "展开 task"]);
+    expect(buildProposalConfirmationOptions(true)).toEqual(["确认，开始执行", "拒绝，放弃目标", "输入反馈意见", "暂不处理，保留计划", "收起 task"]);
+    expect(buildProposalConfirmationOptions(false, undefined, true)[1]).toBe("拒绝升级，保留原 Plan");
     expect(buildProposalConfirmationOptions(false, proposal()).at(-1)).toBe("切换为 Goal Check Plan");
   });
 
@@ -999,9 +1000,9 @@ describe("proposal confirmation options and interaction", () => {
     expect(feedback).toEqual({ feedback: "请先补回归测试" });
 
     const confirmed = await __handleProposalConfirmationForTest({ cwd: process.cwd(), ui: { confirm: async () => true } } as never, goal(), proposal());
-    const rejected = await __handleProposalConfirmationForTest({ cwd: process.cwd(), ui: { confirm: async () => false } } as never, goal(), proposal());
+    const deferred = await __handleProposalConfirmationForTest({ cwd: process.cwd(), ui: { confirm: async () => false } } as never, goal(), proposal());
     expect(confirmed).toBe("confirmed");
-    expect(rejected).toBe("rejected");
+    expect(deferred).toBe("deferred");
   });
 });
 
@@ -1061,6 +1062,7 @@ describe("formatProposalForConfirm", () => {
           "dgoal.proposal.confirmStart": "Confirm and start",
           "dgoal.proposal.reject": "Reject goal",
           "dgoal.proposal.feedback": "Enter feedback",
+          "dgoal.proposal.defer": "Keep for later",
           "dgoal.proposal.viewTasks": "Show items",
           "dgoal.proposal.backToSummary": "Hide items",
         };
@@ -1068,8 +1070,8 @@ describe("formatProposalForConfirm", () => {
       },
     });
     try {
-      expect(buildProposalConfirmationOptions(false)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Show items"]);
-      expect(buildProposalConfirmationOptions(true)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Hide items"]);
+      expect(buildProposalConfirmationOptions(false)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Keep for later", "Show items"]);
+      expect(buildProposalConfirmationOptions(true)).toEqual(["Confirm and start", "Reject goal", "Enter feedback", "Keep for later", "Hide items"]);
     } finally {
       __setI18nForTest(undefined);
     }

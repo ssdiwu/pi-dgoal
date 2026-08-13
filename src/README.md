@@ -7,7 +7,7 @@ pi-dgoal 运行时代码，按 Work List 数据、Goal Runtime、Pi 启动 wirin
 | 目录 | 职责 | 边界 |
 |---|---|---|
 | `work-list/` | Work List / Work Item / WorkPhase / CheckRecord 类型、soft/planned 校验、依赖与 reducer | 无 Pi、TUI、session 或持久化副作用 |
-| `runtime/` | 九工具、命令、prompt、frontier、Plan Contract 活性、审核编排、双持久键、History 与 TUI 组合 | 主协调层；check 只记录，`work_update` 写完成；不把 TUI 当状态源 |
+| `runtime/` | 九工具、命令、prompt、frontier、Plan Contract 活性、审核编排、两类状态条目、fork scope 元数据、History 与 TUI 组合 | 主协调层；check 只记录，`work_update` 写完成；不把 TUI 当状态源 |
 | `startup/` | Pi 扩展注册、工具/命令注册、session/input/agent/tool 事件 wiring | 由根 `index.ts` 间接调用 `registerDgoal` |
 | `goal-runtime/` | 当前 session 的 Goal、Plan Contract、proposal、History、continuation 与审核运行态容器 | 不负责公共工具或 UI 编排 |
 | `audit/` | 审核结论、进度摘要、用户复核建议、脱敏 checkpoint 与 usage ledger | 不启动 child，不推进 Goal 状态 |

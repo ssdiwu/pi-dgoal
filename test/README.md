@@ -27,6 +27,7 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | `soft-forgetting-e2e-smoke.test.ts` | done Phase 执行上下文只留标题，结构化状态仍完整 |
 | `startup-gate.test.ts` | Goal Check / Staged Check 结构校验、语义预审、Profile 切换、确认 UI 与技术/语义失败分流 |
 | `session-tree-resync.test.ts` | `dgoal-work-v1` session tree / compact 恢复、旧 key 拒绝、迟到审核与 continuation 隔离 |
+| `session-recovery.test.ts` | 冷 startup/resume 安全暂停、fork scope 隔离、pending proposal 手动 review、延后/反馈失败后保留、真实 input/before/user-message-end 提交顺序、append 写前/写后 hard quarantine、同 manager 零补偿追加、fresh manager/JSONL 尾部恢复边界、并发异步回滚隔离、anti-replay resume/upgrade prompt |
 
 ## TUI 与工具投影
 
@@ -36,7 +37,7 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | Current / History Modal、逻辑项导航、Description / frontier / check / History 详情、换行滚动与组件契约 |
 | `tool-result-render.test.ts` | 九工具摘要、白名单化展开、check 活性与创建/更新具体详情 |
 | `show-status.test.ts` | 状态查询、Modal 调用与 fail-soft |
-| `help-command-routing.test.ts` / `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令、history clear、裸命令承接、中断与投递去重 |
+| `help-command-routing.test.ts` / `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令、review/history clear、裸命令承接、中断与投递去重 |
 
 ## 审核、熔断与参数边界
 

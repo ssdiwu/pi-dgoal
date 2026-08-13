@@ -6,7 +6,9 @@ import { visibleWidth } from "@earendil-works/pi-tui";
 import {
   __setCheckSnapshotForTest,
   __resetGoalForTest,
+  __setGoalForTest,
   __setI18nForTest,
+  __setRuntimeStateForTest,
   PlanStatusDialog,
   type GoalState,
   type WorkItem,
@@ -193,6 +195,27 @@ describe("PlanStatusDialog.render", () => {
     expect(lines.join("\n")).toContain("Work List revision 1");
     expect(lines.join("\n")).toContain("当前候选工作已耗尽");
     expect(lines.at(-1)).toContain("╰─");
+  });
+
+  test("恢复状态只显示手动 review/resume 入口，不自动改变 Current", () => {
+    const pending: GoalState = {
+      id: "saved-proposal", objective: "待确认", description: "保存但尚未执行。", status: "pending",
+      startedAt: 1, updatedAt: 1, iteration: 0,
+    };
+    __setGoalForTest(pending);
+    __setRuntimeStateForTest({
+      pendingProposal: { goalId: pending.id, proposal: { objective: pending.objective } as never },
+    });
+    expect(new PlanStatusDialog(pending, mockTheme() as any, () => {}).render(80).join("\n")).toContain("/dgoal review");
+
+    const recovered = goal([p(1, "p1", [], "in_progress")], {
+      status: "paused", pauseReason: "session_recovery", pauseStartedAt: Date.now(),
+    });
+    __setGoalForTest(recovered);
+    __setRuntimeStateForTest({ pendingProposal: undefined });
+    const rendered = new PlanStatusDialog(recovered, mockTheme() as any, () => {}).render(80).join("\n");
+    expect(rendered).toContain("/dgoal resume");
+    expect(rendered).toContain("🎯 实施 v0.8.1");
   });
 
   test("render 缓存命中：相同 (width, elapsedSec, checkSnapshot) 第二次返回 cached", () => {

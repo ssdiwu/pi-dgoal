@@ -153,6 +153,10 @@ describe("Execution Plan liveness integration", () => {
     handlers["input"]({ source: "interactive", text: "继续当前任务" });
     expect(__getRuntimeStateForTest().executionPlanModelErrorRecovery).toEqual({ goalId: paused.id, input: "继续当前任务" });
     const guided = await handlers["before_agent_start"]({ prompt: "继续当前任务", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
+    const recoveryCtx = mockCtx();
+    await handlers["message_end"]({
+      message: { role: "user", content: [{ type: "text", text: "继续当前任务" }], timestamp: Date.now() },
+    }, recoveryCtx);
     expect(__getGoalForTest()).toMatchObject({ id: paused.id, status: "active", workList: { revision: 7, items: [{ evidence: "保留证据" }] } });
     expect(__getRuntimeStateForTest()).toMatchObject({ executionPlanModelErrorRecovery: undefined, consecutiveErrors: 0, consecutiveNoProgressTurns: 0, consecutiveNoDurableProgressTurns: 0 });
     expect(guided.systemPrompt).toContain("当前 Plan Contract：execution");

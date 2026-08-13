@@ -13,7 +13,7 @@ Task Plan 是日常执行脚手架。模型错误应停止无人值守空转，�
 仅当当前 Plan 是 Task Plan 且 `pauseReason=model_error` 时：
 
 1. `interactive` / `RPC` 的真实、非流式用户输入建立一次性恢复授权；授权精确绑定当前 goal ID 与原始输入文本。
-2. `before_agent_start` 仅在 goal ID、暂停原因、Plan 类型与 prompt 全部匹配时恢复同一 Plan；恢复保留 objective、description、task、evidence 与 revision，累计暂停时长并清零模型错误及两类无进展计数。
+2. `before_agent_start` 仅在 goal ID、暂停原因、Plan 类型与 prompt 全部匹配时准备同一 Plan 的执行上下文；精确 user `message_end` 才在有效 abort signal 下持久化恢复。恢复保留 objective、description、task、evidence 与 revision，累计暂停时长并清零模型错误及两类无进展计数；写入失败则保留 paused 内存投影、取消该 run，并按 ADR 0052 硬锁当前 `SessionManager`，不得追加补偿子节点。
 3. 当前用户 turn 本身就是恢复后的执行入口，不额外发送 synthetic continuation。
 4. extension 输入、流式 follow-up、未知来源、被其他扩展改写后的 prompt 均不能触发恢复；一次性授权随后清除并保持 paused。
 5. Phase/Goal Plan 的 `model_error` 仍必须由 `/dgoal resume` 显式恢复；Task Plan 的 `no_progress` 例外继续按 ADR 0049 处理。

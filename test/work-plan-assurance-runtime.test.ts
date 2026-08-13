@@ -70,7 +70,20 @@ async function authorizeCurrentUpgrade(harness: ReturnType<typeof makeHarness>) 
 }
 
 async function confirmPending(harness: ReturnType<typeof makeHarness>) {
+  const sentBefore = harness.sent.length;
   await handleStartupGate(harness.pi, harness.ctx, __getGoalForTest()!);
+  const prompt = harness.sent.length > sentBefore ? harness.sent.at(-1) : undefined;
+  if (prompt?.includes("pi-dgoal-delivery:")) {
+    const inputResult = await harness.handlers.get("input")!({ source: "extension", text: prompt }, harness.ctx);
+    if (inputResult?.action !== "handled") {
+      await harness.handlers.get("before_agent_start")!({ prompt, systemPrompt: "system" }, harness.ctx);
+      await harness.handlers.get("agent_start")!({ type: "agent_start" }, harness.ctx);
+      await harness.handlers.get("message_end")!({
+        type: "message_end",
+        message: { role: "user", content: [{ type: "text", text: prompt }], timestamp: Date.now() },
+      }, harness.ctx);
+    }
+  }
 }
 
 beforeEach(() => {

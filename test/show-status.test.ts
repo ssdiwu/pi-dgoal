@@ -236,4 +236,36 @@ describe("showStatus 回归", () => {
       console.error = realError;
     }
   });
+
+  test("旧分支 status modal 迟到 reject：不向新分支发送旧目标 fallback", async () => {
+    const branchA = goal([phase()]);
+    __setGoalForTest(branchA);
+    const { ctx, calls } = makeCtx();
+    let rejectModal!: (reason?: unknown) => void;
+    ctx.ui.custom = () => new Promise<void>((_resolve, reject) => {
+      rejectModal = reject;
+    });
+
+    const errors: unknown[][] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => {
+      errors.push(args);
+    };
+    try {
+      __showStatusForTest(ctx);
+      const generation = __getRuntimeStateForTest().sessionGeneration;
+      __setRuntimeStateForTest({ sessionGeneration: generation + 1 });
+      __setGoalForTest({ ...goal([phase(2, "branch B")]), id: "branch-b", objective: "新分支目标" });
+
+      rejectModal(new Error("late async boom"));
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(errors).toHaveLength(1);
+      expect(calls.notify).toHaveLength(0);
+    } finally {
+      console.error = realError;
+      __resetGoalForTest();
+    }
+  });
 });

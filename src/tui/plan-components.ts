@@ -35,6 +35,7 @@ export interface PlanTuiDependencies {
   widgetKey: string;
   doneHideDelayMs: number;
   getCurrentGoal: () => GoalState | undefined;
+  getCurrentNotice: (goal: GoalState | undefined) => string | undefined;
   getCurrentCheckSnapshot: () => CheckLivenessSnapshot | undefined;
   isGoalRunning: (status: GoalStatus | undefined) => boolean;
   renderPlanLines: (goal: GoalState | undefined, opts: { expandItems: boolean; activityFrame?: number }, width?: number) => string[];
@@ -443,8 +444,9 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     );
 
     const hasCurrent = Boolean(this.goal?.workList);
+    const currentNotice = this.tab === "current" ? this.deps.getCurrentNotice(this.goal) : undefined;
     if (this.tab === "current" && !hasCurrent) {
-      lines.push(truncateToWidth(" " + th.fg("muted", this.deps.t(this.goal ? "status.dialogEmpty" : "status.dialogNoGoal")), width));
+      lines.push(...wrapModalText(" " + th.fg("muted", currentNotice ?? this.deps.t(this.goal ? "status.dialogEmpty" : "status.dialogNoGoal")), width, 1));
       if (!this.goal) lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogStartCommand")), width));
       lines.push(truncateToWidth(" " + th.fg("dim", this.deps.t("status.dialogCloseHint")), width));
     } else if (this.tab === "history" && historyCount === 0) {
@@ -452,6 +454,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     }
 
     if (this.tab === "current" && hasCurrent && this.goal) {
+      if (currentNotice) lines.push(...wrapModalText(" " + th.fg("muted", currentNotice), width, 1));
       const heading = " " + th.fg("accent", th.bold(this.deps.buildHeadingLine(this.goal)));
       lines.push(...wrapModalText(heading, width, 1));
       const activityLine = this.deps.formatCheckActivityLine(checkSnapshot);
