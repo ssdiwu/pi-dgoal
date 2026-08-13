@@ -4,16 +4,16 @@
 
 ## 三条建立路径
 
-### soft Work List：默认轻量入口
+### soft Work List：被动跟踪入口
 
 ```text
-普通多步工作值得跟踪
+用户明确要记录、整理、等待后续输入或不要求本轮完成
   → before_agent_start 注入 soft guidance
-  → agent 视需要调用 work_list
+  → agent 调用 work_list
   → 立即 active；不启动 continuation / no-progress / auditor
 ```
 
-讨论、解释、能力问答和单步回答不建清单。`work_list` 可原子重写当前 soft Work List；全部 Work Item terminal 且真实 Phase 显式 done 后自动收口并返回总结。
+讨论、解释、能力问答和单步回答不建清单。修复、实现、验证、交付等有明确交付结果且无需用户继续决策的多步请求，必须直接选择 Execution Plan，不能降级为 soft Work List。`work_list` 可原子重写当前 soft Work List；全部 Work Item terminal 且真实 Phase 显式 done 后自动收口并返回总结。
 
 ### Execution Plan：直接增加 Until Done
 
@@ -60,14 +60,15 @@ Profile 切换由确认 UI 返回反馈，要求 agent 用另一 proposal 工具
 
 使用 `setWidget("dgoal-plan", ..., { placement: "aboveEditor" })`：
 
-- heading 显示 Profile、聚合 Work Item 进度、耗时与按终端宽度裁切的 objective；
+- soft Work List 的 heading 显示“已保存，等待下一轮”和聚合进度；不显示递增耗时，也不展示 pause / resume；
+- active / paused Plan Contract 的 heading 显示 Profile、聚合 Work Item 进度和耗时；操作提示仅显示当前可用的 pause 或 resume；
 - flat Work List 默认显示当前 Work Item；有 Phase 时显示真实 Phase 主干；不存在隐藏 Phase；
 - `Ctrl+O` 展开 Work Item 与建检活性；active 日常视图最多 10 行；
 - done 文本使用删除线，状态用 `○ / ◐ / ✓ / ⚠ / ◌` 等字符；
 - 持续浮层不展示完整 Description；详细字段由工具展开或 Status Modal 承担；
 - Goal 完成时展示短暂 done snapshot 后隐藏；即使动画失败，状态已先清理。
 
-刷新时机包括九工具结束、agent turn、Plan 激活、session start/tree/compact 与 check 活性变化。状态机和持久化不依赖 TUI 成功。
+创建 Work List 或直接创建 Execution Plan 时会先绑定 widget，再刷新投影；刷新时机还包括九工具结束、agent turn、Plan 激活、session start/tree/compact 与 check 活性变化。状态机和持久化不依赖 TUI 成功。
 
 ## `/dgoal s` Current / History Modal
 
@@ -81,7 +82,7 @@ Profile 切换由确认 UI 返回反馈，要求 agent 用另一 proposal 工具
 
 ## 状态栏
 
-`setStatus("dgoal", …)` 显示 starting / active / paused / done 与 Profile。business rejection 保持 active。soft Work List 不显示 Plan pause 语义。
+`setStatus("dgoal", …)` 对 soft Work List 显示“已保存清单”；Plan Contract 才显示 starting / active / paused / done。business rejection 保持 active。soft Work List 不显示 Plan pause 语义。
 
 ## 启动兜底
 

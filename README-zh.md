@@ -10,8 +10,8 @@ Pi 扩展：每个 session Goal 只维护**一份 Work List**，并只增加当�
 
 | 模式 | 适用场景 | 自动续跑 | 独立建检 |
 |---|---|---:|---|
-| **软性 Work List** | 普通多步工作值得跨 turn 跟踪 | 无 | 无 |
-| **Execution Plan** | agent 必须 Until Done（持续执行） | 有 | 无 |
+| **软性 Work List** | 用户明确只需记录、等待后续输入，而非由 agent 自主交付 | 无 | 无 |
+| **Execution Plan** | 请求有明确交付结果，且 agent 无需继续等待用户决策即可完成 | 有 | 无 |
 | **Goal Check Plan** | 最终结果需要独立终审 | 有 | `goal_check` |
 | **Staged Check Plan** | 真实串行 Phase 与最终结果都需要独立建检 | 有 | `phase_check` + `goal_check` |
 
@@ -37,9 +37,9 @@ pi -e ./index.ts
 
 ## 用法
 
-### 普通任务：软性 Work List
+### 被动跟踪：软性 Work List
 
-值得跟踪时，agent 调用 `work_list`，再用 `work_create` / `work_update` 推进 Work Item。
+只有在用户要为后续回合记录工作、或明确不要求当前完成时，agent 才使用 `work_list`。修复、实现、验证等有明确交付的请求必须进入 `execution_plan`，不能降级为软清单。
 
 ```text
 work_list
@@ -48,7 +48,7 @@ work_list
 → 自动收口 + 用户可见完成总结
 ```
 
-软清单跨 turn 持久化，但不启动 continuation（自动续跑）、no-progress 计数或 auditor（独立审核）。保持 soft 时，Work Item 的 Description 与 evidence 可省略。全部 Work Item 进入 `done` / `abandoned` 且真实 Phase 已显式完成后，当前 Goal 会原子清除，并返回结构化完成信号。
+软清单跨 turn 持久化，但不启动 continuation（自动续跑）、no-progress 计数或 auditor（独立审核）。TUI（终端界面）会明确显示“已保存，等待下一轮”，不显示递增计时或暂停/继续控制。保持 soft 时，Work Item 的 Description 与 evidence 可省略。全部 Work Item 进入 `done` / `abandoned` 且真实 Phase 已显式完成后，当前 Goal 会原子清除，并返回结构化完成信号。
 
 ### 持续工作：Execution Plan
 

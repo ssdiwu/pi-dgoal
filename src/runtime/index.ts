@@ -281,12 +281,16 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "zh-CN",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal s查询 | p停止 | r继续 | c清理",
+      "overlay.commandsSoft": "/dgoal s查询 | c清理",
+      "overlay.commandsActive": "/dgoal s查询 | p暂停 | c清理",
+      "overlay.commandsPaused": "/dgoal s查询 | r继续 | c清理",
+      "overlay.softSaved": "已保存，等待下一轮",
       "overlay.showItems": "⌨ Ctrl+O 展开详情 · {commands}",
       "overlay.hideItems": "⌨ Ctrl+O 收起详情 · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 完成",
       "status.paused": "🔁 暂停",
+      "status.savedList": "☷ 已保存清单",
       "status.starting": "🔁 启动",
       "status.active": "🔁 进行 #{iteration}",
       "proposal.objective": "目标：{objective}",
@@ -336,7 +340,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.pauseReason": "暂停原因：{reason}",
       "status.pauseDetail": "暂停说明：{detail}",
       "status.iteration": "轮次：{iteration}",
-      "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
+      "status.commands": "命令：{commands}",
       "status.dialogEmpty": "(无 plan/无 phase可显示)",
       "status.dialogNoGoal": "当前没有进行中的 dgoal",
       "status.dialogHistoryEmpty": "当前 session 没有终态 Plan Run History",
@@ -457,12 +461,16 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "en",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
+      "overlay.commandsSoft": "/dgoal status | clear",
+      "overlay.commandsActive": "/dgoal status | pause | clear",
+      "overlay.commandsPaused": "/dgoal status | resume | clear",
+      "overlay.softSaved": "saved, awaiting the next turn",
       "overlay.showItems": "⌨ Ctrl+O expand details · {commands}",
       "overlay.hideItems": "⌨ Ctrl+O collapse details · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 done",
       "status.paused": "🔁 paused",
+      "status.savedList": "☷ saved Work List",
       "status.starting": "🔁 starting…",
       "status.active": "🔁 active #{iteration}",
       "proposal.objective": "Goal: {objective}",
@@ -512,7 +520,7 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.pauseReason": "Pause reason: {reason}",
       "status.pauseDetail": "Pause detail: {detail}",
       "status.iteration": "Iteration: {iteration}",
-      "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
+      "status.commands": "Commands: {commands}",
       "status.dialogEmpty": "(no plan / no phases to display)",
       "status.dialogNoGoal": "No active dgoal",
       "status.dialogHistoryEmpty": "No terminal Plan Run History in this session",
@@ -2034,6 +2042,7 @@ export const workListTool = definePublicTool({
     resetAuditorWorkspaceTracker();
     persistWorkGoal(goalRuntimeState.currentGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    ensurePlanOverlay(ctx);
     safeUpdatePlanOverlay();
     return {
       content: [{ type: "text", text: `已建立软性 Work List：${objective}（${flattenWorkItems(built.workList).length} 个 Work Item）` }],
@@ -2368,6 +2377,7 @@ export const executionPlanTool = definePublicTool({
     resetAuditorWorkspaceTracker();
     persistWorkGoal(goalRuntimeState.currentGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    ensurePlanOverlay(ctx);
     safeUpdatePlanOverlay();
     return {
       content: [{ type: "text", text: `${existingContract ? "已重组" : current ? "已升级" : "已建立"} Execution Plan：${objective}` }],
@@ -3167,10 +3177,10 @@ function buildStatusNotifyMessage(goal: GoalState) {
   return [
     t("status.objective", { objective: goal.objective }),
     t("status.description", { description: goal.description }),
-    t("status.state", { status: goal.status }),
+    t("status.state", { status: formatStatus(goal) ?? goal.status }),
     ...(pauseReason ? [pauseReason] : []),
-    t("status.iteration", { iteration: goal.iteration }),
-    t("status.commands"),
+    ...(goal.contract ? [t("status.iteration", { iteration: goal.iteration })] : []),
+    t("status.commands", { commands: overlayCommands(goal) }),
   ].join("\n");
 }
 
@@ -6124,6 +6134,11 @@ function workProfileCompactLabel(goal: GoalState): string {
       : goal.contract?.profile === "staged_check" ? "S" : "W";
 }
 
+function overlayCommands(goal: GoalState): string {
+  if (!goal.contract) return t("overlay.commandsSoft");
+  return goal.status === "paused" ? t("overlay.commandsPaused") : t("overlay.commandsActive");
+}
+
 function fitOverlayLines(lines: string[], width: number | undefined): string[] {
   if (width === undefined) return lines;
   if (!Number.isFinite(width) || width <= 0) return [];
@@ -6142,20 +6157,20 @@ function buildOverlayHeading(
   goal: GoalState,
   progress: string,
   compactProgress: string,
-  elapsed: string,
-  compactElapsed: string,
+  elapsed: string | undefined,
+  compactElapsed: string | undefined,
   width: number | undefined,
 ): string {
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
-  if (width === undefined) return `🎯 ${truncateLine(objectiveFirstLine, 40)} · ${progress} ⏱️ ${elapsed}`;
+  const hasElapsed = Boolean(elapsed && compactElapsed);
+  const suffixes = hasElapsed
+    ? [` · ${progress} ⏱️ ${elapsed}`, ` · ${compactProgress} ⏱${compactElapsed}`]
+    : [` · ${progress}`, ` · ${compactProgress}`];
+  if (width === undefined) return `🎯 ${truncateLine(objectiveFirstLine, 40)}${suffixes[0]}`;
   if (!Number.isFinite(width) || width <= 0) return "";
 
   const maxWidth = Math.floor(width);
   const prefix = "🎯 ";
-  const suffixes = [
-    ` · ${progress} ⏱️ ${elapsed}`,
-    ` · ${compactProgress} ⏱${compactElapsed}`,
-  ];
   for (const suffix of suffixes) {
     const objectiveWidth = maxWidth - visibleWidth(prefix) - visibleWidth(suffix);
     if (objectiveWidth < 1) continue;
@@ -6163,12 +6178,13 @@ function buildOverlayHeading(
     return `${prefix}${objective}${suffix}`;
   }
 
-  const compactStatus = `${compactProgress} ⏱${compactElapsed}`;
+  const compactStatus = hasElapsed ? `${compactProgress} ⏱${compactElapsed}` : compactProgress;
   if (visibleWidth(compactStatus) <= maxWidth) return compactStatus;
-  const progressWithTimer = `${compactProgress} ⏱`;
-  if (visibleWidth(progressWithTimer) <= maxWidth) return progressWithTimer;
-  const essentialWithTimer = `${compactProgress.split(/\s+/).slice(0, 2).join(" ")} ⏱`;
-  if (visibleWidth(essentialWithTimer) <= maxWidth) return essentialWithTimer;
+  const progressMarker = hasElapsed ? `${compactProgress} ⏱` : compactProgress;
+  if (visibleWidth(progressMarker) <= maxWidth) return progressMarker;
+  const essential = compactProgress.split(/\s+/).slice(0, 2).join(" ");
+  const essentialMarker = hasElapsed ? `${essential} ⏱` : essential;
+  if (visibleWidth(essentialMarker) <= maxWidth) return essentialMarker;
   if (visibleWidth(compactProgress) <= maxWidth) return compactProgress;
   return truncateToWidth(compactProgress, maxWidth, "…");
 }
@@ -6178,10 +6194,12 @@ function renderWorkListLines(goal: GoalState, opts: RenderPlanOptions, width?: n
   const allItems = flattenWorkItems(workList);
   const terminal = allItems.filter((item) => isTerminalItemStatus(item.status)).length;
   const donePhases = workList.phases.filter((phase) => phase.status === "done").length;
+  const isSoft = !goal.contract;
   const label = workProfileLabel(goal);
-  const progress = `${label} · ${terminal}/${allItems.length} items${workList.phases.length ? ` · ${donePhases}/${workList.phases.length} phases` : ""}`;
+  const progress = `${label} · ${terminal}/${allItems.length} items${workList.phases.length ? ` · ${donePhases}/${workList.phases.length} phases` : ""}${isSoft ? ` · ${t("overlay.softSaved")}` : ""}`;
   const compactProgress = `${workProfileCompactLabel(goal)} ${terminal}/${allItems.length}${workList.phases.length ? ` ${donePhases}/${workList.phases.length}p` : ""}`;
-  const heading = buildOverlayHeading(goal, progress, compactProgress, formatElapsed(getGoalElapsedMs(goal)), formatCompactElapsed(getGoalElapsedMs(goal)), width);
+  const elapsedMs = isSoft ? undefined : getGoalElapsedMs(goal);
+  const heading = buildOverlayHeading(goal, progress, compactProgress, elapsedMs === undefined ? undefined : formatElapsed(elapsedMs), elapsedMs === undefined ? undefined : formatCompactElapsed(elapsedMs), width);
   const activitySuffix = formatActivitySuffix(opts.activityFrame);
   const expanded = opts.expandItems || goal.status === "done";
   const bodyLines: string[] = [];
@@ -6201,7 +6219,7 @@ function renderWorkListLines(goal: GoalState, opts: RenderPlanOptions, width?: n
   const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
   if (expanded && activityLine) bodyLines.unshift(`│ ${truncateLine(activityLine, 72)}`);
   if (goal.status === "done") return fitOverlayLines([heading, ...bodyLines], width);
-  const commands = t("overlay.commands");
+  const commands = overlayCommands(goal);
   const hintLine = expanded ? t("overlay.hideItems", { commands }) : t("overlay.showItems", { commands });
   const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2;
   if (bodyLines.length <= maxBodyLines) return fitOverlayLines([heading, ...bodyLines, hintLine], width);
@@ -6379,17 +6397,17 @@ export function buildPlanHistoryDetailLines(record: PlanRunHistoryRecord | undef
   return lines;
 }
 
-/** Build heading only — for pinned top of scrollable modal. 量化到秒避免 elapsed 跳变导致每行失效。 */
+/** Build heading only — for pinned top of scrollable modal. */
 export function buildHeadingLine(goal: GoalState): string {
   const items = goal.workList ? flattenWorkItems(goal.workList) : [];
   const progress = goal.workList
-    ? `${workProfileLabel(goal)} · ${items.filter((item) => isTerminalItemStatus(item.status)).length}/${items.length} items${goal.workList.phases.length ? ` · ${goal.workList.phases.filter((phase) => phase.status === "done").length}/${goal.workList.phases.length} phases` : ""}`
+    ? `${workProfileLabel(goal)} · ${items.filter((item) => isTerminalItemStatus(item.status)).length}/${items.length} items${goal.workList.phases.length ? ` · ${goal.workList.phases.filter((phase) => phase.status === "done").length}/${goal.workList.phases.length} phases` : ""}${goal.contract ? "" : ` · ${t("overlay.softSaved")}`}`
     : "Work List unavailable";
-  const elapsed = formatElapsed(getGoalElapsedMs(goal));
+  const elapsed = goal.contract ? ` ⏱️ ${formatElapsed(getGoalElapsedMs(goal))}` : "";
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
   const pauseReason = formatPauseReasonLabel(goal);
   const labels = [pauseReason].filter(Boolean).join(" · ");
-  return `🎯 ${objectiveFirstLine} · ${progress} ⏱️ ${elapsed}${labels ? ` · ${labels}` : ""}`;
+  return `🎯 ${objectiveFirstLine} · ${progress}${elapsed}${labels ? ` · ${labels}` : ""}`;
 }
 
 
@@ -6416,6 +6434,7 @@ export function formatStatus(goal: GoalState | undefined) {
   if (goal.status === "done") return t("status.done");
   if (goal.status === "paused") return t("status.paused");
   if (goal.status === "pending") return t("status.starting");
+  if (!goal.contract) return t("status.savedList");
   return t("status.active", { iteration: goal.iteration });
 }
 

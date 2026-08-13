@@ -8,6 +8,11 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- **交付任务不再误降级为软清单**：默认 agent 指引现在将修复、实现、验证和其他无需继续等待用户决策的明确交付路由到 `execution_plan`；soft `work_list` 仅用于记录或等待后续输入。
+- **Work List TUI 状态一致性**：soft Work List 显示“已保存，等待下一轮”，不再递增计时或显示无效的暂停/继续控制；首次直接创建 Work List 或 Execution Plan 会挂载常驻浮层，避免只剩工具回执和状态栏。
+
 ## [0.8.1] - 2026-08-08
 
 ### Breaking

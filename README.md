@@ -10,8 +10,8 @@ A Pi extension that keeps **one Work List per session goal** and adds only the a
 
 | Mode | Choose it when | Continuation | Independent checks |
 |---|---|---:|---|
-| **Soft Work List** | Ordinary multi-step work benefits from visible cross-turn tracking | No | None |
-| **Execution Plan** | The agent must keep working Until Done | Yes | None |
+| **Soft Work List** | The user explicitly wants tracking or to wait for a later input—not autonomous delivery | No | None |
+| **Execution Plan** | The request has a clear deliverable the agent can complete without another user decision | Yes | None |
 | **Goal Check Plan** | The final outcome needs an independent acceptance check | Yes | `goal_check` |
 | **Staged Check Plan** | Real serial Phases and the final outcome each need independent checks | Yes | `phase_check` + `goal_check` |
 
@@ -37,9 +37,9 @@ pi -e ./index.ts
 
 ## Usage
 
-### Ordinary work: Soft Work List
+### Passive tracking: Soft Work List
 
-When tracking adds value, the agent calls `work_list` and advances Work Items with `work_create` / `work_update`.
+Use `work_list` only to record work for a later turn or when the user does not request completion now. A repair, implementation, validation, or other clear deliverable belongs in `execution_plan`, not a soft list.
 
 ```text
 work_list
@@ -48,7 +48,7 @@ work_list
 → automatic close + visible completion summary
 ```
 
-A soft list persists across turns but starts no continuation, no no-progress counters, and no auditor. Description and evidence are optional while it remains soft. Once all Work Items are terminal (`done` or `abandoned`) and every real Phase is explicitly `done`, the current Goal is cleared atomically and the tool returns a structured completion signal.
+A soft list persists across turns but starts no continuation, no no-progress counters, and no auditor. Its TUI projection says that it is saved and awaiting the next turn; it does not show a running elapsed timer or pause/resume controls. Description and evidence are optional while it remains soft. Once all Work Items are terminal (`done` or `abandoned`) and every real Phase is explicitly `done`, the current Goal is cleared atomically and the tool returns a structured completion signal.
 
 ### Sustained work: Execution Plan
 

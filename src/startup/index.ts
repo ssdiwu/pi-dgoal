@@ -115,7 +115,7 @@ export function buildNaturalLanguageStartGuidance(): string {
 }
 
 export function buildWorkListDefaultGuidance(): string {
-  return "<work_list_default>\n普通多步工作先用 work_list 建立唯一软性清单；清单跨 turn 保留，但不自动续跑。确实需要 Until Done 时用 execution_plan 在同一 Work List 上增加执行保障。需要独立终审或逐 Phase 建检时，说明理由并请用户显式授权 /dgoal；未经授权不得调用 goal_plan 或 staged_plan。纯讨论、解释、单步回答不建清单。\n</work_list_default>";
+  return "<work_list_default>\n根据用户请求的完成承诺选择保障：修复、实现、验证、交付等有明确交付结果且不需要用户继续决策的多步工作，直接用 execution_plan 建立或升级为 Until Done；不要把这类交付降级成 work_list。work_list 只用于用户明确要记录、整理、等待后续输入或不要求本轮完成的轻量清单；它跨 turn 保留，但不自动续跑。需要独立终审或逐 Phase 建检时，说明理由并请用户显式授权 /dgoal；未经授权不得调用 goal_plan 或 staged_plan。纯讨论、解释、单步回答不建清单。\n</work_list_default>";
 }
 
 export function registerDgoal(pi: ExtensionAPI) {

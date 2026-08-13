@@ -3,12 +3,14 @@ import { buildNaturalLanguageStartGuidance, buildWorkListDefaultGuidance, isNatu
 import { executionPlanTool, goalPlanTool, stagedPlanTool, workListTool } from "../index.ts";
 
 describe("ADR 0051 activation boundary", () => {
-  test("cold guidance defaults to one soft Work List and keeps higher assurance explicit", () => {
+  test("cold guidance routes autonomous delivery to Execution and reserves soft Work List for tracking", () => {
     const guidance = buildWorkListDefaultGuidance();
     expect(guidance).toContain("work_list");
-    expect(guidance).toContain("唯一软性清单");
+    expect(guidance).toContain("只用于用户明确要记录、整理、等待后续输入");
     expect(guidance).toContain("不自动续跑");
+    expect(guidance).toContain("明确交付");
     expect(guidance).toContain("execution_plan");
+    expect(guidance).toContain("Until Done");
     expect(guidance).toContain("显式授权 /dgoal");
     expect(guidance).toContain("未经授权不得调用 goal_plan 或 staged_plan");
     expect(guidance).toContain("纯讨论、解释、单步回答不建清单");

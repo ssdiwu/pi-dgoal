@@ -141,6 +141,31 @@ describe("切片3 · done phase 持久显示", () => {
 });
 
 
+describe("切片3 · soft Work List 的刷新边界", () => {
+  test("soft Work List 挂载浮层但不启动每秒计时刷新", () => {
+    const realSetInterval = globalThis.setInterval;
+    let intervalCalls = 0;
+    globalThis.setInterval = (() => {
+      intervalCalls += 1;
+      return 1 as unknown as ReturnType<typeof setInterval>;
+    }) as typeof setInterval;
+    const overlay = new PlanOverlay();
+    __setGoalForTest(goal([], {
+      contract: undefined,
+      workList: { items: [t(1, "等待下一轮")], phases: [], nextItemId: 2, nextPhaseId: 1, revision: 1 },
+    }));
+    try {
+      overlay.setUI({ setWidget: () => {}, getToolsExpanded: () => false });
+      overlay.update();
+      expect(intervalCalls).toBe(0);
+    } finally {
+      globalThis.setInterval = realSetInterval;
+      overlay.dispose();
+      __resetGoalForTest();
+    }
+  });
+});
+
 describe("切片3 · PlanOverlay reload 恢复", () => {
   test("重载恢复后 done phase 仍持久显示", () => {
     const widgets: unknown[] = [];
@@ -244,13 +269,37 @@ describe("切片3 · 建检活性片段", () => {
 });
 
 describe("切片3 · expandItems（Ctrl+O 展开 Work Item）", () => {
-  test("expandItems=false 仅显示当前可推进 Work Item", () => {
+  test("active Plan 的提示只显示当前可用的暂停命令", () => {
     __setI18nForTest(undefined);
     const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
     const lines = renderPlanLines(g, noHide);
     expect(lines.some((l) => l.includes("task1"))).toBe(true);
     expect(lines.at(-1)).toContain("Ctrl+O 展开详情");
-    expect(lines.at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
+    expect(lines.at(-1)).toContain("/dgoal s查询 | p暂停 | c清理");
+    expect(lines.at(-1)).not.toContain("r继续");
+  });
+
+  test("soft Work List 显示为已保存且不冒充正在执行", () => {
+    __setI18nForTest(undefined);
+    const g = goal([], {
+      contract: undefined,
+      workList: { items: [t(1, "等待下一轮")], phases: [], nextItemId: 2, nextPhaseId: 1, revision: 1 },
+    });
+    const lines = renderPlanLines(g, noHide);
+    expect(lines[0]).toContain("Work List");
+    expect(lines[0]).toContain("已保存");
+    expect(lines[0]).not.toContain("⏱");
+    expect(lines.at(-1)).toContain("/dgoal s查询 | c清理");
+    expect(lines.at(-1)).not.toContain("p暂停");
+    expect(lines.at(-1)).not.toContain("r继续");
+  });
+
+  test("paused Plan 的提示只显示继续命令", () => {
+    __setI18nForTest(undefined);
+    const g = goal([p(1, "阶段", [t(1, "task1")], "in_progress")], { status: "paused" });
+    const lines = renderPlanLines(g, noHide);
+    expect(lines.at(-1)).toContain("/dgoal s查询 | r继续 | c清理");
+    expect(lines.at(-1)).not.toContain("p暂停");
   });
 
   test("expandItems=true 用 subject 后的动态省略点表示 in_progress", () => {
@@ -267,7 +316,7 @@ describe("切片3 · expandItems（Ctrl+O 展开 Work Item）", () => {
     expect(frames[2]).toContain("task1...");
     expect(frames.every((line) => !line.includes("旧进行时文案"))).toBe(true);
     expect(renderPlanLines(g, { expandItems: true }).at(-1)).toContain("Ctrl+O 收起详情");
-    expect(renderPlanLines(g, { expandItems: true }).at(-1)).toContain("/dgoal s查询 | p停止 | r继续 | c清理");
+    expect(renderPlanLines(g, { expandItems: true }).at(-1)).toContain("/dgoal s查询 | p暂停 | c清理");
   });
 
   test("进行中 phase 内的 done task 在展开态仍显示删除线", () => {
@@ -293,11 +342,11 @@ describe("切片3 · expandItems（Ctrl+O 展开 Work Item）", () => {
     expect(lines.some((l) => l.includes("active-task"))).toBe(true);
   });
 
-  test("pi-di18n 可覆盖浮层提示为英文", () => {
+  test("pi-di18n 可覆盖 active Plan 的浮层提示为英文", () => {
     __setI18nForTest({
       t(fullKey, params) {
         const messages: Record<string, string> = {
-          "dgoal.overlay.commands": "/dgoal status | pause | resume | clear",
+          "dgoal.overlay.commandsActive": "/dgoal status | pause | clear",
           "dgoal.overlay.showItems": "⌨ Ctrl+O expand details · {commands}",
           "dgoal.overlay.hideItems": "⌨ Ctrl+O collapse details · {commands}",
           "dgoal.overlay.more": "└─ +{count} more",
@@ -309,7 +358,7 @@ describe("切片3 · expandItems（Ctrl+O 展开 Work Item）", () => {
       const g = goal([p(1, "阶段", [t(1, "task1", "in_progress")], "in_progress")]);
       const lines = renderPlanLines(g, { expandItems: false });
       expect(lines.at(-1)).toContain("Ctrl+O expand details");
-      expect(lines.at(-1)).toContain("/dgoal status | pause | resume | clear");
+      expect(lines.at(-1)).toContain("/dgoal status | pause | clear");
     } finally {
       __setI18nForTest(undefined);
     }

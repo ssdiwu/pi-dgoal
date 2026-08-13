@@ -138,7 +138,9 @@ export class PlanOverlayComponent {
         this.terminalInputUnsubscribe = undefined;
       }
     }
-    this.startTick();
+    const goal = this.doneSnapshot ?? this.deps.getCurrentGoal();
+    if (goal?.contract && this.deps.isGoalRunning(goal.status)) this.startTick();
+    else this.stopTick();
   }
 
   private syncExpandedState(): boolean {
@@ -173,7 +175,7 @@ export class PlanOverlayComponent {
       if (!this.ui) return;
       this.syncExpandedState();
       const goal = this.doneSnapshot ?? this.deps.getCurrentGoal();
-      if (goal && this.deps.isGoalRunning(goal.status)) this.startTick();
+      if (goal?.contract && this.deps.isGoalRunning(goal.status)) this.startTick();
       else this.stopTick();
       const renderOptions = { expandItems: this.expandItems };
       const preview = this.deps.renderPlanLines(goal, renderOptions);

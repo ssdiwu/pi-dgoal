@@ -11,6 +11,7 @@ import {
   __setPlanOverlayForTest,
   disposePlanOverlay,
   PlanStatusDialog,
+  workListTool,
   type GoalState,
   type WorkPhase,
 } from "../index.ts";
@@ -84,6 +85,38 @@ describe("showStatus 回归", () => {
     expect(calls.notify).toHaveLength(1);
     expect(calls.notify[0][0]).toContain("当前没有进行中的 dgoal");
     expect(calls.notify[0][1]).toBe("info");
+  });
+
+  test("soft Work List 的状态栏和降级状态文本均显示已保存", () => {
+    __setGoalForTest({ ...goal(), contract: undefined });
+    const { ctx, calls } = makeCtx("json");
+
+    __showStatusForTest(ctx);
+
+    expect(calls.setStatus.at(-1)).toEqual(["dgoal", "☷ 已保存清单"]);
+    expect(calls.notify.at(-1)?.[0]).toContain("状态：☷ 已保存清单");
+    expect(calls.notify.at(-1)?.[0]).not.toContain("轮次：");
+  });
+
+  test("直接建立 Work List 会在缺失 overlay 时挂载 dgoal-plan widget", async () => {
+    __resetGoalForTest();
+    __setPlanOverlayForTest(undefined);
+    const { ctx } = makeCtx();
+    const widgets: Array<{ key: string; value: unknown }> = [];
+    ctx.ui.setWidget = (key: string, value: unknown) => widgets.push({ key, value });
+    try {
+      await workListTool.execute("call", {
+        objective: "创建后挂载浮层",
+        description: "没有 session_start 时也要可见。",
+        items: [{ subject: "验证 widget" }],
+        phases: [],
+      }, undefined, undefined, ctx);
+      expect(widgets.some((entry) => entry.key === "dgoal-plan" && typeof entry.value === "function")).toBe(true);
+    } finally {
+      disposePlanOverlay();
+      __setPlanOverlayForTest(undefined);
+      __resetGoalForTest();
+    }
   });
 
   test("有 currentGoal：TUI 模式走 ctx.ui.custom + center overlay 配置", async () => {
