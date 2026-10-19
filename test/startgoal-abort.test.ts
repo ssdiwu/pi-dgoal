@@ -2,7 +2,7 @@
 // 根因：startGoal 此前不 abort 当前 agent turn（clearGoal 有 ctx.abort，startGoal 没有）。
 // 修复：startGoal 入口若 !isIdle 则 ctx.abort；并用 startGoalInProgress 标志包住
 // pending 创建→propose 投递整段，抑制被中断 turn 的 agent_end 触发 handleStartupGate 双发 propose。
-import { describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import {
   __executePlanProposalForTest,
@@ -12,11 +12,20 @@ import {
   __isStartGoalInProgressForTest,
   __resetGoalForTest,
   __resumeGoalForTest,
+  __setApiForTest,
   __setGoalForTest,
   __setRuntimeStateForTest,
   __startGoalForTest,
+  consumePlanDeliveryInput,
+  finalizePlanDeliveryMessage,
+  preflightPlanDelivery,
   type GoalState,
 } from "../index.ts";
+
+beforeEach(() => {
+  __resetGoalForTest();
+  __setApiForTest(undefined);
+});
 
 function makeCtx(opts: { isIdle: boolean; abort?: () => void }) {
   return {
@@ -145,6 +154,10 @@ describe("/dgoal 启动暂停当前 LLM（startGoal abort）", () => {
       cwd: "/tmp",
     };
     await __resumeGoalForTest(pi, ctx as never);
+    expect(__getGoalForTest()?.status).toBe("paused");
+    expect(consumePlanDeliveryInput(sent[0], ctx as never)).toBe("allow");
+    expect(preflightPlanDelivery(sent[0])).toMatchObject({ outcome: "accepted" });
+    expect(finalizePlanDeliveryMessage({ role: "user", content: [{ type: "text", text: sent[0] }] }, ctx as never)?.outcome).toBe("accepted");
     expect(__getGoalForTest()?.status).toBe("active");
     expect(__getRuntimeStateForTest().consecutiveNoProgressTurns).toBe(0);
     expect(__getRuntimeStateForTest().consecutiveNoDurableProgressTurns).toBe(0);

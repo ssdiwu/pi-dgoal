@@ -19,6 +19,7 @@ describe("/dgoal command aliases", () => {
     expect(__parseCommandForTest("r")).toEqual({ kind: "resume" });
     expect(__parseCommandForTest("clear")).toEqual({ kind: "clear" });
     expect(__parseCommandForTest("c")).toEqual({ kind: "clear" });
+    expect(__parseCommandForTest("review")).toEqual({ kind: "review" });
   });
 
   test("stop is no longer treated as clear", () => {
@@ -62,6 +63,26 @@ describe("v0.5.2 切片8 · 裸 /dgoal 承接前文启动", () => {
     } as never;
     const pi = { appendEntry: (...args: unknown[]) => writes.push(args) } as never;
     await __startGoalForTest("", pi, ctx);
+    expect(notes.at(-1)).toContain("无前文共识可承接");
+    expect(writes).toHaveLength(0);
+  });
+
+  test("宿主缺少 getBranch 时不从整棵 session tree 承接其它分支对话", async () => {
+    const notes: string[] = [];
+    const writes: unknown[] = [];
+    const ctx = {
+      sessionManager: {
+        getEntries: () => [{
+          type: "message",
+          message: { role: "user", content: [{ type: "text", text: "请实现另一个分支的任务" }] },
+        }],
+      },
+      ui: { notify: (msg: string) => notes.push(msg), setStatus: () => {} },
+    } as never;
+    const pi = { appendEntry: (...args: unknown[]) => writes.push(args) } as never;
+
+    await __startGoalForTest("", pi, ctx);
+
     expect(notes.at(-1)).toContain("无前文共识可承接");
     expect(writes).toHaveLength(0);
   });

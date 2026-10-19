@@ -10,8 +10,8 @@ A Pi extension that keeps **one Work List per session goal** and adds only the a
 
 | Mode | Choose it when | Continuation | Independent checks |
 |---|---|---:|---|
-| **Soft Work List** | Ordinary multi-step work benefits from visible cross-turn tracking | No | None |
-| **Execution Plan** | The agent must keep working Until Done | Yes | None |
+| **Soft Work List** | The user explicitly wants tracking or to wait for a later input—not autonomous delivery | No | None |
+| **Execution Plan** | The request has a clear deliverable the agent can complete without another user decision | Yes | None |
 | **Goal Check Plan** | The final outcome needs an independent acceptance check | Yes | `goal_check` |
 | **Staged Check Plan** | Real serial Phases and the final outcome each need independent checks | Yes | `phase_check` + `goal_check` |
 
@@ -37,9 +37,9 @@ pi -e ./index.ts
 
 ## Usage
 
-### Ordinary work: Soft Work List
+### Passive tracking: Soft Work List
 
-When tracking adds value, the agent calls `work_list` and advances Work Items with `work_create` / `work_update`.
+Use `work_list` only to record work for a later turn or when the user does not request completion now. A repair, implementation, validation, or other clear deliverable belongs in `execution_plan`, not a soft list.
 
 ```text
 work_list
@@ -48,7 +48,7 @@ work_list
 → automatic close + visible completion summary
 ```
 
-A soft list persists across turns but starts no continuation, no no-progress counters, and no auditor. Description and evidence are optional while it remains soft. Once all Work Items are terminal (`done` or `abandoned`) and every real Phase is explicitly `done`, the current Goal is cleared atomically and the tool returns a structured completion signal.
+A soft list persists across turns but starts no continuation, no no-progress counters, and no auditor. Its TUI projection says that it is saved and awaiting the next turn; it does not show a running elapsed timer or pause/resume controls. Description and evidence are optional while it remains soft. Once all Work Items are terminal (`done` or `abandoned`) and every real Phase is explicitly `done`, the current Goal is cleared atomically and the tool returns a structured completion signal.
 
 ### Sustained work: Execution Plan
 
@@ -120,8 +120,9 @@ Goal and real Phase Descriptions are required. Work Item Description becomes req
 /dgoal <objective>       Start Goal Check / Staged Check selection and confirmation
 /dgoal                   Continue the preceding context into the startup gate
 /dgoal status | s        Open current Work List and session History
+/dgoal review            Inspect, revise, or confirm this session's saved proposal
 /dgoal pause  | p        Pause an active Plan Contract
-/dgoal resume | r        Resume a paused Plan Contract
+/dgoal resume | r        Verify current facts, then resume a paused Plan Contract
 /dgoal clear  | c        Clear the current Goal / Work List
 /dgoal history clear     Confirm and clear this session's Plan Run History
 /dgoal help   | h        Explain current behavior
@@ -134,9 +135,14 @@ Soft Work Lists cannot enter Plan pause state. Fixed continuation circuit breake
 - **Persistent widget:** shows the active Profile, aggregate progress, real Phases, and current Work Items.
 - **`Ctrl+O`:** expands Work Items and current audit activity.
 - **`/dgoal s` modal:** lists the current Work List and Plan Run History; details show Description, status, dependencies, evidence, reasons, deliverables, and applicable check records.
+- **Recovery hints:** a saved proposal points to `/dgoal review`; a cold-restored unfinished Plan points to `/dgoal resume`. Neither path opens a dialog or starts execution automatically.
 - **Fail-soft:** widget, modal, status, or notification errors may degrade presentation but cannot block persistence, completion, or recovery.
 
 Completed Phases remain visible in the TUI and History. In the execution prompt they are soft-forgotten to a title-only line so old details do not keep expanding model context.
+
+Live Work List state and check feedback are projected at the message tail before each model request. The system prompt contains only fixed routing guidance, so plan updates do not invalidate its cache prefix. These hidden snapshots are request-only and do not accumulate in session history.
+
+For Anthropic Messages, the nine dgoal tools use normal tool sampling to stay outside Anthropic's global strict-schema union limit. Their schemas, nullable argument preparation, and local validation remain unchanged; OpenAI/Codex keeps the strict-schema preference.
 
 ## Independent Auditing
 
@@ -158,11 +164,13 @@ Configure globally at `~/.pi/agent/pi-dgoal.json` or in trusted projects at `.pi
 - `dgoal-plan-history-v1` stores append-only Plan Run History for the current session branch.
 - History preserves structural completion evidence and check outcomes, but strips auditor reports, feedback, thinking, transcript, and mutation logs. History is read-only and cannot be resumed.
 - Pre-v0.8.1 activity is intentionally ignored and not migrated. After upgrading, recreate the active Work List.
-- `session_tree` and `session_compact` restore only validated structured state. Active Plan Contracts resume continuation after compaction when Pi is not already retrying the turn; soft Work Lists do not.
+- On a cold `startup` / `resume`, the current Pi session branch restores a complete pending proposal without confirming it; `/dgoal review` is required. An active unfinished Plan Contract is first persisted in place as `paused(session_recovery)`. `/dgoal resume` then verifies `in_progress` work and external side effects before continuing the same Goal, Plan Run, Work List, and revision.
+- `reload`, `session_tree`, and `session_compact` only resynchronize structure; they do not trigger the cold-recovery pause. Compaction may resume continuation for an active Plan when Pi is not already retrying. Soft Work Lists only restore structure and never enter recovery pause or continuation.
+- If any dgoal session append throws, the current `SessionManager` is hard-locked: dgoal performs no compensating append, mutation, or continuation on that manager. A real task reopen/app restart must rebuild it from the last complete on-disk record; an incomplete or unreadable JSONL tail remains fail-closed until the session file is repaired or replaced.
 
 ## Design Boundaries
 
-- One current Goal / Work List per session; no multi-goal pool, daemon, scheduler, or cross-session background execution.
+- One current Goal / Work List per session. Recovery reads only the latest `dgoal-work-v1` on the current session branch. Its current Goal must validate completely; an invalid latest Goal fails closed instead of reviving an older active Plan, and an invalid pending proposal is not restored. A Pi `fork` is a new session; a durable `dgoal-session-scope-v1` marker containing only the session ID excludes copied parent Plan / History entries. Recovery never searches other sessions and adds no goal pool, daemon, scheduler, or cross-session execution.
 - No automatic Git commit, rollback, push, publish, or deployment.
 - Project tests remain authoritative; dgoal does not replace them.
 - Visual and experiential checks belong in `userReviewItems`, not machine completion gates.
@@ -198,7 +206,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), [`doc/术语表.md`](./doc/术语表.md), [ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md), and the [v0.8.1 implementation plan](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md).
+See [`doc/README.md`](./doc/README.md), [`doc/术语表.md`](./doc/术语表.md), [ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md), [ADR 0052](./doc/决策档案/0052-同会话未完成计划原地恢复.md), and the [v0.8.1 implementation plan](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md).
 
 ## License
 

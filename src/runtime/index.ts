@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -47,7 +47,11 @@ import {
   resetGoalRuntimeState,
   type CheckLivenessSnapshot,
   type CheckLivenessState,
+  type DurabilityQuarantine,
+  type GoalRuntimeGuardSnapshot,
+  type PendingPlanDelivery,
   type PendingProposalState,
+  type UncertainSessionScope,
 } from "../goal-runtime/state.ts";
 import { clearCurrentGoal, commitCurrentGoal } from "../goal-runtime/commit.ts";
 import type {
@@ -194,13 +198,50 @@ interface PlanHistoryEntryData {
   records: PlanRunHistoryRecord[];
 }
 
+interface SessionScopeEntryData {
+  sessionId: string;
+}
+
 interface SessionBranchEntry {
+  id?: string;
+  timestamp?: number | string;
   type?: string;
+  customType?: string;
+  data?: unknown;
   message?: {
     role?: string;
     content?: unknown;
     timestamp?: number | string;
   };
+}
+
+function getCurrentBranchEntries(ctx: Pick<DgoalContext, "sessionManager">): SessionBranchEntry[] {
+  const sessionManager = ctx.sessionManager as { getBranch?: () => SessionBranchEntry[] } | undefined;
+  if (typeof sessionManager?.getBranch !== "function") return [];
+  const entries = sessionManager.getBranch();
+  return Array.isArray(entries) ? entries : [];
+}
+
+function getDgoalStateBranchEntries(ctx: Pick<DgoalContext, "sessionManager">): SessionBranchEntry[] {
+  const entries = getCurrentBranchEntries(ctx);
+  const manager = ctx.sessionManager as {
+    getHeader?: () => { id?: unknown; parentSession?: unknown } | null;
+    getSessionId?: () => unknown;
+  } | undefined;
+  const header = manager?.getHeader?.();
+  const managerSessionId = manager?.getSessionId?.();
+  const sessionId = typeof header?.id === "string" && header.id
+    ? header.id
+    : typeof managerSessionId === "string" && managerSessionId
+      ? managerSessionId
+      : undefined;
+  const scopeIndex = entries.findLastIndex((entry) => {
+    if (entry.type !== "custom" || entry.customType !== SESSION_SCOPE_ENTRY_TYPE) return false;
+    const data = entry.data as SessionScopeEntryData | undefined;
+    return data?.sessionId === sessionId;
+  });
+  if (scopeIndex >= 0) return entries.slice(scopeIndex + 1);
+  return header?.parentSession ? [] : entries;
 }
 
 interface AssistantMessageLike {
@@ -281,12 +322,18 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "zh-CN",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal s查询 | p停止 | r继续 | c清理",
+      "overlay.commandsSoft": "/dgoal s查询 | c清理",
+      "overlay.commandsActive": "/dgoal s查询 | p暂停 | c清理",
+      "overlay.commandsPaused": "/dgoal s查询 | r继续 | c清理",
+      "overlay.softSaved": "已保存，等待下一轮",
       "overlay.showItems": "⌨ Ctrl+O 展开详情 · {commands}",
       "overlay.hideItems": "⌨ Ctrl+O 收起详情 · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 完成",
       "status.paused": "🔁 暂停",
+      "status.savedList": "☷ 已保存清单",
+      "status.recoveryPaused": "🔁 待恢复 · /dgoal resume",
+      "status.reviewPending": "🔁 待确认 · /dgoal review",
       "status.starting": "🔁 启动",
       "status.active": "🔁 进行 #{iteration}",
       "proposal.objective": "目标：{objective}",
@@ -318,13 +365,15 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.confirmTitleWithPlan": "确认 /dgoal 计划？\n\n{plan}",
       "proposal.confirmStart": "确认，开始执行",
       "proposal.reject": "拒绝，放弃目标",
+      "proposal.rejectUpgrade": "拒绝升级，保留原 Plan",
       "proposal.feedback": "输入反馈意见",
+      "proposal.defer": "暂不处理，保留计划",
       "proposal.viewTasks": "展开 task",
       "proposal.backToSummary": "收起 task",
       "proposal.feedbackTitle": "反馈意见（agent 会据此调整计划）：",
       "replaceConfirm.title": "替换当前 dgoal？",
       "replaceConfirm.message": "当前目标：{current}\n\n新目标：{next}",
-      "command.description": "持续推进目标直到完成：/dgoal <goal> | status(s) | pause(p) | resume(r) | clear(c)",
+      "command.description": "持续推进目标直到完成：/dgoal <goal> | status(s) | review | pause(p) | resume(r) | clear(c)",
       "history.clear.title": "清除 Plan Run History？",
       "history.clear.message": "这会删除当前 session 的全部计划运行历史，但不会影响当前 Goal / Work List。此操作不可撤销。",
       "history.clear.done": "已清除当前 session 的 Plan Run History。",
@@ -336,7 +385,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.pauseReason": "暂停原因：{reason}",
       "status.pauseDetail": "暂停说明：{detail}",
       "status.iteration": "轮次：{iteration}",
-      "status.commands": "命令：/dgoal s查询 | p停止 | r继续 | c清理",
+      "status.commands": "命令：{commands}",
+      "status.savedProposalNotice": "发现尚未确认的计划。运行 /dgoal review 查看、修改或确认；在确认前不会执行。",
+      "status.recoveredPlanNotice": "发现未完成的计划，已安全暂停。运行 /dgoal resume 时会沿用同一计划和进度。",
+      "status.sessionRecoveryReason": "会话恢复",
       "status.dialogEmpty": "(无 plan/无 phase可显示)",
       "status.dialogNoGoal": "当前没有进行中的 dgoal",
       "status.dialogHistoryEmpty": "当前 session 没有终态 Plan Run History",
@@ -367,15 +419,29 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.stalledProgressPaused": "连续 {max} 轮只有工具活动、没有观察到文件或 Plan 持久进展，dgoal 已暂停以避免假推进{detail}。运行 /dgoal resume 继续。",
       "notify.agentPaused": "Agent 声明遇到需要你决策的死锁，已主动暂停：{detail}。处理后运行 /dgoal resume 继续。",
       "notify.pendingGoal": "上一个 dgoal 正在启动中，请稍后再试。",
+      "notify.pendingGoalReview": "已有待确认计划。请运行 /dgoal review，或先清理后再开始新目标。",
+      "notify.noPendingProposal": "当前没有可复用的待确认计划。",
+      "notify.reviewInProgress": "计划确认界面已经打开，请先完成当前操作。",
+      "notify.reviewStale": "会话或计划已变化，本次确认已取消；请重新运行 /dgoal review。",
+      "notify.proposalStale": "原计划已产生新进度或审核事实，保存的升级提案已失效；请基于当前 Work List 重新提交。",
+      "notify.reviewFirst": "当前还有待确认计划；请先运行 /dgoal review。",
+      "notify.proposalDeferred": "计划仍保持待确认。稍后可运行 /dgoal review。",
+      "notify.safetyPersistFailed": "安全状态已保留在内存，但当前 SessionManager 的持久化结果不确定；dgoal 已锁定。请重新打开该任务或重启应用，从磁盘最后一条完整记录恢复后再核对：{error}",
+      "notify.sessionPersistenceQuarantined": "Pi 会话追加失败，当前 SessionManager 的持久化结果不确定；dgoal 已锁定，避免形成孤儿分支。请重新打开该任务或重启应用，从磁盘最后一条完整记录恢复后再核对：{error}",
+      "notify.sessionPersistenceStillQuarantined": "当前 SessionManager 曾发生会话追加失败，dgoal 仍保持锁定；普通 reload、tree 或 compact 不会解锁。请重新打开该任务或重启应用，从磁盘最后一条完整记录恢复后再核对。",
+      "notify.sessionFileTailInvalid": "当前 Pi 会话文件的 JSONL 末尾不完整或不可读取；dgoal 已锁定且不会继续追加。请先修复或更换会话文件，再重新打开任务。",
+      "notify.sessionProjectionUnavailable": "当前会话投影尚未完成同步；为避免写入错误分支，dgoal 已暂时锁定。请切换回来或重新加载会话后重试。",
       "notify.noPriorDiscussionForBareStart": "无前文共识可承接。请用 /dgoal <objective> 提供目标，或先对齐后再裸 /dgoal。",
       "notify.helpActive": "只有冷启动或暂停状态支持 /dgoal help；当前目标仍在执行，请使用 /dgoal s 查看状态。",
       "notify.startInterrupted": "启动被中断，已放弃本次 dgoal。",
       "notify.cleared": "dgoal 已清除；若当前仍在执行，会同步触发一次中断。",
       "notify.proposalRejected": "已拒绝计划，目标放弃。",
+      "notify.proposalUpgradeRejected": "已拒绝升级提案；原 Plan 保持不变并继续可用。",
       "notify.proposalUiFailed": "启动确认 UI 出错，计划仍保持待确认，可重试：{error}",
       "notify.proposalConfirmed": "计划已确认，开始执行 dgoal。",
       "notify.feedbackSent": "已反馈，agent 将重新整理计划。",
-      "notify.emptyFeedback": "未提供反馈，目标放弃。",
+      "notify.feedbackIncomplete": "本轮未生成新的有效计划；旧计划仍保持待确认，可运行 /dgoal review 重试。",
+      "notify.feedbackRewriteReadOnly": "正在按反馈重写待确认计划；本轮只能读取 Work List 或提交新的 goal_plan/staged_plan，不能修改当前执行事实。",
       "notify.proposalRetry": "未收到计划提案，降级引导重试（{count}/{max}）",
       "notify.proposalFailed": "连续 {max} 次未收到计划提案，已中止启动。请重新 /dgoal。",
       "notify.continuationFailed": "dgoal 续跑失败：{error}",
@@ -457,12 +523,18 @@ const I18N_BUNDLES: I18nBundleV1[] = [
     locale: "en",
     integration: { capability: "pi.i18n.v1", provider: "pi-dgoal" },
     messages: {
-      "overlay.commands": "/dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
+      "overlay.commandsSoft": "/dgoal status | clear",
+      "overlay.commandsActive": "/dgoal status | pause | clear",
+      "overlay.commandsPaused": "/dgoal status | resume | clear",
+      "overlay.softSaved": "saved, awaiting the next turn",
       "overlay.showItems": "⌨ Ctrl+O expand details · {commands}",
       "overlay.hideItems": "⌨ Ctrl+O collapse details · {commands}",
       "overlay.more": "└─ +{count} more",
       "status.done": "🔁 done",
       "status.paused": "🔁 paused",
+      "status.savedList": "☷ saved Work List",
+      "status.recoveryPaused": "🔁 ready to resume · /dgoal resume",
+      "status.reviewPending": "🔁 awaiting review · /dgoal review",
       "status.starting": "🔁 starting…",
       "status.active": "🔁 active #{iteration}",
       "proposal.objective": "Goal: {objective}",
@@ -494,13 +566,15 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "proposal.confirmTitleWithPlan": "Confirm /dgoal plan?\n\n{plan}",
       "proposal.confirmStart": "Confirm and start",
       "proposal.reject": "Reject and abandon goal",
+      "proposal.rejectUpgrade": "Reject upgrade; keep existing Plan",
       "proposal.feedback": "Enter feedback",
+      "proposal.defer": "Not now; keep the plan",
       "proposal.viewTasks": "Show tasks",
       "proposal.backToSummary": "Hide tasks",
       "proposal.feedbackTitle": "Feedback for the agent to revise the plan:",
       "replaceConfirm.title": "Replace current dgoal?",
       "replaceConfirm.message": "Current goal: {current}\n\nNew goal: {next}",
-      "command.description": "Keep working on a goal until completion: /dgoal <goal> | [s]tatus | [p]ause | [r]esume | [c]lear",
+      "command.description": "Keep working on a goal until completion: /dgoal <goal> | [s]tatus | review | [p]ause | [r]esume | [c]lear",
       "history.clear.title": "Clear Plan Run History?",
       "history.clear.message": "This deletes all Plan Run History for the current session without changing the current Goal / Work List. This cannot be undone.",
       "history.clear.done": "Plan Run History for this session was cleared.",
@@ -512,7 +586,10 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "status.pauseReason": "Pause reason: {reason}",
       "status.pauseDetail": "Pause detail: {detail}",
       "status.iteration": "Iteration: {iteration}",
-      "status.commands": "Commands: /dgoal [s]tatus | [p]ause | [r]esume | [c]lear",
+      "status.commands": "Commands: {commands}",
+      "status.savedProposalNotice": "An unconfirmed plan was found. Run /dgoal review to inspect, revise, or confirm it; nothing executes before confirmation.",
+      "status.recoveredPlanNotice": "An unfinished plan was found and safely paused. /dgoal resume keeps the same plan and progress.",
+      "status.sessionRecoveryReason": "session recovery",
       "status.dialogEmpty": "(no plan / no phases to display)",
       "status.dialogNoGoal": "No active dgoal",
       "status.dialogHistoryEmpty": "No terminal Plan Run History in this session",
@@ -543,15 +620,29 @@ const I18N_BUNDLES: I18nBundleV1[] = [
       "notify.stalledProgressPaused": "Only tool activity, with no observable file or Plan progress, occurred for {max} consecutive turns; dgoal paused to avoid false progress{detail}. Run /dgoal resume to continue.",
       "notify.agentPaused": "Agent reported a deadlock needing your decision; paused: {detail}. Run /dgoal resume after you resolve it.",
       "notify.pendingGoal": "A previous dgoal is still starting. Try again shortly.",
+      "notify.pendingGoalReview": "A saved plan is awaiting confirmation. Run /dgoal review, or clear it before starting another goal.",
+      "notify.noPendingProposal": "There is no reusable pending plan to review.",
+      "notify.reviewInProgress": "The plan review dialog is already open.",
+      "notify.reviewStale": "The session or plan changed, so this review was cancelled. Run /dgoal review again.",
+      "notify.proposalStale": "The original plan gained new progress or audit facts, so the saved upgrade is stale. Submit a new proposal from the current Work List.",
+      "notify.reviewFirst": "A plan is still awaiting confirmation. Run /dgoal review first.",
+      "notify.proposalDeferred": "The plan remains pending. Run /dgoal review when you are ready.",
+      "notify.safetyPersistFailed": "The safe state is retained in memory, but this SessionManager has an uncertain persistence result and dgoal is locked. Reopen the task or restart the app, then verify the last complete on-disk checkpoint before resuming: {error}",
+      "notify.sessionPersistenceQuarantined": "Pi session append failed, so this SessionManager has an uncertain persistence result. dgoal is locked to avoid an orphan branch. Reopen the task or restart the app, then verify the last complete on-disk checkpoint: {error}",
+      "notify.sessionPersistenceStillQuarantined": "This SessionManager previously encountered a session append failure, so dgoal remains locked. A normal reload, tree switch, or compaction will not unlock it. Reopen the task or restart the app, then verify the last complete on-disk checkpoint.",
+      "notify.sessionFileTailInvalid": "The Pi session JSONL tail is incomplete or unreadable. dgoal is locked and will not append again. Repair or replace the session file, then reopen the task.",
+      "notify.sessionProjectionUnavailable": "The current session projection is not synchronized. dgoal is temporarily locked to prevent writes to the wrong branch; switch back or reload the session and retry.",
       "notify.noPriorDiscussionForBareStart": "There is no prior aligned discussion to carry. Use /dgoal <objective>, or align first and then run bare /dgoal.",
       "notify.helpActive": "`/dgoal help` is available only at cold start or while paused; use `/dgoal s` for the active goal.",
       "notify.startInterrupted": "Startup was interrupted; this dgoal was abandoned.",
       "notify.cleared": "dgoal cleared; if a turn is still running, it will also be interrupted once.",
       "notify.proposalRejected": "Plan rejected; goal abandoned.",
+      "notify.proposalUpgradeRejected": "Plan upgrade rejected; the existing Plan remains unchanged and available.",
       "notify.proposalUiFailed": "Startup confirmation UI failed; the proposal remains pending and can be retried: {error}",
       "notify.proposalConfirmed": "Plan confirmed; starting dgoal.",
       "notify.feedbackSent": "Feedback sent; the agent will revise the plan.",
-      "notify.emptyFeedback": "No feedback provided; goal abandoned.",
+      "notify.feedbackIncomplete": "This turn did not produce a new valid plan. The previous proposal remains pending; run /dgoal review to try again.",
+      "notify.feedbackRewriteReadOnly": "A pending plan is being revised from feedback. This turn may only read the Work List or submit a new goal_plan/staged_plan; it cannot mutate current execution facts.",
       "notify.proposalRetry": "No plan proposal received; retrying startup guidance ({count}/{max}).",
       "notify.proposalFailed": "No plan proposal received after {max} retries; startup aborted. Run /dgoal again.",
       "notify.continuationFailed": "dgoal continuation failed: {error}",
@@ -756,10 +847,98 @@ const CHECK_PROGRESS_UPDATE_THROTTLE_MS = 1_000;
 // 候选切换前至少保留 1 秒，避免刚启动就因共享总预算耗尽而产生瞬时超时。
 const MIN_AUDIT_CANDIDATE_START_REMAINING_MS = 1_000;
 const CONTINUATION_MARKER_PREFIX = "pi-dgoal-continuation:";
+const PLAN_DELIVERY_MARKER_PREFIX = "pi-dgoal-delivery:";
 const CONTINUATION_POLL_INTERVAL_MS = 250;
+const POISONED_SESSION_MANAGERS_SYMBOL = Symbol.for("pi-dgoal.poisoned-session-managers-v1");
 
 // Goal Runtime stores mutable session state; liveness policy and transitions live in ./liveness.ts.
 let api: ExtensionAPI | undefined;
+let currentSessionManager: object | undefined;
+
+function globalPoisonedSessionManagers(): WeakSet<object> {
+  const registry = globalThis as typeof globalThis & Record<PropertyKey, unknown>;
+  const existing = registry[POISONED_SESSION_MANAGERS_SYMBOL];
+  if (existing instanceof WeakSet) return existing as WeakSet<object>;
+  const created = new WeakSet<object>();
+  registry[POISONED_SESSION_MANAGERS_SYMBOL] = created;
+  return created;
+}
+
+const poisonedSessionManagers = globalPoisonedSessionManagers();
+
+function sessionManagerObject(ctx: Pick<DgoalContext, "sessionManager"> | undefined): object | undefined {
+  const manager = ctx?.sessionManager;
+  return manager && (typeof manager === "object" || typeof manager === "function")
+    ? manager as object
+    : undefined;
+}
+
+function bindCurrentSessionManager(ctx: Pick<DgoalContext, "sessionManager">): object | undefined {
+  const nextManager = sessionManagerObject(ctx);
+  if (currentSessionManager && nextManager && currentSessionManager !== nextManager) {
+    // Quarantine belongs to the concrete SessionManager whose in-memory leaf may be poisoned.
+    // A real session reopen constructs a fresh manager from disk truth, so old in-memory anchors
+    // must not prevent recovery merely because the durable session id is unchanged.
+    goalRuntimeState.durabilityQuarantines = [];
+    goalRuntimeState.uncertainSessionScopes = [];
+  }
+  currentSessionManager = nextManager;
+  return currentSessionManager;
+}
+
+function poisonCurrentSessionManager(): void {
+  if (currentSessionManager) poisonedSessionManagers.add(currentSessionManager);
+  goalRuntimeState.sessionProjectionValid = false;
+  clearContinuation();
+}
+
+function currentSessionManagerIsPoisoned(ctx?: Pick<DgoalContext, "sessionManager">): boolean {
+  const manager = ctx ? bindCurrentSessionManager(ctx) : currentSessionManager;
+  return Boolean(manager && poisonedSessionManagers.has(manager));
+}
+
+function sessionFileHasCompleteTail(ctx: Pick<DgoalContext, "sessionManager">): boolean {
+  const manager = ctx.sessionManager as { getSessionFile?: () => unknown } | undefined;
+  const sessionFile = manager?.getSessionFile?.();
+  // In-memory sessions have no file yet; there is no partial JSONL tail to inherit.
+  if (sessionFile === undefined || sessionFile === null || sessionFile === "") return true;
+  if (typeof sessionFile !== "string") return false;
+  try {
+    // Pi assigns the future path before a new session has written its first file.
+    if (!fs.existsSync(sessionFile)) return true;
+    const stat = fs.statSync(sessionFile);
+    if (stat.size === 0) return true;
+    const fd = fs.openSync(sessionFile, "r");
+    try {
+      const tail = Buffer.allocUnsafe(1);
+      fs.readSync(fd, tail, 0, 1, stat.size - 1);
+      return tail[0] === 0x0a || tail[0] === 0x0d;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    // If the host names a persistent file, unreadable tail state is not safe to append to.
+    return false;
+  }
+}
+
+function appendDgoalEntry<T>(type: string, data: T): void {
+  if (!api) return;
+  if (currentSessionManagerIsPoisoned()) {
+    goalRuntimeState.sessionProjectionValid = false;
+    throw new Error("dgoal session persistence is quarantined until SessionManager is rebuilt");
+  }
+  try {
+    api.appendEntry<T>(type, data);
+  } catch (error) {
+    // Pi advances SessionManager's in-memory leaf before persisting. A follow-up append can
+    // therefore create an orphan child of an entry that never reached disk. Poison this exact
+    // manager for its whole lifetime; extension reloads reuse it, while a real session reopen
+    // supplies a fresh object and may safely recover from disk.
+    poisonCurrentSessionManager();
+    throw error;
+  }
+}
 
 export function setApi(pi: ExtensionAPI): void {
   api = pi;
@@ -1426,16 +1605,25 @@ const auditedPlanProposalTool = defineTool({
     let goal = restoreGoalIfMissing(ctx);
     const naturalLanguageStart = goalRuntimeState.naturalLanguageStartAuthorized
       && goalRuntimeState.naturalLanguageStartInput !== undefined;
+    const feedbackUpgrade = Boolean(goal?.workList
+      && goalRuntimeState.proposalFeedbackFlow?.goalId === goal.id
+      && goalRuntimeState.proposalFeedbackFlow.sessionGeneration === goalRuntimeState.sessionGeneration);
+    const pausedUpgrade = Boolean(goal?.workList
+      && goal.status === "paused"
+      && (goalRuntimeState.explicitPlanUpgradeGoalId === goal.id || feedbackUpgrade));
     const explicitUpgrade = Boolean(goal?.workList && assuranceProfile
-      && (naturalLanguageStart || goalRuntimeState.explicitPlanUpgradeGoalId === goal.id));
+      && (naturalLanguageStart || goalRuntimeState.explicitPlanUpgradeGoalId === goal.id || feedbackUpgrade)
+      && (goal.status === "active" || pausedUpgrade));
     if (!goal && !naturalLanguageStart) {
       return { content: [{ type: "text", text: t("tool.propose.noPendingGoal") }], details: { error: "no pending goal" } };
     }
-    if (goal?.status === "paused") return pausedGoalResult(goal);
+    if (goal?.status === "paused" && !pausedUpgrade) return pausedGoalResult(goal);
     if (goal && goal.status !== "pending" && !explicitUpgrade) {
       return { content: [{ type: "text", text: t("tool.propose.noPendingGoal") }], details: { error: "no pending goal" } };
     }
-    if (goal && goalRuntimeState.pendingProposal?.goalId === goal.id) goalRuntimeState.pendingProposal = undefined;
+    const proposalBaseline = goal && goalRuntimeState.pendingProposal?.goalId === goal.id
+      ? goalRuntimeState.pendingProposal
+      : undefined;
     // Proposal authorization is single-use even when structural or semantic validation fails.
     clearNaturalLanguageStartAuthorization();
     clearExplicitPlanUpgradeAuthorization();
@@ -1498,11 +1686,25 @@ const auditedPlanProposalTool = defineTool({
     };
     const proposalSessionGeneration = goalRuntimeState.sessionGeneration;
     const proposalGoalId = goal?.id;
+    const proposalBaseFingerprint = goal ? fingerprintProposalBase(goal) : undefined;
+    const proposalGuardIsCurrent = () => goalRuntimeState.sessionProjectionValid
+      && goalRuntimeState.sessionGeneration === proposalSessionGeneration
+      && goalRuntimeState.currentGoal?.id === proposalGoalId
+      && goalRuntimeState.pendingProposal === proposalBaseline
+      && (proposalBaseFingerprint === undefined
+        || Boolean(goalRuntimeState.currentGoal && fingerprintProposalBase(goalRuntimeState.currentGoal) === proposalBaseFingerprint));
     const rawAgentDir = (ctx as unknown as { agentDir?: unknown }).agentDir;
     const configAgentDir = typeof rawAgentDir === "string" ? rawAgentDir : undefined;
     const loadedConfig = ctx.cwd
       ? await loadDgoalConfig(ctx, configAgentDir ? { agentDir: configAgentDir } : {}).catch(() => null)
       : null;
+    if (!proposalGuardIsCurrent()) {
+      return {
+        content: [{ type: "text", text: t("tool.propose.sessionChanged") }],
+        details: { error: "session changed during semantic review", stale: true },
+        isError: false,
+      };
+    }
     const idleTimeoutSeconds = loadedConfig
       ? resolveProposalSemanticReviewIdleTimeoutSeconds(loadedConfig)
       : PROPOSAL_SEMANTIC_REVIEW_IDLE_TIMEOUT_SECONDS;
@@ -1512,20 +1714,27 @@ const auditedPlanProposalTool = defineTool({
     const outcome = await runProposalSemanticReview(
       { ...ctx, signal },
       proposal,
-      { idleTimeoutMs: idleTimeoutSeconds * 1000, onUpdate },
+      {
+        idleTimeoutMs: idleTimeoutSeconds * 1000,
+        onUpdate: onUpdate
+          ? ((...args: unknown[]) => {
+            if (proposalGuardIsCurrent()) (onUpdate as (...values: unknown[]) => void)(...args);
+          }) as typeof onUpdate
+          : undefined,
+      },
     );
+    if (!proposalGuardIsCurrent()) {
+      return {
+        content: [{ type: "text", text: t("tool.propose.sessionChanged") }],
+        details: { error: "session changed during semantic review", stale: true },
+        isError: false,
+      };
+    }
     if (outcome.kind === "technical_error") {
       return {
         content: [{ type: "text", text: t("proposal.validate.semanticReviewTechnicalError", { reason: outcome.reason }) }],
         details: { error: "semantic review technical error", reason: outcome.reason },
         isError: true,
-      };
-    }
-    if (goalRuntimeState.sessionGeneration !== proposalSessionGeneration || goalRuntimeState.currentGoal?.id !== proposalGoalId) {
-      return {
-        content: [{ type: "text", text: t("tool.propose.sessionChanged") }],
-        details: { error: "session changed during semantic review", stale: true },
-        isError: false,
       };
     }
     const reviewed = applyProposalSemanticReview(proposal, outcome.review);
@@ -1539,30 +1748,30 @@ const auditedPlanProposalTool = defineTool({
     const finalProposal = reviewed.proposal;
     const latestGoal = goalRuntimeState.currentGoal;
     if (!proposalPhaseProjectionMatchesWorkList(finalProposal)) {
-      if (latestGoal) {
-        goalRuntimeState.pendingProposal = undefined;
-        persistWorkGoal(latestGoal);
-      }
       return workGoalResultError("语义预审后的 Phase 契约与 Work List 投影不一致。", "semantic phase projection mismatch");
     }
     if (latestGoal) {
-      const profileValid = proposalProfileCanActivate(latestGoal, finalProposal.assuranceProfile);
+      const profileValid = proposalProfileCanActivate(latestGoal, finalProposal.assuranceProfile, { allowPaused: latestGoal.status === "paused" });
       const frozenContractValid = preservesFrozenGoalContract(latestGoal, finalProposal);
       if (!profileValid || !frozenContractValid) {
-        goalRuntimeState.pendingProposal = undefined;
-        persistWorkGoal(latestGoal);
         return profileValid
           ? workGoalResultError("语义预审不得改写 Goal Check 已冻结的 Goal 契约。", "frozen goal contract changed during semantic review")
           : workGoalResultError("语义预审后的 Assurance Profile 不是合法升档。", "invalid assurance transition after semantic review");
       }
     }
-    const nextPendingProposal = { goalId: goal?.id ?? "", proposal: finalProposal };
-    if (!goal) {
+    const nextPendingProposal: PendingProposalState = {
+      goalId: latestGoal?.id ?? "",
+      proposal: finalProposal,
+      ...(proposalBaseFingerprint ? { baseFingerprint: proposalBaseFingerprint } : {}),
+    };
+    if (!latestGoal) {
       const createdGoal = createGoal(finalProposal.objective, finalProposal.description);
       nextPendingProposal.goalId = createdGoal.id;
+      const persistenceFrom = captureDurabilityBranch(ctx);
       try {
         persistWorkGoal(createdGoal, nextPendingProposal);
       } catch (error) {
+        compensateUncertainWorkAppend(ctx, undefined, undefined, createdGoal, nextPendingProposal, persistenceFrom);
         return {
           content: [{ type: "text", text: t("tool.propose.persistFailed", { reason: formatError(error) }) }],
           details: { error: "pending goal persistence failed", reason: formatError(error) },
@@ -1578,10 +1787,23 @@ const auditedPlanProposalTool = defineTool({
       planOverlay?.clearDoneSnapshot();
       goalRuntimeState.currentGoal = createdGoal;
       goal = createdGoal;
+    } else {
+      nextPendingProposal.goalId = latestGoal.id;
+      const persistenceFrom = captureDurabilityBranch(ctx);
+      try {
+        persistWorkGoal(latestGoal, nextPendingProposal);
+      } catch (error) {
+        compensateUncertainWorkAppend(ctx, latestGoal, proposalBaseline, latestGoal, nextPendingProposal, persistenceFrom);
+        return {
+          content: [{ type: "text", text: t("tool.propose.persistFailed", { reason: formatError(error) }) }],
+          details: { error: "pending proposal persistence failed", reason: formatError(error) },
+          isError: true,
+        };
+      }
+      goal = latestGoal;
     }
-    nextPendingProposal.goalId = goal.id;
     goalRuntimeState.pendingProposal = nextPendingProposal;
-    persistWorkGoal(goal, nextPendingProposal);
+    goalRuntimeState.startupGateGoalId = goal.id;
     clearNaturalLanguageStartAuthorization();
     clearExplicitPlanUpgradeAuthorization();
     return {
@@ -1611,6 +1833,7 @@ export const PHASE_CHECK_TOOL_NAME = "phase_check";
 export const GOAL_CHECK_TOOL_NAME = "goal_check";
 export const WORK_STATE_ENTRY_TYPE = "dgoal-work-v1";
 export const WORK_HISTORY_ENTRY_TYPE = "dgoal-plan-history-v1";
+export const SESSION_SCOPE_ENTRY_TYPE = "dgoal-session-scope-v1";
 
 type PublicToolRenderResult = {
   content?: Array<{ type?: string; text?: string }>;
@@ -1692,14 +1915,37 @@ function omitStrictSchemaNulls(value: unknown): unknown {
 
 function definePublicTool(definition: any): any {
   // Pi 0.82+: 在支持的 provider/model 上请求 JSON Schema strict 模式，让九工具参数匹配 TypeBox schema；
-  // 不支持时宿主自动回退为普通工具调用，跨 provider 行为不变。见 ADR 0051。
+  // Anthropic Messages 的九工具在 startup 的请求 hook 中显式退出 strict 编译，保留 schema 与本地校验。
   const prepareArguments = definition.prepareArguments;
   const execute = definition.execute;
   return defineTool({
     ...definition,
     constrainedSampling: definition.constrainedSampling ?? { type: "json_schema", strict: "prefer" },
     prepareArguments: (args: unknown) => fillMissingNullableProperties(prepareArguments ? prepareArguments(args) : args, definition.parameters),
-    execute: (toolCallId: string, args: unknown, ...rest: unknown[]) => execute(toolCallId, omitStrictSchemaNulls(args), ...rest),
+    execute: (toolCallId: string, args: unknown, ...rest: unknown[]) => {
+      const ctx = rest.at(-1) as DgoalContext | undefined;
+      if (ctx?.sessionManager) bindCurrentSessionManager(ctx);
+      const persistencePoisoned = currentSessionManagerIsPoisoned();
+      if (persistencePoisoned) goalRuntimeState.sessionProjectionValid = false;
+      if (!goalRuntimeState.sessionProjectionValid) {
+        return {
+          content: [{ type: "text", text: t(persistencePoisoned ? "notify.sessionPersistenceStillQuarantined" : "notify.sessionProjectionUnavailable") }],
+          details: { error: "session projection unavailable" },
+          isError: true,
+        };
+      }
+      if (goalRuntimeState.proposalFeedbackFlow
+        && definition.name !== WORK_READ_TOOL_NAME
+        && definition.name !== GOAL_PLAN_TOOL_NAME
+        && definition.name !== STAGED_PLAN_TOOL_NAME) {
+        return {
+          content: [{ type: "text", text: t("notify.feedbackRewriteReadOnly") }],
+          details: { error: "proposal feedback rewrite is read-only" },
+          isError: true,
+        };
+      }
+      return execute(toolCallId, omitStrictSchemaNulls(args), ...rest);
+    },
     renderResult: renderPublicToolResult,
   });
 }
@@ -1988,10 +2234,10 @@ const softWorkPhaseSchema = strictSchemaObject({
 export const workListTool = definePublicTool({
   name: WORK_LIST_TOOL_NAME,
   label: "Work List",
-  description: "为普通多步工作建立或原子重写当前 Goal 的唯一软性 Work List。清单跨 turn 保留，但不会启动自动续跑或独立审核。",
+  description: "仅为用户明确要求记录、整理或等待后续输入的工作建立或原子重写当前 Goal 的唯一软性 Work List。明确交付使用 execution_plan；软清单跨 turn 保留，但不会启动自动续跑或独立审核。",
   promptSnippet: "建立或重写软性 Work List",
   promptGuidelines: [
-    "普通多步工作先使用 work_list；软性 Work List 跨 turn 保留但不自动续跑。",
+    "work_list 只用于用户明确要记录、整理、等待后续输入或不要求本轮完成的工作；修复、实现、验证等无需继续等待用户决策的明确交付直接使用 execution_plan。软性 Work List 跨 turn 保留但不自动续跑。",
     "Goal 必须有 objective 与 description；Work Item 只要求 subject，description 可在升级 Plan Contract 前补齐。",
     "已有 Plan Contract 时不得用 work_list 绕过保障或整单替换；应使用 work_create/work_update 或对应升级工具。",
   ],
@@ -2034,6 +2280,7 @@ export const workListTool = definePublicTool({
     resetAuditorWorkspaceTracker();
     persistWorkGoal(goalRuntimeState.currentGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    ensurePlanOverlay(ctx);
     safeUpdatePlanOverlay();
     return {
       content: [{ type: "text", text: `已建立软性 Work List：${objective}（${flattenWorkItems(built.workList).length} 个 Work Item）` }],
@@ -2080,6 +2327,7 @@ export const workCreateTool = definePublicTool({
     goalRuntimeState.currentGoal = updateGoalWorkList(goal, result.list);
     clearCurrentCheckSnapshot();
     persistWorkGoal(goalRuntimeState.currentGoal);
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
     const createdItem = result.op.kind === "create_item" ? findWorkItem(result.list, result.op.itemId) : undefined;
     const createdPhaseId = result.op.kind === "create_phase" ? result.op.phaseId : undefined;
@@ -2196,6 +2444,7 @@ export const workUpdateTool = definePublicTool({
         return completeWorkGoal(ctx, updatedGoal, defaultSoftCompletionReview(updatedGoal, params as Record<string, unknown>), { archived: false, autoClosed: true });
       }
       persistWorkGoal(updatedGoal);
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
       const updatedItem = result.op.kind === "update_item" ? findWorkItem(result.list, result.op.itemId) : undefined;
       const display = [
@@ -2249,6 +2498,7 @@ export const workUpdateTool = definePublicTool({
         return completeWorkGoal(ctx, updatedGoal, defaultSoftCompletionReview(updatedGoal, params as Record<string, unknown>), { archived: false, autoClosed: true });
       }
       persistWorkGoal(updatedGoal);
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
       safeUpdatePlanOverlay();
       const display = [`已更新 Phase #${phase.id}（${phase.status} → ${nextStatus}）`, `Phase #${phase.id}：${nextSubject}`, `说明：${nextDescription}`].join("\n");
       return { content: [{ type: "text", text: `已更新 Phase #${phase.id}（${phase.status} → ${nextStatus}）` }], details: { target: "phase", revision: workList.revision, display } };
@@ -2259,7 +2509,7 @@ export const workUpdateTool = definePublicTool({
       const reason = String(params.reason ?? "").trim();
       if (!reason) return workGoalResultError("暂停必须提供真实用户决策 blocker。", "missing pause reason");
       const paused = markGoalPaused(goal, Date.now(), { pauseReason: "agent_blocked", pauseReasonDetail: reason });
-      commitCurrentGoal(paused, persistWorkGoal);
+      commitSafetyCheckpoint(ctx, paused, { unsafeGoal: goal });
       clearContinuation();
       resetProgressStreaks(goalRuntimeState);
       safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
@@ -2305,7 +2555,7 @@ export const executionPlanTool = definePublicTool({
   description: "直接建立 Execution Plan，或把当前软性 Work List 原子归一为 Until Done 计划。无需用户确认，不启用独立审核；Phase 始终是真实且可见的串行边界。",
   promptSnippet: "建立或升级 Execution Plan",
   promptGuidelines: [
-    "当工作确实需要持续完成时，在同一 Goal/Work List 上使用 execution_plan；普通清单追踪继续用 work_list。",
+    "修复、实现、验证等有明确交付结果且无需继续等待用户决策的多步工作，直接在同一 Goal/Work List 上使用 execution_plan；work_list 仅用于明确记录或等待后续输入。",
     "所有计划态 Work Item 必须有 description；done/abandoned 前分别提供 evidence/abandonedReason，声明 deliverables 时逐项留证。",
     "Phase 可选且只用于真实串行阶段；所有真实 Phase 都必须通过 work_update 显式收口。",
     "Execution Plan 没有独立 check；Work Item 耗尽后新增/重组工作，或回读证据后显式关闭 Goal。",
@@ -2368,6 +2618,7 @@ export const executionPlanTool = definePublicTool({
     resetAuditorWorkspaceTracker();
     persistWorkGoal(goalRuntimeState.currentGoal);
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    ensurePlanOverlay(ctx);
     safeUpdatePlanOverlay();
     return {
       content: [{ type: "text", text: `${existingContract ? "已重组" : current ? "已升级" : "已建立"} Execution Plan：${objective}` }],
@@ -2539,13 +2790,39 @@ function preservesFrozenGoalContract(
     && JSON.stringify(goal.contract.guardrails) === JSON.stringify(candidate.guardrails);
 }
 
-function proposalProfileCanActivate(goal: GoalState, candidate: PlanProposal["assuranceProfile"]): boolean {
+function proposalProfileCanActivate(
+  goal: GoalState,
+  candidate: PlanProposal["assuranceProfile"],
+  options: { allowPaused?: boolean } = {},
+): boolean {
   if (goal.status === "pending") return goal.contract === undefined && goal.workList === undefined;
-  if (goal.status !== "active" || !goal.workList) return false;
+  const canUpgradeCurrent = goal.status === "active"
+    || Boolean(options.allowPaused && goal.status === "paused");
+  if (!canUpgradeCurrent || !goal.workList) return false;
   const current = goal.contract?.profile;
   if (!current) return true;
   const rank = { execution: 0, goal_check: 1, staged_check: 2 } as const;
   return rank[candidate] > rank[current];
+}
+
+function fingerprintProposalBase(goal: GoalState): string | undefined {
+  if (!goal.workList) return undefined;
+  return createHash("sha256").update(JSON.stringify({
+    objective: goal.objective,
+    description: goal.description,
+    workList: goal.workList,
+    contract: goal.contract,
+  })).digest("hex");
+}
+
+function pendingProposalMatchesGoal(goal: GoalState, pending: PendingProposalState): boolean {
+  if (pending.goalId !== goal.id) return false;
+  if (!goal.workList) return goal.status === "pending"
+    && pending.baseFingerprint === undefined
+    && pending.proposal.workList.revision === 0;
+  return typeof pending.baseFingerprint === "string"
+    && pending.baseFingerprint === fingerprintProposalBase(goal)
+    && pending.proposal.workList.revision === goal.workList.revision + 1;
 }
 
 function proposalPhaseProjectionMatchesWorkList(proposal: PlanProposal): boolean {
@@ -2567,8 +2844,15 @@ async function executeAuditedWorkPlanEntry(
   ctx: DgoalContext,
 ) {
   const current = restoreGoalIfMissing(ctx);
+  const feedbackUpgrade = Boolean(current?.workList
+    && goalRuntimeState.proposalFeedbackFlow?.goalId === current.id
+    && goalRuntimeState.proposalFeedbackFlow.sessionGeneration === goalRuntimeState.sessionGeneration);
+  const pausedUpgrade = Boolean(current?.workList
+    && current.status === "paused"
+    && (goalRuntimeState.explicitPlanUpgradeGoalId === current.id || feedbackUpgrade));
   const authorized = current?.status === "pending"
-    || Boolean(current?.workList && current.status === "active" && (goalRuntimeState.naturalLanguageStartAuthorized || goalRuntimeState.explicitPlanUpgradeGoalId === current.id))
+    || Boolean(current?.workList && current.status === "active" && (goalRuntimeState.naturalLanguageStartAuthorized || goalRuntimeState.explicitPlanUpgradeGoalId === current.id || feedbackUpgrade))
+    || pausedUpgrade
     || Boolean(!current && goalRuntimeState.naturalLanguageStartAuthorized && goalRuntimeState.naturalLanguageStartInput !== undefined);
   if (!authorized) return workGoalResultError(t("tool.propose.noPendingGoal"), "no pending goal");
   const rejectInput = (message: string, error: string) => {
@@ -2748,8 +3032,9 @@ async function executeWorkPhaseCheck(params: Record<string, unknown>, onUpdate: 
     const reason = formatError(error);
     const check: NonNullable<WorkPhase["check"]> = { status: "audit_error", report: reason, checkedAt: Date.now(), revision: auditRevision };
     const phases = latest.workList!.phases.map((candidate) => candidate.id === phase.id ? { ...candidate, check } : candidate);
-    commitCurrentGoal(markGoalPaused({ ...latest, contract: { ...latest.contract!, auditErrorScope: "phase" }, workList: { ...latest.workList!, phases } }, Date.now(), { pauseReason: "audit_error" }), persistWorkGoal);
+    commitSafetyCheckpoint(ctx, markGoalPaused({ ...latest, contract: { ...latest.contract!, auditErrorScope: "phase" }, workList: { ...latest.workList!, phases } }, Date.now(), { pauseReason: "audit_error" }), { unsafeGoal: latest });
     clearCurrentCheckSnapshot();
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
     return { content: [{ type: "text", text: `phase_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
   }
@@ -2759,8 +3044,9 @@ async function executeWorkPhaseCheck(params: Record<string, unknown>, onUpdate: 
     const reason = result.error ?? "aborted";
     const check: NonNullable<WorkPhase["check"]> = { status: "audit_error", report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision };
     const phases = latest.workList!.phases.map((candidate) => candidate.id === phase.id ? { ...candidate, check } : candidate);
-    commitCurrentGoal(markGoalPaused({ ...latest, contract: { ...latest.contract!, auditErrorScope: "phase" }, workList: { ...latest.workList!, phases } }, Date.now(), { pauseReason: "audit_error" }), persistWorkGoal);
+    commitSafetyCheckpoint(ctx, markGoalPaused({ ...latest, contract: { ...latest.contract!, auditErrorScope: "phase" }, workList: { ...latest.workList!, phases } }, Date.now(), { pauseReason: "audit_error" }), { unsafeGoal: latest });
     clearCurrentCheckSnapshot();
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
     return { content: [{ type: "text", text: `phase_check auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
   }
@@ -2772,6 +3058,7 @@ async function executeWorkPhaseCheck(params: Record<string, unknown>, onUpdate: 
   goalRuntimeState.currentGoal = { ...latest, workList: { ...latest.workList!, phases }, updatedAt: Date.now() };
   persistWorkGoal(goalRuntimeState.currentGoal);
   clearCurrentCheckSnapshot();
+  safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
   return { content: [{ type: "text", text: result.approved ? `phase_check approved Phase #${phase.id}. Call work_update(target=phase,status=done).` : `phase_check rejected Phase #${phase.id}:\n${report}` }], details: { phaseId: phase.id, approved: result.approved, profile: "staged_check", ...buildAuditorResultDetails(result), display: report || undefined }, isError: false };
 }
@@ -2815,8 +3102,9 @@ async function executeWorkGoalCheck(params: Record<string, unknown>, onUpdate: (
     if (!latest) return staleCheckResult("goal", goal, auditRevision, auditSessionGeneration);
     const reason = formatError(error);
     const contract = { ...latest.contract!, auditErrorScope: "goal" as const, goalCheck: { status: "audit_error" as const, report: reason, checkedAt: Date.now(), revision: auditRevision } };
-    commitCurrentGoal(markGoalPaused({ ...latest, contract }, Date.now(), { pauseReason: "audit_error" }), persistWorkGoal);
+    commitSafetyCheckpoint(ctx, markGoalPaused({ ...latest, contract }, Date.now(), { pauseReason: "audit_error" }), { unsafeGoal: latest });
     clearCurrentCheckSnapshot();
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
     return { content: [{ type: "text", text: `goal_check failed: ${reason}` }], details: { error: reason }, isError: true, terminate: true };
   }
@@ -2825,8 +3113,9 @@ async function executeWorkGoalCheck(params: Record<string, unknown>, onUpdate: (
   if (result.liveness === "auditor_error" || result.aborted || result.error) {
     const reason = result.error ?? "aborted";
     const contract = { ...latest.contract!, auditErrorScope: "goal" as const, goalCheck: { status: "audit_error" as const, report: reason, modelId: result.modelId, checkedAt: Date.now(), revision: auditRevision } };
-    commitCurrentGoal(markGoalPaused({ ...latest, contract }, Date.now(), { pauseReason: "audit_error" }), persistWorkGoal);
+    commitSafetyCheckpoint(ctx, markGoalPaused({ ...latest, contract }, Date.now(), { pauseReason: "audit_error" }), { unsafeGoal: latest });
     clearCurrentCheckSnapshot();
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     safeUpdatePlanOverlay();
     return { content: [{ type: "text", text: `goal_check auditor error: ${reason}` }], details: { error: reason, ...buildAuditorResultDetails(result) }, isError: true, terminate: true };
   }
@@ -2849,6 +3138,7 @@ async function executeWorkGoalCheck(params: Record<string, unknown>, onUpdate: (
   goalRuntimeState.currentGoal = { ...latest, contract, updatedAt: Date.now() };
   persistWorkGoal(goalRuntimeState.currentGoal);
   clearCurrentCheckSnapshot();
+  safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
   return { content: [{ type: "text", text: result.approved ? "goal_check approved. Call work_update(target=goal,status=done) to finish." : `goal_check rejected:${rejectedCount >= 3 ? `\n\n⚠ 已连续 ${rejectedCount} 次终审未通过；Plan 仍保持 active。` : ""}\n${report}` }], details: { approved: result.approved, profile: latest.contract!.profile, ...buildAuditorResultDetails(result), display: report || undefined }, isError: false };
 }
@@ -2887,6 +3177,16 @@ export const goalCheckTool = definePublicTool({
 });
 
 export async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: DgoalContext) {
+  bindCurrentSessionManager(ctx);
+  const persistencePoisoned = currentSessionManagerIsPoisoned();
+  if (persistencePoisoned) goalRuntimeState.sessionProjectionValid = false;
+  if (!goalRuntimeState.sessionProjectionValid) {
+    safeNotify(ctx, t(persistencePoisoned ? "notify.sessionPersistenceStillQuarantined" : "notify.sessionProjectionUnavailable"), "warning");
+    return;
+  }
+  // A marked delivery can be abandoned by host preflight before before_agent_start. Any explicit
+  // user command is a safe boundary to retire that stale delivery before handling the command.
+  cancelPendingPlanDelivery(ctx);
   const command = parseCommand(args);
   if (typeof command === "string") {
     safeNotify(ctx, command, "warning");
@@ -2910,6 +3210,9 @@ export async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: Dg
     case "resume":
       await resumeGoal(pi, ctx);
       return;
+    case "review":
+      await reviewPendingProposal(pi, ctx);
+      return;
     case "clear":
       clearGoal(ctx);
       return;
@@ -2923,7 +3226,7 @@ export async function handleDgoalCommand(args: string, pi: ExtensionAPI, ctx: Dg
 }
 
 function parseCommand(args: string):
-  | { kind: "status" | "pause" | "resume" | "clear" | "history_clear" | "help" }
+  | { kind: "status" | "pause" | "resume" | "review" | "clear" | "history_clear" | "help" }
   | { kind: "start"; objective: string }
   | string {
   const text = args.trim();
@@ -2934,6 +3237,7 @@ function parseCommand(args: string):
   if (!text) return { kind: "start", objective: "" };
   if (text === "pause" || text === "p") return { kind: "pause" };
   if (text === "resume" || text === "r") return { kind: "resume" };
+  if (text === "review") return { kind: "review" };
   if (text === "clear" || text === "c") return { kind: "clear" };
   if (text === "history clear") return { kind: "history_clear" };
   if (text.length > MAX_OBJECTIVE_LENGTH) {
@@ -2973,9 +3277,11 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
   if (goalRuntimeState.currentGoal && goalRuntimeState.currentGoal.status !== "done") {
     // pending：上一个 dgoal 仍在 proposal 启动闸门中，不应重叠启动新 dgoal。
     if (goalRuntimeState.currentGoal.status === "pending") {
-      safeNotify(ctx, t("notify.pendingGoal"), "warning");
+      const hasSavedProposal = goalRuntimeState.pendingProposal?.goalId === goalRuntimeState.currentGoal.id;
+      safeNotify(ctx, t(hasSavedProposal ? "notify.pendingGoalReview" : "notify.pendingGoal"), "warning");
       return;
     }
+    const replacementGuard = captureGoalRuntimeGuard(goalRuntimeState.currentGoal);
     let replace: boolean;
     try {
       replace = await ctx.ui.confirm(
@@ -2983,11 +3289,18 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
         t("replaceConfirm.message", { current: goalRuntimeState.currentGoal.objective, next: objective }),
       );
     } catch (error) {
-      safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+      if (goalRuntimeGuardIsCurrent(replacementGuard)) {
+        safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+      }
       return;
     }
     if (!replace) return;
-    if (goalRuntimeState.currentGoal.contract) archivePlanRun(goalRuntimeState.currentGoal, "superseded", { summary: `Plan 被新 /dgoal 目标取代：${objective}` });
+    if (!goalRuntimeGuardIsCurrent(replacementGuard)) {
+      if (goalRuntimeGuardBelongsToCurrentSession(replacementGuard)) safeNotify(ctx, t("notify.reviewStale"), "warning");
+      return;
+    }
+    const replacedGoal = goalRuntimeState.currentGoal;
+    if (replacedGoal.contract) archivePlanRun(replacedGoal, "superseded", { summary: `Plan 被新 /dgoal 目标取代：${objective}` });
   }
 
   goalRuntimeState.consecutiveErrors = 0;
@@ -3005,6 +3318,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
     resetAuditorWorkspaceTracker();
     const pendingGoal = createGoal(objective.trim());
     commitCurrentGoal(pendingGoal, persistWorkGoal);
+    goalRuntimeState.startupGateGoalId = pendingGoal.id;
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
 
     // 启动闸门保持 pending，要求主代理用 goal_plan / staged_plan 提交。
@@ -3049,10 +3363,12 @@ function markGoalResumed(goal: GoalState, resumedAt = Date.now(), extra: Partial
 
 function pauseGoal(ctx: DgoalContext) {
   if (!goalRuntimeState.currentGoal?.contract || !isGoalMutable(goalRuntimeState.currentGoal.status)) return;
+  const activeGoal = goalRuntimeState.currentGoal;
   cancelPendingContinuation();
-  goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), { pauseReason: "user_abort" });
+  cancelPendingPlanDelivery();
+  const pausedGoal = markGoalPaused(activeGoal, Date.now(), { pauseReason: "user_abort" });
   clearCurrentCheckSnapshot();
-  persistActiveGoal(goalRuntimeState.currentGoal);
+  commitSafetyCheckpoint(ctx, pausedGoal, { unsafeGoal: activeGoal });
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
 }
@@ -3062,26 +3378,75 @@ function pauseGoal(ctx: DgoalContext) {
  * This transition preserves the Plan and does not enqueue a synthetic prompt: the user turn
  * that granted the one-shot authorization is already starting.
  */
-export function resumeExecutionPlanAfterModelErrorFromUserInput(ctx: DgoalContext): boolean {
+export function prepareExecutionPlanAfterModelErrorFromUserInput(prompt: string): GoalState | undefined {
   const goal = goalRuntimeState.currentGoal;
   if (!goal || goal.status !== "paused" || goal.pauseReason !== "model_error" || !isExecutionPlan(goal)) {
-    return false;
+    return undefined;
   }
+  // A saved upgrade proposal owns the next user decision. Do not let an ordinary input bypass
+  // /dgoal review and reactivate the older Execution contract underneath it.
+  if (goalRuntimeState.pendingProposal?.goalId === goal.id) return undefined;
+  const targetGoal = markGoalResumed(goal);
+  goalRuntimeState.pendingExecutionPlanUserResume = {
+    prompt,
+    guard: captureGoalRuntimeGuard(goal),
+    targetGoal,
+  };
+  return targetGoal;
+}
+
+export function finalizeExecutionPlanUserResumeMessage(
+  message: unknown,
+  ctx: DgoalContext,
+): { message: unknown; accepted: boolean } | undefined {
+  // Pi can emit a system prompt/tool update before the starting user message.
+  // Only a user message may consume or reject the one-shot recovery gate.
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "user") return undefined;
+  const pending = goalRuntimeState.pendingExecutionPlanUserResume;
+  const prompt = userMessageText(message);
+  if (!pending) return undefined;
+  if (prompt === undefined || prompt !== pending.prompt) {
+    goalRuntimeState.pendingExecutionPlanUserResume = undefined;
+    goalRuntimeState.executionPlanUserResumeRun = { prompt: pending.prompt, outcome: "rejected" };
+    ctx.abort?.();
+    return { message: replaceUserMessageText(message, "[pi-dgoal recovery cancelled before execution]"), accepted: false };
+  }
+  goalRuntimeState.pendingExecutionPlanUserResume = undefined;
+  const safeGoal = goalRuntimeState.currentGoal;
+  if (!safeGoal || !goalRuntimeGuardIsCurrent(pending.guard)) {
+    goalRuntimeState.executionPlanUserResumeRun = { prompt: pending.prompt, outcome: "rejected" };
+    ctx.abort?.();
+    return { message: replaceUserMessageText(message, "[pi-dgoal recovery cancelled before execution]"), accepted: false };
+  }
+  const persistenceFrom = captureDurabilityBranch(ctx);
+  try {
+    persistWorkGoal(pending.targetGoal, null);
+  } catch (error) {
+    compensateUncertainWorkAppend(ctx, safeGoal, goalRuntimeState.pendingProposal, pending.targetGoal, undefined, persistenceFrom);
+    safeNotify(ctx, t("tool.propose.persistFailed", { reason: formatError(error) }), "error");
+    goalRuntimeState.executionPlanUserResumeRun = { prompt: pending.prompt, outcome: "rejected" };
+    ctx.abort?.();
+    return { message: replaceUserMessageText(message, "[pi-dgoal recovery cancelled before execution]"), accepted: false };
+  }
+  goalRuntimeState.currentGoal = pending.targetGoal;
+  goalRuntimeState.pendingProposal = undefined;
   goalRuntimeState.consecutiveErrors = 0;
   resetProgressTracking(goalRuntimeState);
   clearContinuation();
-  commitCurrentGoal(markGoalResumed(goal), persistActiveGoal);
   clearCurrentCheckSnapshot();
   safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
   safeUpdatePlanOverlay();
-  return true;
+  goalRuntimeState.executionPlanUserResumeRun = { prompt: pending.prompt, outcome: "accepted" };
+  return { message, accepted: true };
 }
 
 async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
   if (!goalRuntimeState.currentGoal?.contract || goalRuntimeState.currentGoal.status !== "paused") return;
+  if (goalRuntimeState.pendingProposal?.goalId === goalRuntimeState.currentGoal.id) {
+    safeNotify(ctx, t("notify.reviewFirst"), "warning");
+    return;
+  }
   const pausedGoal = goalRuntimeState.currentGoal;
-  goalRuntimeState.consecutiveErrors = 0;
-  resetProgressTracking(goalRuntimeState);
   const resetAuditorCandidates = pausedGoal.pauseReason === "audit_error";
   const auditErrorScope = pausedGoal.contract.auditErrorScope;
   const contract = resetAuditorCandidates
@@ -3091,22 +3456,23 @@ async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
       auditErrorScope: undefined,
     }
     : pausedGoal.contract;
-  goalRuntimeState.currentGoal = markGoalResumed(pausedGoal, Date.now(), { contract });
-  persistActiveGoal(goalRuntimeState.currentGoal);
-  safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-  safeUpdatePlanOverlay();
-  const resumedGoal = goalRuntimeState.currentGoal;
-  const sent = await sendPrompt(pi, ctx, buildResumePrompt(resumedGoal));
-  if (!sent && goalRuntimeState.currentGoal?.id === pausedGoal.id && goalRuntimeState.currentGoal.status === "active") {
-    goalRuntimeState.currentGoal = markGoalPaused(goalRuntimeState.currentGoal, Date.now(), {
-      pauseReason: pausedGoal.pauseReason,
-      pauseReasonDetail: pausedGoal.pauseReasonDetail,
-      contract: pausedGoal.contract,
-    });
-    persistActiveGoal(goalRuntimeState.currentGoal);
-    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-    safeUpdatePlanOverlay();
+  const resumedGoal = markGoalResumed(pausedGoal, Date.now(), { contract });
+  clearContinuation();
+  enqueuePlanDelivery(
+    pi,
+    ctx,
+    { kind: "resume", guard: captureGoalRuntimeGuard(pausedGoal), targetGoal: resumedGoal },
+    buildResumePrompt(resumedGoal, pausedGoal.pauseReason),
+  );
+}
+
+async function reviewPendingProposal(pi: ExtensionAPI, ctx: DgoalContext) {
+  const goal = goalRuntimeState.currentGoal;
+  if (!goal || goalRuntimeState.pendingProposal?.goalId !== goal.id) {
+    safeNotify(ctx, t("notify.noPendingProposal"), "info");
+    return;
   }
+  await handleStartupGate(pi, ctx, goal);
 }
 
 export function shouldAbortCurrentTurnOnClear(ctx: Pick<DgoalContext, "isIdle">): boolean {
@@ -3116,10 +3482,12 @@ export function shouldAbortCurrentTurnOnClear(ctx: Pick<DgoalContext, "isIdle">)
 function clearGoal(ctx: DgoalContext) {
   const current = goalRuntimeState.currentGoal;
   const hadGoal = Boolean(current);
-  if (current?.contract) archivePlanRun(current, "cleared");
   if (hadGoal && shouldAbortCurrentTurnOnClear(ctx)) ctx.abort?.();
-  clearActiveGoal(ctx);
-  if (hadGoal) safeNotify(ctx, t("notify.cleared"), "info");
+  const durable = clearActiveGoal(ctx);
+  if (hadGoal && durable) {
+    if (current?.contract) archivePlanRun(current, "cleared");
+    safeNotify(ctx, t("notify.cleared"), "info");
+  }
 }
 
 async function clearHistoryWithConfirmation(ctx: DgoalContext): Promise<void> {
@@ -3127,14 +3495,26 @@ async function clearHistoryWithConfirmation(ctx: DgoalContext): Promise<void> {
     safeNotify(ctx, t("history.clear.empty"), "info");
     return;
   }
+  const confirmationGeneration = goalRuntimeState.sessionGeneration;
+  const historySnapshot = goalRuntimeState.planHistory;
   let confirmed = false;
   try {
     confirmed = typeof ctx.ui.confirm === "function" && await ctx.ui.confirm(t("history.clear.title"), t("history.clear.message"));
   } catch (error) {
-    safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+    if (goalRuntimeState.sessionProjectionValid
+      && goalRuntimeState.sessionGeneration === confirmationGeneration
+      && goalRuntimeState.planHistory === historySnapshot) {
+      safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+    }
     return;
   }
   if (!confirmed) return;
+  if (goalRuntimeState.sessionGeneration !== confirmationGeneration || goalRuntimeState.planHistory !== historySnapshot) {
+    if (goalRuntimeState.sessionProjectionValid && goalRuntimeState.sessionGeneration === confirmationGeneration) {
+      safeNotify(ctx, t("notify.reviewStale"), "warning");
+    }
+    return;
+  }
   clearPlanRunHistory();
   safeNotify(ctx, t("history.clear.done"), "info");
 }
@@ -3156,7 +3536,8 @@ type CustomStatusUI = DgoalContext["ui"] & {
 
 function formatPauseReasonLabel(goal: Pick<GoalState, "status" | "pauseReason" | "pauseReasonDetail">): string {
   if (goal.status !== "paused") return "";
-  const lines = [t("status.pauseReason", { reason: goal.pauseReason ?? "unknown" })];
+  const reason = goal.pauseReason === "session_recovery" ? t("status.sessionRecoveryReason") : goal.pauseReason ?? "unknown";
+  const lines = [t("status.pauseReason", { reason })];
   const detail = goal.pauseReasonDetail?.trim();
   if (detail) lines.push(t("status.pauseDetail", { detail }));
   return lines.join(" · ");
@@ -3164,13 +3545,15 @@ function formatPauseReasonLabel(goal: Pick<GoalState, "status" | "pauseReason" |
 
 function buildStatusNotifyMessage(goal: GoalState) {
   const pauseReason = formatPauseReasonLabel(goal);
+  const recoveryNotice = getPlanStatusNotice(goal);
   return [
     t("status.objective", { objective: goal.objective }),
     t("status.description", { description: goal.description }),
-    t("status.state", { status: goal.status }),
+    t("status.state", { status: formatStatus(goal) ?? goal.status }),
     ...(pauseReason ? [pauseReason] : []),
-    t("status.iteration", { iteration: goal.iteration }),
-    t("status.commands"),
+    ...(recoveryNotice ? [recoveryNotice] : []),
+    ...(goal.contract ? [t("status.iteration", { iteration: goal.iteration })] : []),
+    t("status.commands", { commands: overlayCommands(goal) }),
   ].join("\n");
 }
 
@@ -3180,6 +3563,9 @@ function ensurePlanOverlay(ctx: DgoalContext): void {
   if (typeof ui.setWidget !== "function") return;
   try {
     planOverlay ??= new PlanOverlay();
+    // A live Goal owns the widget; an older completion snapshot and its hide
+    // timer must never cover or dispose the next Goal's newly bound widget.
+    if (goalRuntimeState.currentGoal) planOverlay.clearDoneSnapshot();
     planOverlay.setUI(ui as PlanOverlayUI);
     planOverlay.update();
   } catch {
@@ -3196,14 +3582,32 @@ function showStatus(ctx: DgoalContext) {
       return;
     }
 
+    const dialogGeneration = goalRuntimeState.sessionGeneration;
+    const dialogGoal = goal;
+    const dialogHistory = goalRuntimeState.planHistory;
+    const dialogIsCurrent = () => goalRuntimeState.sessionGeneration === dialogGeneration
+      && goalRuntimeState.currentGoal === dialogGoal
+      && goalRuntimeState.planHistory === dialogHistory;
+
     // /dgoal s 从 0.4.2 起从 5 行 notify 升级为 overlay modal（原 Variant A top-center，
     // 后按 ADR 0008 追加决策切 center，见 doc/决策档案/0008）。
     // 见 doc/40-版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md 切片 5 + ADR 0008。
     // 双层错误边界：外层 try/catch 兜同步 throw；内层 Promise.catch 兜 async reject；两者都降级回旧 notify。
     try {
+      goalRuntimeState.dismissStatusDialog?.();
+      let dismiss: (() => void) | undefined;
       void Promise.resolve(
         ui.custom<void>(
-          (_tui, theme, _kb, done) => new PlanStatusDialog(goal, theme, () => done()),
+          (_tui, theme, _kb, done) => {
+            let closed = false;
+            dismiss = () => {
+              if (closed) return;
+              closed = true;
+              done();
+            };
+            goalRuntimeState.dismissStatusDialog = dismiss;
+            return new PlanStatusDialog(goal, theme, dismiss);
+          },
           {
             overlay: true,
             overlayOptions: {
@@ -3216,7 +3620,9 @@ function showStatus(ctx: DgoalContext) {
         ),
       ).catch((err) => {
         console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
-        fallbackToNotify();
+        if (dialogIsCurrent()) fallbackToNotify();
+      }).finally(() => {
+        if (goalRuntimeState.dismissStatusDialog === dismiss) goalRuntimeState.dismissStatusDialog = undefined;
       });
     } catch (err) {
       console.error("[dgoal] /dgoal s modal failed:", err instanceof Error ? err.message : String(err));
@@ -3421,7 +3827,13 @@ export function buildCheckFeedbackBlock(goal: GoalState): string {
   return "";
 }
 
-export function buildStartPrompt(goal: GoalState) {
+function buildSessionRecoveryGuard(previousPauseReason?: GoalState["pauseReason"]): string | undefined {
+  return previousPauseReason === "session_recovery"
+    ? "这是会话中断后的恢复，不是重新执行。先核对所有 in_progress Work Item 与当前工作区、外部系统的真实状态；已有结果就补 evidence/update。无法确认某个外部副作用是否已经发生时，先标记 blocked 或询问用户，不得猜测并重放。"
+    : undefined;
+}
+
+export function buildStartPrompt(goal: GoalState, previousPauseReason?: GoalState["pauseReason"]) {
   if (!goal.contract) return "当前只有软性 Work List，不启动 Until Done 自动续跑。";
   const label = goal.contract.profile === "goal_check" ? "Goal Check Plan" : goal.contract.profile === "staged_check" ? "Staged Check Plan" : "Execution Plan";
   const checks = goal.contract.profile === "goal_check"
@@ -3429,7 +3841,8 @@ export function buildStartPrompt(goal: GoalState) {
     : goal.contract.profile === "staged_check"
       ? "严格按 Phase 顺序推进；每个 Phase 先 phase_check，再由 work_update 显式完成，最后 goal_check 与 work_update(target=goal,status=done) 收口。"
       : "持续用 work_create/work_update 推进，并由 work_update(target=goal,status=done) 显式收口。";
-  return `${label} 已激活。完整达成以下目标：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>\n\n持续工作直到端到端完成。不要停在计划或部分进度上。${checks}`;
+  const recoveryGuard = buildSessionRecoveryGuard(previousPauseReason);
+  return `${label} 已激活。完整达成以下目标：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n<dgoal_description>\n${escapeXml(goal.description)}\n</dgoal_description>\n\n${recoveryGuard ? `${recoveryGuard}\n\n` : ""}持续工作直到端到端完成。不要停在计划或部分进度上。${checks}`;
 }
 
 // 启动闸门指令：让主代理在两档独立建检 Profile 间选择并提交。
@@ -3515,26 +3928,32 @@ export function formatProposalConfirmTitle(goal: GoalState, proposal: PlanPropos
   return t("proposal.confirmTitleWithPlan", { plan: formatProposalForConfirm(goal, proposal, options) });
 }
 
-export function buildProposalConfirmationOptions(showTasks: boolean, proposal?: PlanProposal): string[] {
+export function buildProposalConfirmationOptions(showTasks: boolean, proposal?: PlanProposal, preservesExistingPlan = false): string[] {
   const options = [
     t("proposal.confirmStart"),
-    t("proposal.reject"),
+    t(preservesExistingPlan ? "proposal.rejectUpgrade" : "proposal.reject"),
     t("proposal.feedback"),
+    t("proposal.defer"),
     t(showTasks ? "proposal.backToSummary" : "proposal.viewTasks"),
   ];
   if (proposal?.assuranceProfile) options.push(proposal.assuranceProfile === "goal_check" ? "切换为 Staged Check Plan" : "切换为 Goal Check Plan");
   return options;
 }
 
-// 切片4：启动闸门确认流程。返回 "confirmed" | "rejected" | { feedback: string }。
+type ProposalConfirmationDecision = "confirmed" | "rejected" | "deferred" | { feedback: string };
+
+// 切片4：启动闸门确认流程。Esc / 取消只延后，不删除已经持久化的 proposal。
 // 由 agent_end 在收到 proposal 后调用。ctx.ui 交互在此发生。
 async function handleProposalConfirmation(
   ctx: DgoalContext,
   goal: GoalState,
   proposal: PlanProposal,
-): Promise<"confirmed" | "rejected" | { feedback: string }> {
+  isCurrent: () => boolean = () => true,
+): Promise<ProposalConfirmationDecision> {
   const confirmStart = t("proposal.confirmStart");
-  const reject = t("proposal.reject");
+  const reject = t(goal.workList && goal.status !== "pending" ? "proposal.rejectUpgrade" : "proposal.reject");
+  const feedbackOption = t("proposal.feedback");
+  const defer = t("proposal.defer");
   const ui = ctx.ui as {
     select?: (title: string, options: string[]) => Promise<string | undefined>;
     confirm?: (t: string, m: string) => Promise<boolean>;
@@ -3543,12 +3962,14 @@ async function handleProposalConfirmation(
   let showTasks = false;
   if (typeof ui.select === "function") {
     while (true) {
-      const options = buildProposalConfirmationOptions(showTasks, proposal);
-      const toggleTasksOption = options[3];
+      const options = buildProposalConfirmationOptions(showTasks, proposal, Boolean(goal.workList && goal.status !== "pending"));
+      const toggleTasksOption = showTasks ? t("proposal.backToSummary") : t("proposal.viewTasks");
       const switchPlanOption = options.find((option) => ["切换为 Goal Check Plan", "切换为 Staged Check Plan"].includes(option));
       const choice = await ui.select(formatProposalConfirmTitle(goal, proposal, { showTasks }), options);
+      if (!isCurrent()) return "deferred";
       if (choice === confirmStart) return "confirmed";
       if (choice === reject) return "rejected";
+      if (choice === undefined || choice === defer) return "deferred";
       if (choice === toggleTasksOption) {
         showTasks = !showTasks;
         continue;
@@ -3558,53 +3979,657 @@ async function handleProposalConfirmation(
         const nextTool = proposal.assuranceProfile === "goal_check" ? "staged_plan" : "goal_plan";
         return { feedback: `用户选择切换为 ${nextProfile}。请按对应验收边界改用 ${nextTool} 重新提交。` };
       }
-      // 输入反馈
+      if (choice !== feedbackOption) return "deferred";
       const feedback = await ui.editor?.(t("proposal.feedbackTitle"), "");
-      return { feedback: (feedback ?? "").trim() };
+      if (!isCurrent()) return "deferred";
+      const normalized = (feedback ?? "").trim();
+      return normalized ? { feedback: normalized } : "deferred";
     }
   }
 
   // 兼容旧主机：部分版本仅提供 confirm，不提供 select。
   if (typeof ui.confirm === "function") {
     const confirmed = await ui.confirm(formatProposalConfirmTitle(goal, proposal, { showTasks: false }), confirmStart);
+    if (!isCurrent()) return "deferred";
     if (confirmed) return "confirmed";
-    return "rejected";
+    return "deferred";
   }
 
   // 更降级兜底：只能收取反馈。
   const feedback = await ui.editor?.(t("proposal.feedbackTitle"), "");
-  return { feedback: (feedback ?? "").trim() };
+  if (!isCurrent()) return "deferred";
+  const normalized = (feedback ?? "").trim();
+  return normalized ? { feedback: normalized } : "deferred";
 }
 
-// 切片4：启动闸门主逻辑——agent_end 在 goal pending 时调用。
-// 检测主代理是否提交 proposal：收到则弹确认，没收到则兜底重试。
-export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState) {
+function captureGoalRuntimeGuard(goal: GoalState): GoalRuntimeGuardSnapshot {
+  return {
+    pendingProposal: goalRuntimeState.pendingProposal,
+    sessionGeneration: goalRuntimeState.sessionGeneration,
+    goalId: goal.id,
+    goalStatus: goal.status,
+    goalUpdatedAt: goal.updatedAt,
+    pauseReason: goal.pauseReason,
+    contractId: goal.contract?.id,
+    revision: goal.workList?.revision,
+  };
+}
+
+function goalRuntimeGuardIsCurrent(guard: GoalRuntimeGuardSnapshot): boolean {
+  const current = goalRuntimeState.currentGoal;
+  return goalRuntimeState.sessionProjectionValid
+    && goalRuntimeState.sessionGeneration === guard.sessionGeneration
+    && goalRuntimeState.pendingProposal === guard.pendingProposal
+    && current?.id === guard.goalId
+    && current.status === guard.goalStatus
+    && current.updatedAt === guard.goalUpdatedAt
+    && current.pauseReason === guard.pauseReason
+    && current.contract?.id === guard.contractId
+    && current.workList?.revision === guard.revision;
+}
+
+function goalRuntimeGuardBelongsToCurrentSession(guard: GoalRuntimeGuardSnapshot): boolean {
+  return goalRuntimeState.sessionProjectionValid && goalRuntimeState.sessionGeneration === guard.sessionGeneration;
+}
+
+function rememberCancelledPlanDelivery(marker: string): void {
+  goalRuntimeState.cancelledPlanDeliveryMarkers.add(marker);
+  while (goalRuntimeState.cancelledPlanDeliveryMarkers.size > 64) {
+    const oldest = goalRuntimeState.cancelledPlanDeliveryMarkers.values().next().value;
+    if (typeof oldest !== "string") break;
+    goalRuntimeState.cancelledPlanDeliveryMarkers.delete(oldest);
+  }
+}
+
+function rememberRejectedPlanDeliveryPrompt(prompt: string): void {
+  goalRuntimeState.rejectedPlanDeliveryPrompts.set(
+    prompt,
+    (goalRuntimeState.rejectedPlanDeliveryPrompts.get(prompt) ?? 0) + 1,
+  );
+  goalRuntimeState.rejectedPlanDeliveryRuns += 1;
+}
+
+function consumeRejectedPlanDeliveryPrompt(prompt: string): boolean {
+  const count = goalRuntimeState.rejectedPlanDeliveryPrompts.get(prompt) ?? 0;
+  if (count <= 0) return false;
+  if (count === 1) goalRuntimeState.rejectedPlanDeliveryPrompts.delete(prompt);
+  else goalRuntimeState.rejectedPlanDeliveryPrompts.set(prompt, count - 1);
+  goalRuntimeState.rejectedPlanDeliveryRuns = Math.max(0, goalRuntimeState.rejectedPlanDeliveryRuns - 1);
+  return true;
+}
+
+function consumeRejectedPlanDeliveryRun(): boolean {
+  if (goalRuntimeState.rejectedPlanDeliveryRuns <= 0) return false;
+  goalRuntimeState.rejectedPlanDeliveryRuns -= 1;
+  return true;
+}
+
+export function cancelPendingPlanDelivery(ctx?: DgoalContext): void {
+  const pending = goalRuntimeState.pendingPlanDelivery;
+  if (pending?.kind === "start" && pending.preparedCheckpoint) {
+    goalRuntimeState.currentGoal = pending.preparedCheckpoint;
+    goalRuntimeState.pendingProposal = undefined;
+  }
+  if (pending?.phase === "preflight_validated") {
+    rememberRejectedPlanDeliveryPrompt(pending.prompt);
+  } else if (pending) {
+    rememberCancelledPlanDelivery(pending.marker);
+  }
+  goalRuntimeState.pendingPlanDelivery = undefined;
+  if (ctx) {
+    safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+    safeUpdatePlanOverlay();
+  }
+}
+
+function promptWithPlanDeliveryMarker(prompt: string, marker: string): string {
+  return `${prompt}\n\n<!-- ${PLAN_DELIVERY_MARKER_PREFIX}${marker} -->`;
+}
+
+type PendingPlanDeliveryRequest =
+  | {
+    kind: "start" | "resume";
+    guard: GoalRuntimeGuardSnapshot;
+    targetGoal: GoalState;
+    preparedCheckpoint?: GoalState;
+  }
+  | {
+    kind: "feedback";
+    guard: GoalRuntimeGuardSnapshot;
+    preserveExistingWorkGoal: boolean;
+  };
+
+function enqueuePlanDelivery(
+  pi: ExtensionAPI,
+  ctx: DgoalContext,
+  delivery: PendingPlanDeliveryRequest,
+  prompt: string,
+): boolean {
+  cancelPendingPlanDelivery(ctx);
+  const marker = randomUUID();
+  const markedPrompt = promptWithPlanDeliveryMarker(prompt, marker);
+  goalRuntimeState.pendingPlanDelivery = {
+    ...delivery,
+    marker,
+    cleanPrompt: prompt,
+    prompt: markedPrompt,
+    phase: "queued",
+  } as PendingPlanDelivery;
+  if (ctx.isIdle?.() === false) return true;
+  return dispatchQueuedPlanDelivery(pi, ctx);
+}
+
+/** Deliver only as a fresh idle turn. Pi's streaming followUp path never emits before_agent_start. */
+export function dispatchQueuedPlanDelivery(pi: ExtensionAPI, ctx: DgoalContext): boolean {
+  const delivery = goalRuntimeState.pendingPlanDelivery;
+  if (!goalRuntimeState.sessionProjectionValid || !delivery || delivery.phase !== "queued") return false;
+  if (ctx.isIdle?.() === false) return false;
+  const deliveryGeneration = delivery.guard.sessionGeneration;
+  goalRuntimeState.pendingPlanDelivery = { ...delivery, phase: "sent" };
+  try {
+    const result = pi.sendUserMessage(markedPromptForDelivery(delivery)) as unknown;
+    if (result && typeof (result as PromiseLike<void>).then === "function") {
+      void Promise.resolve(result).catch((error) => {
+        const current = goalRuntimeState.pendingPlanDelivery;
+        if (current?.marker === delivery.marker) cancelPendingPlanDelivery(ctx);
+        if (goalRuntimeState.sessionProjectionValid && goalRuntimeState.sessionGeneration === deliveryGeneration) {
+          safeNotify(ctx, t("notify.continuationFailed", { error: formatError(error) }), "error");
+        }
+      });
+    }
+    return true;
+  } catch (error) {
+    cancelPendingPlanDelivery(ctx);
+    safeNotify(ctx, t("notify.continuationFailed", { error: formatError(error) }), "error");
+    return false;
+  }
+}
+
+function markedPromptForDelivery(delivery: PendingPlanDelivery): string {
+  return delivery.prompt;
+}
+
+function extractPlanDeliveryMarker(prompt: string): string | undefined {
+  const uuid = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
+  const pattern = new RegExp(`\\n\\n<!-- ${escapeRegExp(PLAN_DELIVERY_MARKER_PREFIX)}(${uuid}) -->$`, "i");
+  return pattern.exec(prompt)?.[1];
+}
+
+/** Validate marked extension input before Pi queues it. START also writes a paused checkpoint,
+ * so a later model/preflight failure can never leave an auto-runnable active Plan on disk. */
+export function consumePlanDeliveryInput(prompt: string, ctx: DgoalContext): "allow" | "handled" | undefined {
+  const delivery = goalRuntimeState.pendingPlanDelivery;
+  const marker = extractPlanDeliveryMarker(prompt);
+  if (!marker) {
+    if (delivery?.phase === "sent" || delivery?.phase === "input_observed") {
+      cancelPendingPlanDelivery(ctx);
+      return "handled";
+    }
+    return undefined;
+  }
+  if (goalRuntimeState.cancelledPlanDeliveryMarkers.delete(marker)) return "handled";
+  if (!delivery || delivery.phase !== "sent" || delivery.marker !== marker || delivery.prompt !== prompt) return "handled";
+  if (!goalRuntimeGuardIsCurrent(delivery.guard)) {
+    cancelPendingPlanDelivery(ctx);
+    return "handled";
+  }
+
+  let attemptedCheckpoint: GoalState | undefined;
+  let attemptedFrom: DurabilityBranchSnapshot | undefined;
+  try {
+    if (delivery.kind === "start" && !delivery.preparedCheckpoint) {
+      const checkpointReason = delivery.guard.pauseReason === "session_recovery" ? "session_recovery" : "model_error";
+      const checkpoint = markGoalPaused(delivery.targetGoal, Date.now(), { pauseReason: checkpointReason });
+      attemptedCheckpoint = checkpoint;
+      attemptedFrom = captureDurabilityBranch(ctx);
+      persistWorkGoal(checkpoint, null);
+      goalRuntimeState.pendingPlanDelivery = { ...delivery, preparedCheckpoint: checkpoint, phase: "input_observed" };
+    } else {
+      goalRuntimeState.pendingPlanDelivery = { ...delivery, phase: "input_observed" };
+    }
+    return "allow";
+  } catch (error) {
+    if (delivery.kind === "start") {
+      const safeGoal = goalRuntimeGuardIsCurrent(delivery.guard) ? goalRuntimeState.currentGoal : undefined;
+      const safePending = delivery.guard.pendingProposal;
+      if (safeGoal) compensateUncertainWorkAppend(ctx, safeGoal, safePending, attemptedCheckpoint, undefined, attemptedFrom);
+      if (safeGoal) {
+        goalRuntimeState.currentGoal = safeGoal;
+        goalRuntimeState.pendingProposal = safePending;
+        safeSetDgoalStatus(ctx, formatStatus(safeGoal));
+        safeUpdatePlanOverlay();
+      }
+    }
+    cancelPendingPlanDelivery(ctx);
+    safeNotify(ctx, t("tool.propose.persistFailed", { reason: formatError(error) }), "error");
+    return "handled";
+  }
+}
+
+export interface PlanDeliveryPreflight {
+  outcome: "accepted" | "rejected";
+  goal?: GoalState;
+}
+
+/** before_agent_start can inspect final transformed text, but cannot cancel because Pi has no active run yet. */
+export function preflightPlanDelivery(prompt: string, ctx?: DgoalContext): PlanDeliveryPreflight | undefined {
+  const promptMarker = extractPlanDeliveryMarker(prompt);
+  if (promptMarker && goalRuntimeState.cancelledPlanDeliveryMarkers.delete(promptMarker)) {
+    rememberRejectedPlanDeliveryPrompt(prompt);
+    return { outcome: "rejected" };
+  }
+  const delivery = goalRuntimeState.pendingPlanDelivery;
+  if (promptMarker && (!delivery || delivery.marker !== promptMarker)) {
+    rememberRejectedPlanDeliveryPrompt(prompt);
+    return { outcome: "rejected" };
+  }
+  if (!delivery || delivery.phase !== "input_observed") {
+    return undefined;
+  }
+  if (delivery.prompt !== prompt || promptMarker !== delivery.marker || !goalRuntimeGuardIsCurrent(delivery.guard)) {
+    if (delivery.kind === "start" && delivery.preparedCheckpoint) {
+      goalRuntimeState.currentGoal = delivery.preparedCheckpoint;
+      goalRuntimeState.pendingProposal = undefined;
+    }
+    rememberRejectedPlanDeliveryPrompt(prompt);
+    goalRuntimeState.pendingPlanDelivery = undefined;
+    if (ctx) {
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      safeUpdatePlanOverlay();
+    }
+    return { outcome: "rejected" };
+  }
+  goalRuntimeState.pendingPlanDelivery = { ...delivery, phase: "preflight_validated" };
+  return { outcome: "accepted", ...(delivery.kind === "feedback" ? {} : { goal: delivery.targetGoal }) };
+}
+
+interface DurabilityBranchSnapshot {
+  sessionId?: string;
+  leafId: string | null;
+}
+
+function captureDurabilityBranch(ctx: DgoalContext): DurabilityBranchSnapshot {
+  const manager = ctx.sessionManager as { getSessionId?: () => string; getLeafId?: () => string | null } | undefined;
+  const sessionId = manager?.getSessionId?.();
+  const leafId = manager?.getLeafId?.() ?? null;
+  return {
+    ...(typeof sessionId === "string" ? { sessionId } : {}),
+    leafId,
+  };
+}
+
+function anchorDurabilityQuarantine(
+  quarantine: DurabilityQuarantine,
+  before: DurabilityBranchSnapshot,
+  after: DurabilityBranchSnapshot,
+): void {
+  if (after.sessionId) quarantine.sessionId = after.sessionId;
+  quarantine.sessionGeneration = goalRuntimeState.sessionGeneration;
+  if (after.leafId !== before.leafId && typeof after.leafId === "string") {
+    quarantine.branchAnchorMode = "contains_entry";
+    quarantine.originEntryId = after.leafId;
+    quarantine.originEntryIds = [...new Set([...(quarantine.originEntryIds ?? []), after.leafId])];
+    delete quarantine.exactLeafId;
+    return;
+  }
+  if (quarantine.branchAnchorMode === "contains_entry") return;
+  quarantine.branchAnchorMode = "exact_leaf";
+  quarantine.exactLeafId = before.leafId;
+  delete quarantine.originEntryId;
+}
+
+function durabilityCheckpointFingerprint(goal?: GoalState, pendingProposal?: PendingProposalState): string {
+  const stableSerialize = (value: unknown): string => {
+    if (Array.isArray(value)) return `[${value.map((child) => child === undefined ? "null" : stableSerialize(child)).join(",")}]`;
+    if (!value || typeof value !== "object") return JSON.stringify(value) ?? "null";
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([, child]) => child !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, child]) => `${JSON.stringify(key)}:${stableSerialize(child)}`)
+      .join(",")}}`;
+  };
+  return createHash("sha256").update(stableSerialize({ goal: goal ?? null, pendingProposal: pendingProposal ?? null })).digest("hex");
+}
+
+function sameDurabilityCheckpoint(
+  leftGoal: GoalState | undefined,
+  leftPendingProposal: PendingProposalState | undefined,
+  rightGoal: GoalState | undefined,
+  rightPendingProposal: PendingProposalState | undefined,
+): boolean {
+  return durabilityCheckpointFingerprint(leftGoal, leftPendingProposal)
+    === durabilityCheckpointFingerprint(rightGoal, rightPendingProposal);
+}
+
+function installDurabilityQuarantine(
+  ctx: DgoalContext,
+  safeGoal?: GoalState,
+  safePendingProposal?: PendingProposalState,
+  unsafeGoal?: GoalState,
+  unsafePendingProposal?: PendingProposalState,
+  attemptedFrom: DurabilityBranchSnapshot = captureDurabilityBranch(ctx),
+): DurabilityQuarantine {
+  const currentBranch = captureDurabilityBranch(ctx);
+  const quarantine: DurabilityQuarantine = {
+    ...(currentBranch.sessionId ? { sessionId: currentBranch.sessionId } : {}),
+    sessionGeneration: goalRuntimeState.sessionGeneration,
+    ...(safeGoal ? { safeGoal: structuredClone(safeGoal) } : {}),
+    ...(unsafeGoal ? { unsafeGoal: structuredClone(unsafeGoal) } : {}),
+    ...(safePendingProposal ? { safePendingProposal: structuredClone(safePendingProposal) } : {}),
+    ...(unsafePendingProposal ? { unsafePendingProposal: structuredClone(unsafePendingProposal) } : {}),
+  };
+  anchorDurabilityQuarantine(quarantine, attemptedFrom, currentBranch);
+  goalRuntimeState.durabilityQuarantines.push(quarantine);
+  return quarantine;
+}
+
+function compensateUncertainWorkAppend(
+  ctx: DgoalContext,
+  safeGoal?: GoalState,
+  safePendingProposal?: PendingProposalState,
+  unsafeGoal?: GoalState,
+  unsafePendingProposal?: PendingProposalState,
+  attemptedFrom: DurabilityBranchSnapshot = captureDurabilityBranch(ctx),
+): boolean {
+  installDurabilityQuarantine(
+    ctx,
+    safeGoal,
+    safePendingProposal,
+    unsafeGoal,
+    unsafePendingProposal,
+    attemptedFrom,
+  );
+  goalRuntimeState.currentGoal = safeGoal;
+  goalRuntimeState.pendingProposal = safePendingProposal;
+  // Pi advances its in-memory leaf before persisting. Once appendEntry throws, another
+  // append can create an orphan child of an entry that never reached disk. Never auto-repair
+  // on the same SessionManager; keep a hard quarantine until a fresh manager reloads disk truth.
+  goalRuntimeState.sessionProjectionValid = false;
+  clearContinuation();
+  safeSetDgoalStatus(ctx, undefined);
+  safeUpdatePlanOverlay();
+  return false;
+}
+
+function validPendingForCheckpoint(
+  goal: GoalState | undefined,
+  pendingProposal: PendingProposalState | undefined,
+): PendingProposalState | undefined {
+  return goal && pendingProposal && pendingProposalMatchesGoal(goal, pendingProposal)
+    ? pendingProposal
+    : undefined;
+}
+
+/** Persist a transition whose desired result is safer than the prior executable checkpoint.
+ * appendEntry failures are uncertain because SessionManager may advance its in-memory leaf before disk persistence fails. */
+export function commitSafetyCheckpoint(
+  ctx: DgoalContext,
+  safeGoal: GoalState | undefined,
+  options: {
+    safePendingProposal?: PendingProposalState;
+    unsafeGoal?: GoalState;
+    unsafePendingProposal?: PendingProposalState;
+  } = {},
+): boolean {
+  bindCurrentSessionManager(ctx);
+  const unsafeGoal = options.unsafeGoal ?? goalRuntimeState.currentGoal;
+  const unsafePendingProposal = validPendingForCheckpoint(
+    unsafeGoal,
+    "unsafePendingProposal" in options ? options.unsafePendingProposal : goalRuntimeState.pendingProposal,
+  );
+  const safePendingProposal = validPendingForCheckpoint(
+    safeGoal,
+    "safePendingProposal" in options ? options.safePendingProposal : goalRuntimeState.pendingProposal,
+  );
+  const persistenceFrom = captureDurabilityBranch(ctx);
+  goalRuntimeState.currentGoal = safeGoal;
+  goalRuntimeState.pendingProposal = safePendingProposal;
+  try {
+    persistWorkGoal(safeGoal ?? null, safePendingProposal ?? null);
+    return true;
+  } catch (error) {
+    const compensated = compensateUncertainWorkAppend(
+      ctx,
+      safeGoal,
+      safePendingProposal,
+      unsafeGoal,
+      unsafePendingProposal,
+      persistenceFrom,
+    );
+    if (!compensated) safeNotify(ctx, t("notify.safetyPersistFailed", { error: formatError(error) }), "error");
+    return compensated;
+  }
+}
+
+function rejectPlanDelivery(ctx: DgoalContext, prompt: string): false {
+  goalRuntimeState.pendingPlanDelivery = undefined;
+  goalRuntimeState.planDeliveryRun = { outcome: "rejected", prompt };
+  ctx.abort?.();
+  return false;
+}
+
+function commitValidatedPlanDelivery(ctx: DgoalContext, delivery: PendingPlanDelivery): boolean {
+  if (!goalRuntimeGuardIsCurrent(delivery.guard)) return rejectPlanDelivery(ctx, delivery.cleanPrompt);
+  const persistenceFrom = captureDurabilityBranch(ctx);
+
+  try {
+    if (delivery.kind === "feedback") {
+      const goal = goalRuntimeState.currentGoal!;
+      goalRuntimeState.proposalFeedbackBaseline = goalRuntimeState.pendingProposal;
+      goalRuntimeState.proposalFeedbackFlow = goalRuntimeState.pendingProposal ? {
+        goalId: goal.id,
+        sessionGeneration: goalRuntimeState.sessionGeneration,
+        baseline: goalRuntimeState.pendingProposal,
+      } : undefined;
+      goalRuntimeState.startupGateGoalId = undefined;
+      if (delivery.preserveExistingWorkGoal) authorizeExplicitPlanUpgrade(goal.id);
+      else clearExplicitPlanUpgradeAuthorization();
+      goalRuntimeState.pendingPlanDelivery = undefined;
+      goalRuntimeState.planDeliveryRun = { outcome: "accepted", prompt: delivery.cleanPrompt, kind: delivery.kind };
+      safeSetDgoalStatus(ctx, formatStatus(goal));
+      safeNotify(ctx, t("notify.feedbackSent"), "info");
+      return true;
+    }
+
+    persistWorkGoal(delivery.targetGoal, null);
+    goalRuntimeState.currentGoal = delivery.targetGoal;
+    goalRuntimeState.pendingProposal = undefined;
+    goalRuntimeState.startupGateGoalId = undefined;
+    goalRuntimeState.pendingPlanDelivery = undefined;
+    goalRuntimeState.planDeliveryRun = { outcome: "accepted", prompt: delivery.cleanPrompt, kind: delivery.kind };
+    goalRuntimeState.consecutiveErrors = 0;
+    clearExplicitPlanUpgradeAuthorization();
+    clearCurrentCheckSnapshot();
+    resetProgressTracking(goalRuntimeState);
+    if (delivery.kind === "start") resetAuditorWorkspaceTracker();
+    safeSetDgoalStatus(ctx, formatStatus(delivery.targetGoal));
+    ensurePlanOverlay(ctx);
+    safeUpdatePlanOverlay();
+    if (delivery.kind === "start") safeNotify(ctx, t("notify.proposalConfirmed"), "info");
+    return true;
+  } catch (error) {
+    const safeGoal = delivery.kind === "start" ? delivery.preparedCheckpoint : goalRuntimeState.currentGoal;
+    if (safeGoal) {
+      compensateUncertainWorkAppend(ctx, safeGoal, undefined, delivery.targetGoal, undefined, persistenceFrom);
+    }
+    safeNotify(ctx, t("tool.propose.persistFailed", { reason: formatError(error) }), "error");
+    return rejectPlanDelivery(ctx, delivery.cleanPrompt);
+  }
+}
+
+export function userMessageText(message: unknown): string | undefined {
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "user") return undefined;
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content.filter((item): item is { type: "text"; text: string } => Boolean(
+    item && typeof item === "object" && (item as { type?: unknown }).type === "text"
+      && typeof (item as { text?: unknown }).text === "string",
+  )).map((item) => item.text).join("\n");
+}
+
+function replaceUserMessageText(message: unknown, text: string): unknown {
+  return {
+    ...(message as Record<string, unknown>),
+    content: [{ type: "text", text }],
+  };
+}
+
+function restorePreparedStartCheckpoint(delivery: PendingPlanDelivery | undefined, ctx: DgoalContext): void {
+  if (delivery?.kind !== "start" || delivery.phase !== "preflight_validated" || !delivery.preparedCheckpoint) return;
+  if (!goalRuntimeGuardIsCurrent(delivery.guard)) return;
+  goalRuntimeState.currentGoal = delivery.preparedCheckpoint;
+  goalRuntimeState.pendingProposal = undefined;
+  safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+  safeUpdatePlanOverlay();
+}
+
+/** Commit or reject the exact marked user message while Pi has an active abort signal and before provider execution. */
+export function finalizePlanDeliveryMessage(
+  message: unknown,
+  ctx: DgoalContext,
+): { message: unknown; outcome: "accepted" | "rejected"; kind?: PendingPlanDelivery["kind"] } | undefined {
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "user") return undefined;
+  const prompt = userMessageText(message);
+  if (prompt !== undefined && consumeRejectedPlanDeliveryPrompt(prompt)) {
+    goalRuntimeState.planDeliveryRun = { outcome: "rejected", prompt };
+    ctx.abort?.();
+    return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
+  }
+  const delivery = goalRuntimeState.pendingPlanDelivery;
+  const marker = prompt === undefined ? undefined : extractPlanDeliveryMarker(prompt);
+  const exactCurrentDelivery = Boolean(prompt !== undefined
+    && delivery?.phase === "preflight_validated"
+    && delivery.marker === marker
+    && delivery.prompt === prompt);
+  if (exactCurrentDelivery) {
+    const kind = delivery!.kind;
+    const accepted = commitValidatedPlanDelivery(ctx, delivery!);
+    const run = goalRuntimeState.planDeliveryRun;
+    const cleanPrompt = accepted && run?.outcome === "accepted" ? run.prompt : "[pi-dgoal transition cancelled before execution]";
+    return {
+      message: replaceUserMessageText(message, cleanPrompt),
+      outcome: accepted ? "accepted" : "rejected",
+      ...(accepted ? { kind } : {}),
+    };
+  }
+  if (prompt !== undefined && consumeRejectedPlanDeliveryRun()) {
+    if (delivery?.kind === "start" && delivery.preparedCheckpoint) {
+      goalRuntimeState.currentGoal = delivery.preparedCheckpoint;
+      goalRuntimeState.pendingProposal = undefined;
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      safeUpdatePlanOverlay();
+    }
+    goalRuntimeState.planDeliveryRun = { outcome: "rejected", prompt };
+    ctx.abort?.();
+    return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
+  }
+  if (!marker) {
+    if (delivery?.phase !== "preflight_validated") return undefined;
+    restorePreparedStartCheckpoint(delivery, ctx);
+    rejectPlanDelivery(ctx, prompt ?? delivery.cleanPrompt);
+    return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
+  }
+  if (!delivery || delivery.phase !== "preflight_validated" || delivery.marker !== marker || delivery.prompt !== prompt) {
+    restorePreparedStartCheckpoint(delivery, ctx);
+    rejectPlanDelivery(ctx, prompt);
+    return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
+  }
+  const kind = delivery.kind;
+  const accepted = commitValidatedPlanDelivery(ctx, delivery);
+  const run = goalRuntimeState.planDeliveryRun;
+  const cleanPrompt = accepted && run?.outcome === "accepted" ? run.prompt : "[pi-dgoal transition cancelled before execution]";
+  return {
+    message: replaceUserMessageText(message, cleanPrompt),
+    outcome: accepted ? "accepted" : "rejected",
+    ...(accepted ? { kind } : {}),
+  };
+}
+
+export function consumeRejectedPlanDeliveryAgentEnd(): boolean {
+  if (goalRuntimeState.planDeliveryRun?.outcome !== "rejected") return false;
+  goalRuntimeState.planDeliveryRun = undefined;
+  return true;
+}
+
+export function settlePlanDeliveryRun(): void {
+  goalRuntimeState.planDeliveryRun = undefined;
+}
+
+// 切片4：启动闸门主逻辑——新鲜 proposal 可由 agent_end 调用，恢复出的 proposal 只由 /dgoal review 调用。
+// 检测主代理是否提交 proposal：收到则弹确认；只有带本次启动 token 的裸 pending goal 才兜底重试。
+export async function handleStartupGate(
+  pi: ExtensionAPI,
+  ctx: DgoalContext,
+  goal: GoalState,
+) {
   // 收到 proposal？
   if (goalRuntimeState.pendingProposal && goalRuntimeState.pendingProposal.goalId === goal.id) {
     const pendingProposal = goalRuntimeState.pendingProposal;
     const proposal = pendingProposal.proposal;
-    goalRuntimeState.pendingProposal = undefined;
+    if (goalRuntimeState.proposalReviewInProgress) {
+      safeNotify(ctx, t("notify.reviewInProgress"), "info");
+      return;
+    }
+    goalRuntimeState.startupGateGoalId = undefined;
     goalRuntimeState.proposalRetryCount = 0;
-    if (!proposalProfileCanActivate(goal, proposal.assuranceProfile) || !proposalPhaseProjectionMatchesWorkList(proposal) || !preservesFrozenGoalContract(goal, proposal)) {
-      persistWorkGoal(goal);
+    if (!pendingProposalMatchesGoal(goal, pendingProposal)) {
+      commitSafetyCheckpoint(ctx, goal, {
+        safePendingProposal: undefined,
+        unsafeGoal: goal,
+        unsafePendingProposal: pendingProposal,
+      });
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      safeNotify(ctx, t("notify.proposalStale"), "warning");
+      return;
+    }
+    if (!proposalProfileCanActivate(goal, proposal.assuranceProfile, { allowPaused: goal.status === "paused" }) || !proposalPhaseProjectionMatchesWorkList(proposal) || !preservesFrozenGoalContract(goal, proposal)) {
+      commitSafetyCheckpoint(ctx, goal, {
+        safePendingProposal: undefined,
+        unsafeGoal: goal,
+        unsafePendingProposal: pendingProposal,
+      });
       safeNotify(ctx, "待确认提案与语义预审冻结契约不一致，已丢弃。", "error");
       return;
     }
 
-    let decision: "confirmed" | "rejected" | { feedback: string };
+    const guard = captureGoalRuntimeGuard(goal);
+    const reviewLock = { pending: pendingProposal };
+    goalRuntimeState.proposalReviewInProgress = reviewLock;
+    let decision: ProposalConfirmationDecision;
     try {
-      decision = await handleProposalConfirmation(ctx, goal, proposal);
+      decision = await handleProposalConfirmation(ctx, goal, proposal, () => goalRuntimeGuardIsCurrent(guard));
     } catch (error) {
-      // 对话框异常时恢复 pending proposal，避免 UI 失败让计划静默丢失或半激活。
-      goalRuntimeState.pendingProposal = { goalId: goal.id, proposal };
-      safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+      if (goalRuntimeGuardIsCurrent(guard)) {
+        safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+        safeNotify(ctx, t("notify.proposalUiFailed", { error: formatError(error) }), "error");
+      }
+      return;
+    } finally {
+      if (goalRuntimeState.proposalReviewInProgress === reviewLock) goalRuntimeState.proposalReviewInProgress = undefined;
+    }
+    if (!goalRuntimeGuardIsCurrent(guard)) {
+      if (goalRuntimeGuardBelongsToCurrentSession(guard)) safeNotify(ctx, t("notify.reviewStale"), "warning");
+      return;
+    }
+    if (decision === "deferred") {
+      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      safeNotify(ctx, t("notify.proposalDeferred"), "info");
       return;
     }
     const preserveExistingWorkGoal = Boolean(goal.workList && goal.status !== "pending");
     if (decision === "rejected") {
-      if (preserveExistingWorkGoal) persistWorkGoal(goal);
-      else clearActiveGoal(ctx);
-      safeNotify(ctx, t("notify.proposalRejected"), "info");
+      let durable: boolean;
+      if (preserveExistingWorkGoal) {
+        durable = commitSafetyCheckpoint(ctx, goal, {
+          safePendingProposal: undefined,
+          unsafeGoal: goal,
+          unsafePendingProposal: pendingProposal,
+        });
+        safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
+      }
+      else durable = clearActiveGoal(ctx);
+      if (durable) safeNotify(ctx, t(preserveExistingWorkGoal ? "notify.proposalUpgradeRejected" : "notify.proposalRejected"), "info");
       return;
     }
     if (decision === "confirmed") {
@@ -3633,8 +4658,10 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
         ...(proposal.nonGoals?.length ? { nonGoals: proposal.nonGoals } : {}),
         ...(proposal.guardrails?.length ? { guardrails: proposal.guardrails } : {}),
       };
-      goalRuntimeState.currentGoal = {
-        ...goal,
+      const previousPauseReason = goal.pauseReason;
+      const resumedBase = goal.status === "paused" ? markGoalResumed(goal, activatedAt) : goal;
+      const activatedGoal: GoalState = {
+        ...resumedBase,
         objective: proposal.objective,
         description: proposal.description,
         status: "active",
@@ -3645,34 +4672,31 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
         pauseStartedAt: undefined,
         startedAt: previous ? goal.startedAt : activatedAt,
         updatedAt: activatedAt,
-        pausedTotalMs: previous ? goal.pausedTotalMs ?? 0 : 0,
+        pausedTotalMs: previous ? resumedBase.pausedTotalMs ?? 0 : 0,
       };
-      persistWorkGoal(goalRuntimeState.currentGoal);
-      clearCurrentCheckSnapshot();
-      resetProgressTracking(goalRuntimeState);
-      resetAuditorWorkspaceTracker();
-      safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-      ensurePlanOverlay(ctx);
-      safeNotify(ctx, t("notify.proposalConfirmed"), "info");
-      await sendPrompt(pi, ctx, buildStartPrompt(goalRuntimeState.currentGoal));
+      enqueuePlanDelivery(
+        pi,
+        ctx,
+        { kind: "start", guard, targetGoal: activatedGoal },
+        buildStartPrompt(activatedGoal, previousPauseReason),
+      );
       return;
     }
     // feedback：喂回主代理，重新整理
     const fb = (decision as { feedback: string }).feedback;
     if (fb) {
-      persistWorkGoal(goal);
-      safeNotify(ctx, t("notify.feedbackSent"), "info");
-      await sendPrompt(pi, ctx, `用户对计划的反馈意见，请据此调整后重新用 goal_plan 或 staged_plan 提交：\n\n${fb}`);
+      enqueuePlanDelivery(
+        pi,
+        ctx,
+        { kind: "feedback", guard, preserveExistingWorkGoal },
+        `${buildProposePrompt(goal)}\n\n<dgoal_user_feedback>\n${fb}\n</dgoal_user_feedback>`,
+      );
       return;
     }
-    // 空反馈当拒绝处理；升级提案不得清除原有 Work List。
-    if (preserveExistingWorkGoal) persistWorkGoal(goal);
-    else clearActiveGoal(ctx);
-    safeNotify(ctx, t("notify.emptyFeedback"), "info");
     return;
   }
 
-  if (goal.status !== "pending") return;
+  if (goal.status !== "pending" || goalRuntimeState.startupGateGoalId !== goal.id) return;
   // 没收到 proposal：兜底重试（拷问25：上限 MAX_PROPOSAL_RETRIES=2）
   goalRuntimeState.proposalRetryCount += 1;
   if (goalRuntimeState.proposalRetryCount <= MAX_PROPOSAL_RETRIES) {
@@ -3682,6 +4706,7 @@ export async function handleStartupGate(pi: ExtensionAPI, ctx: DgoalContext, goa
   }
   // 重试耗尽：中止（不进 active，清 goal）；先持久化清理，再通知 UI。
   goalRuntimeState.proposalRetryCount = 0;
+  goalRuntimeState.startupGateGoalId = undefined;
   clearActiveGoal(ctx);
   safeNotify(ctx, t("notify.proposalFailed", { max: MAX_PROPOSAL_RETRIES }), "warning");
 }
@@ -3691,19 +4716,20 @@ function buildHelpPrompt(goal: GoalState | undefined) {
     ? `当前状态：${goal.status}；Profile：${goal.contract?.profile ?? "soft"}；暂停原因：${goal.pauseReason ?? "unknown"}；goal_check 未通过次数：${goal.contract?.rejectedCount ?? 0}。`
     : "当前没有 Work List。";
   return [
-    "用户刚刚输入了 /dgoal help。请用当前用户的语言解释：work_list 是普通清单；execution_plan 提供 Until Done；/dgoal 是显式高保障入口，可选 Goal Check Plan 或 Staged Check Plan；九个工具为 work_list/execution_plan/goal_plan/staged_plan/work_create/work_read/work_update/phase_check/goal_check；命令包括 pause/resume/clear/status/history clear。",
+    "用户刚刚输入了 /dgoal help。请用当前用户的语言解释：work_list 是普通清单；execution_plan 提供 Until Done；/dgoal 是显式高保障入口，可选 Goal Check Plan 或 Staged Check Plan；九个工具为 work_list/execution_plan/goal_plan/staged_plan/work_create/work_read/work_update/phase_check/goal_check；命令包括 review/pause/resume/clear/status/history clear。",
     state,
     "这是帮助请求，不是执行授权：不要调用任何 Plan 工具，不要创建或修改 Work List，不要代替用户确认。",
   ].join("\n\n");
 }
 
-function buildResumePrompt(goal: GoalState) {
+function buildResumePrompt(goal: GoalState, previousPauseReason?: GoalState["pauseReason"]) {
   const profile = goal.contract?.profile ?? "execution";
   const profileLabel = profile === "execution" ? "Execution Plan" : profile === "goal_check" ? "Goal Check Plan" : "Staged Check Plan";
   const completionInstruction = profile === "execution"
     ? "继续用 work_create/work_update 推进；Work Item 耗尽后先判断是否新增或重组工作，确认目标完成时用 work_update(target=goal,status=done) 提供 summary 与 verification 显式关闭。"
     : "按当前保障 Profile 继续 work_update / phase_check / goal_check，并由 work_update 显式收口。";
-  return `恢复当前 ${profileLabel} Work List 并继续：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n${completionInstruction}`;
+  const recoveryGuard = buildSessionRecoveryGuard(previousPauseReason);
+  return `恢复当前 ${profileLabel} Work List 并继续：\n\n<dgoal_goal>\n${escapeXml(goal.objective)}\n</dgoal_goal>\n\n${recoveryGuard ? `${recoveryGuard}\n\n` : ""}${completionInstruction}`;
 }
 
 function buildContinuePrompt(goal: GoalState, marker: string) {
@@ -3736,6 +4762,16 @@ function isCurrentContinuation(marker: string, sessionGeneration: number): boole
 
 async function deliverContinuationWhenIdle(pi: ExtensionAPI, ctx: DgoalContext, goal: GoalState, marker: string, sessionGeneration: number) {
   if (!isCurrentContinuation(marker, sessionGeneration)) return;
+  if (!goalRuntimeState.sessionProjectionValid
+    || goalRuntimeState.currentGoal?.id !== goal.id
+    || matchingDurabilityQuarantine(
+      goalRuntimeState.currentGoal,
+      goalRuntimeState.pendingProposal,
+      ctx,
+    )) {
+    clearContinuation();
+    return;
+  }
   if (!shouldDeliverContinuationNow(ctx)) {
     scheduleContinuationDelivery(pi, ctx, goal, marker, sessionGeneration);
     return;
@@ -3756,22 +4792,43 @@ function scheduleContinuationDelivery(pi: ExtensionAPI, ctx: DgoalContext, goal:
 }
 
 async function sendPrompt(pi: ExtensionAPI, ctx: DgoalContext, prompt: string) {
+  const sessionGeneration = goalRuntimeState.sessionGeneration;
+  const notifyFailure = (error: unknown) => {
+    if (goalRuntimeState.sessionProjectionValid && goalRuntimeState.sessionGeneration === sessionGeneration) {
+      safeNotify(ctx, t("notify.continuationFailed", { error: formatError(error) }), "error");
+    }
+  };
   try {
     const result = ctx.isIdle?.()
-      ? (pi.sendUserMessage(prompt) as void | Promise<void>)
-      : (pi.sendUserMessage(prompt, { deliverAs: "followUp" }) as void | Promise<void>);
-    await result;
+      ? (pi.sendUserMessage(prompt) as unknown)
+      : (pi.sendUserMessage(prompt, { deliverAs: "followUp" }) as unknown);
+    // The released ExtensionAPI returns void; unusual hosts/tests may return a Promise. Observe it
+    // only for diagnostics—state transitions must use marked input acknowledgement, not this value.
+    if (result && typeof (result as PromiseLike<void>).then === "function") {
+      void Promise.resolve(result).catch(notifyFailure);
+    }
     return true;
   } catch (error) {
-    safeNotify(ctx, t("notify.continuationFailed", { error: formatError(error) }), "error");
+    notifyFailure(error);
     return false;
   }
 }
 
 
-export function persistWorkGoal(goal: GoalState | null, pendingProposal = goalRuntimeState.pendingProposal) {
-  const persistedProposal = goal && pendingProposal?.goalId === goal.id ? pendingProposal : undefined;
-  api?.appendEntry<WorkStateEntryData>(WORK_STATE_ENTRY_TYPE, { goal, pendingProposal: persistedProposal });
+export function persistWorkGoal(
+  goal: GoalState | null,
+  pendingProposal: PendingProposalState | null | undefined = goalRuntimeState.pendingProposal,
+) {
+  if (!goalRuntimeState.sessionProjectionValid) throw new Error("dgoal session projection is unavailable");
+  const candidateProposal = goal && pendingProposal?.goalId === goal.id ? pendingProposal : undefined;
+  const persistedProposal = goal && candidateProposal && pendingProposalMatchesGoal(goal, candidateProposal)
+    ? candidateProposal
+    : undefined;
+  appendDgoalEntry<WorkStateEntryData>(WORK_STATE_ENTRY_TYPE, { goal, pendingProposal: persistedProposal });
+  if (candidateProposal && !persistedProposal && goalRuntimeState.pendingProposal === candidateProposal) {
+    goalRuntimeState.pendingProposal = undefined;
+    goalRuntimeState.startupGateGoalId = undefined;
+  }
 }
 
 function historyCheck(check: WorkCheckRecord | WorkPhase["check"] | undefined) {
@@ -3844,7 +4901,8 @@ export function buildPlanRunHistoryRecord(
 }
 
 export function persistPlanHistory(records = goalRuntimeState.planHistory): void {
-  api?.appendEntry<PlanHistoryEntryData>(WORK_HISTORY_ENTRY_TYPE, { records });
+  if (!goalRuntimeState.sessionProjectionValid) throw new Error("dgoal session projection is unavailable");
+  appendDgoalEntry<PlanHistoryEntryData>(WORK_HISTORY_ENTRY_TYPE, { records });
 }
 
 export function archivePlanRun(
@@ -3946,7 +5004,7 @@ function isPersistedWorkGoal(value: unknown): value is GoalState {
   if (goal.contract === undefined) {
     if (goal.status === "paused" || goal.workList!.phases.some((phase) => phase.acceptanceCriteria !== undefined || phase.check !== undefined || phase.feedback !== undefined)) return false;
   }
-  const pauseReasons = new Set(["user_abort", "model_error", "audit_error", "no_progress", "agent_blocked"]);
+  const pauseReasons = new Set(["user_abort", "model_error", "audit_error", "no_progress", "agent_blocked", "session_recovery"]);
   if (goal.status === "paused") {
     if (!pauseReasons.has(String(goal.pauseReason)) || typeof goal.pauseStartedAt !== "number" || !Number.isFinite(goal.pauseStartedAt)) return false;
     if (goal.pauseReason === "agent_blocked" ? typeof goal.pauseReasonDetail !== "string" || !goal.pauseReasonDetail.trim() : goal.pauseReasonDetail !== undefined) return false;
@@ -3954,10 +5012,11 @@ function isPersistedWorkGoal(value: unknown): value is GoalState {
   return true;
 }
 
-function isPersistedPendingProposal(value: unknown, goal: GoalState): value is PendingProposalState {
+function isPersistedPendingProposalShape(value: unknown, goal: GoalState): value is PendingProposalState {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
-  if (!hasOnlyKeys(record, ["goalId", "proposal"]) || record.goalId !== goal.id || !record.proposal || typeof record.proposal !== "object" || Array.isArray(record.proposal)) return false;
+  if (!hasOnlyKeys(record, ["goalId", "proposal", "baseFingerprint"]) || record.goalId !== goal.id || !record.proposal || typeof record.proposal !== "object" || Array.isArray(record.proposal)) return false;
+  if (record.baseFingerprint !== undefined && (typeof record.baseFingerprint !== "string" || !/^[a-f0-9]{64}$/.test(record.baseFingerprint))) return false;
   const proposal = record.proposal as Record<string, unknown>;
   if (!hasOnlyKeys(proposal, ["objective", "description", "assuranceProfile", "workList", "verification", "acceptanceCriteria", "userReviewItems", "nonGoals", "guardrails", "phases"])) return false;
   const assuranceProfile = proposal.assuranceProfile === "goal_check" || proposal.assuranceProfile === "staged_check" ? proposal.assuranceProfile : undefined;
@@ -3997,9 +5056,69 @@ function isPersistedPendingProposal(value: unknown, goal: GoalState): value is P
   }) === null;
   const normalizedProposal = proposal as unknown as PlanProposal;
   return valid
-    && proposalProfileCanActivate(goal, normalizedProposal.assuranceProfile)
+    && proposalProfileCanActivate(goal, normalizedProposal.assuranceProfile, { allowPaused: true })
     && proposalPhaseProjectionMatchesWorkList(normalizedProposal)
     && preservesFrozenGoalContract(goal, normalizedProposal);
+}
+
+function isPersistedPendingProposal(value: unknown, goal: GoalState): value is PendingProposalState {
+  return isPersistedPendingProposalShape(value, goal)
+    && pendingProposalMatchesGoal(goal, value);
+}
+
+function legacyPendingProposalKey(value: unknown): string | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.baseFingerprint !== undefined || typeof record.goalId !== "string" || !record.proposal) return undefined;
+  try {
+    return JSON.stringify({ goalId: record.goalId, proposal: record.proposal });
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * v0.8.1 persisted upgrade proposals before baseFingerprint existed. Migrate only when the
+ * current branch proves one uninterrupted proposal lifecycle whose preceding, first-carried,
+ * and latest Goal/Work List/Contract facts are identical. Runtime paths remain strict.
+ */
+function hydrateLegacyPendingProposal(
+  entries: SessionBranchEntry[],
+  latestGoal: GoalState,
+  value: unknown,
+): PendingProposalState | undefined {
+  if (!latestGoal.workList || !isPersistedPendingProposalShape(value, latestGoal) || value.baseFingerprint !== undefined) return undefined;
+  const lifecycleKey = legacyPendingProposalKey(value);
+  if (!lifecycleKey) return undefined;
+  const workEntries = entries.filter((entry) => entry.type === "custom" && entry.customType === WORK_STATE_ENTRY_TYPE);
+  if (workEntries.length < 2) return undefined;
+  let firstCarriedIndex = workEntries.length - 1;
+  while (firstCarriedIndex > 0) {
+    const previousData = workEntries[firstCarriedIndex - 1]?.data as WorkStateEntryData | undefined;
+    if (legacyPendingProposalKey(previousData?.pendingProposal) !== lifecycleKey) break;
+    firstCarriedIndex -= 1;
+  }
+  if (firstCarriedIndex === 0) return undefined;
+  const precedingData = workEntries[firstCarriedIndex - 1]?.data as WorkStateEntryData | undefined;
+  const firstCarriedData = workEntries[firstCarriedIndex]?.data as WorkStateEntryData | undefined;
+  const precedingGoal = isPersistedWorkGoal(precedingData?.goal) && precedingData.goal.status !== "done" ? precedingData.goal : undefined;
+  const firstCarriedGoal = isPersistedWorkGoal(firstCarriedData?.goal) && firstCarriedData.goal.status !== "done" ? firstCarriedData.goal : undefined;
+  if (!precedingGoal?.workList || !firstCarriedGoal?.workList
+    || precedingGoal.id !== latestGoal.id || firstCarriedGoal.id !== latestGoal.id) return undefined;
+  const currentFingerprint = fingerprintProposalBase(latestGoal);
+  if (!currentFingerprint
+    || fingerprintProposalBase(precedingGoal) !== currentFingerprint
+    || fingerprintProposalBase(firstCarriedGoal) !== currentFingerprint) return undefined;
+  for (const entry of workEntries.slice(firstCarriedIndex)) {
+    const data = entry.data as WorkStateEntryData | undefined;
+    const carriedGoal = isPersistedWorkGoal(data?.goal) && data.goal.status !== "done" ? data.goal : undefined;
+    if (legacyPendingProposalKey(data?.pendingProposal) !== lifecycleKey
+      || !carriedGoal?.workList
+      || carriedGoal.id !== latestGoal.id
+      || fingerprintProposalBase(carriedGoal) !== currentFingerprint) return undefined;
+  }
+  const hydrated: PendingProposalState = { ...structuredClone(value), baseFingerprint: currentFingerprint };
+  return isPersistedPendingProposal(hydrated, latestGoal) ? hydrated : undefined;
 }
 
 function hasHistoryCheckShape(value: unknown, revision: number): boolean {
@@ -4038,9 +5157,10 @@ function isPersistedPlanHistoryRecord(value: unknown): value is PlanRunHistoryRe
   return true;
 }
 
-export function loadPlanRunHistory(ctx: DgoalContext): PlanRunHistoryRecord[] {
-  const sessionManager = ctx.sessionManager as { getBranch?: () => Array<{ type?: string; customType?: string; data?: unknown }>; getEntries?: () => Array<{ type?: string; customType?: string; data?: unknown }> } | undefined;
-  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+export function loadPlanRunHistory(
+  ctx: DgoalContext,
+): PlanRunHistoryRecord[] {
+  const entries = getDgoalStateBranchEntries(ctx);
   const entry = entries.filter((item) => item.type === "custom" && item.customType === WORK_HISTORY_ENTRY_TYPE).pop();
   if (!entry) return [];
   const data = entry.data as PlanHistoryEntryData | undefined;
@@ -4050,14 +5170,10 @@ export function loadPlanRunHistory(ctx: DgoalContext): PlanRunHistoryRecord[] {
   return records;
 }
 
-function loadPersistedState(ctx: DgoalContext): { goal?: GoalState; pendingProposal?: PendingProposalState } {
-  const sessionManager = ctx.sessionManager as
-    | {
-        getBranch?: () => Array<{ type?: string; customType?: string; data?: unknown }>;
-        getEntries?: () => Array<{ type?: string; customType?: string; data?: unknown }>;
-      }
-    | undefined;
-  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+function loadPersistedState(
+  ctx: DgoalContext,
+): { goal?: GoalState; pendingProposal?: PendingProposalState } {
+  const entries = getDgoalStateBranchEntries(ctx);
   const workEntry = entries.filter((item) => item.type === "custom" && item.customType === WORK_STATE_ENTRY_TYPE).pop();
   if (!workEntry) return {};
   const workData = workEntry.data as WorkStateEntryData | undefined;
@@ -4065,6 +5181,8 @@ function loadPersistedState(ctx: DgoalContext): { goal?: GoalState; pendingPropo
   if (!workGoal) return {};
   if (workData?.pendingProposal !== undefined) {
     if (isPersistedPendingProposal(workData.pendingProposal, workGoal)) return { goal: workGoal, pendingProposal: workData.pendingProposal };
+    const hydrated = hydrateLegacyPendingProposal(entries, workGoal, workData.pendingProposal);
+    if (hydrated) return { goal: workGoal, pendingProposal: hydrated };
     if (workGoal.status === "pending") return {};
   }
   return { goal: workGoal };
@@ -4080,41 +5198,302 @@ function isStaleSessionContextError(error: unknown): boolean {
 }
 
 export function restoreGoalIfMissing(ctx: DgoalContext): GoalState | undefined {
+  bindCurrentSessionManager(ctx);
+  if (currentSessionManagerIsPoisoned()) goalRuntimeState.sessionProjectionValid = false;
+  if (!goalRuntimeState.sessionProjectionValid) return undefined;
   if (goalRuntimeState.currentGoal) return goalRuntimeState.currentGoal;
   const restored = loadPersistedState(ctx);
   goalRuntimeState.planHistory = loadPlanRunHistory(ctx);
   if (restored.goal) {
     goalRuntimeState.currentGoal = restored.goal;
     goalRuntimeState.pendingProposal = restored.pendingProposal;
+    goalRuntimeState.startupGateGoalId = undefined;
+    goalRuntimeState.proposalReviewInProgress = undefined;
   }
   return restored.goal;
 }
 
-// session_start / session_tree / session_compact 共用：从当前 session 重加载 goal 并重同步 status/overlay。
-// 读取必须先成功，避免 stale session context 或其它读取错误把尚存的 currentGoal 清掉。
-export function resyncGoalFromSession(ctx: DgoalContext) {
-  let nextGoal: GoalState | undefined;
-  let nextHistory: PlanRunHistoryRecord[];
-  try {
-    const restored = loadPersistedState(ctx);
-    nextGoal = restored.goal;
-    nextHistory = loadPlanRunHistory(ctx);
-    goalRuntimeState.pendingProposal = restored.pendingProposal;
-  } catch (error) {
-    if (isStaleSessionContextError(error)) return;
-    throw error;
-  }
-  // 已进入发送阶段的旧 continuation 仍可能尚未被宿主派发；保留 marker 让 input handler 丢弃它。
+export function invalidateSessionRuntime(ctx?: DgoalContext): void {
+  goalRuntimeState.sessionProjectionValid = false;
+  goalRuntimeState.sessionGeneration += 1;
   cancelPendingContinuation();
+  cancelPendingPlanDelivery();
+  if (goalRuntimeState.planDeliveryRun) {
+    goalRuntimeState.planDeliveryRun = { ...goalRuntimeState.planDeliveryRun, outcome: "rejected" };
+    ctx?.abort?.();
+  }
+  if (goalRuntimeState.pendingExecutionPlanUserResume || goalRuntimeState.executionPlanUserResumeRun) {
+    goalRuntimeState.executionPlanUserResumeRun = {
+      prompt: goalRuntimeState.pendingExecutionPlanUserResume?.prompt ?? goalRuntimeState.executionPlanUserResumeRun!.prompt,
+      outcome: "rejected",
+    };
+    ctx?.abort?.();
+  }
+  goalRuntimeState.startupGateGoalId = undefined;
+  goalRuntimeState.proposalReviewInProgress = undefined;
+  goalRuntimeState.proposalFeedbackBaseline = undefined;
+  goalRuntimeState.proposalFeedbackFlow = undefined;
+  goalRuntimeState.proposalRetryCount = 0;
+  goalRuntimeState.startGoalInProgress = false;
+  clearNaturalLanguageStartAuthorization();
+  clearExplicitPlanUpgradeAuthorization();
+  clearExecutionPlanModelErrorRecovery();
+  goalRuntimeState.pendingExecutionPlanUserResume = undefined;
   clearCurrentCheckSnapshot();
   planOverlay?.clearDoneSnapshot();
-  goalRuntimeState.sessionGeneration += 1;
+  resetAuditorWorkspaceTracker();
+  const dismiss = goalRuntimeState.dismissStatusDialog;
+  goalRuntimeState.dismissStatusDialog = undefined;
+  try {
+    dismiss?.();
+  } catch {
+    // A stale modal must not block session invalidation.
+  }
+  if (ctx) {
+    safeSetDgoalStatus(ctx, undefined);
+    safeUpdatePlanOverlay();
+  }
+}
+
+type QuarantineBranchMembership = "belongs" | "different" | "unknown";
+
+function readQuarantineBranchEntries(ctx: DgoalContext): SessionBranchEntry[] | undefined {
+  const manager = ctx.sessionManager as { getBranch?: () => unknown } | undefined;
+  if (typeof manager?.getBranch !== "function") return undefined;
+  const entries = manager.getBranch();
+  return Array.isArray(entries) ? entries as SessionBranchEntry[] : undefined;
+}
+
+function quarantineBranchMembership(
+  quarantine: DurabilityQuarantine,
+  ctx: DgoalContext,
+  options: { allowExactDescendantClaim?: boolean } = {},
+): QuarantineBranchMembership {
+  try {
+    const identity = captureDurabilityBranch(ctx);
+    if (quarantine.sessionId) {
+      if (!identity.sessionId) return "unknown";
+      if (quarantine.sessionId !== identity.sessionId) return "different";
+    }
+    if (quarantine.branchAnchorMode === "exact_leaf") {
+      const exactLeaf = quarantine.exactLeafId ?? null;
+      if (identity.leafId === exactLeaf) return "belongs";
+      if (typeof exactLeaf !== "string") return "different";
+      const branchEntries = readQuarantineBranchEntries(ctx);
+      if (!branchEntries) return "unknown";
+      const isDescendant = branchEntries.some((entry) => entry.id === exactLeaf);
+      if (!isDescendant) return "different";
+      if (!options.allowExactDescendantClaim) return "unknown";
+      if (options.allowExactDescendantClaim && typeof identity.leafId === "string") {
+        quarantine.branchAnchorMode = "contains_entry";
+        quarantine.originEntryId = identity.leafId;
+        quarantine.originEntryIds = [...new Set([...(quarantine.originEntryIds ?? []), identity.leafId])];
+        quarantine.sessionGeneration = goalRuntimeState.sessionGeneration;
+        delete quarantine.exactLeafId;
+      }
+      return "belongs";
+    }
+    const originEntryIds = quarantine.originEntryIds?.length
+      ? quarantine.originEntryIds
+      : quarantine.originEntryId
+        ? [quarantine.originEntryId]
+        : [];
+    if (originEntryIds.length === 0) return "belongs";
+    const branchEntries = readQuarantineBranchEntries(ctx);
+    if (!branchEntries) return "unknown";
+    return branchEntries.some((entry) => originEntryIds.includes(entry.id ?? "")) ? "belongs" : "different";
+  } catch {
+    return "unknown";
+  }
+}
+
+function matchingDurabilityQuarantine(
+  goal: GoalState | undefined,
+  pendingProposal: PendingProposalState | undefined,
+  ctx: DgoalContext,
+  options: { allowExactDescendantClaim?: boolean } = {},
+): { quarantine: DurabilityQuarantine; membership: QuarantineBranchMembership } | undefined {
+  for (const quarantine of [...goalRuntimeState.durabilityQuarantines].reverse()) {
+    const checkpointMatches = sameDurabilityCheckpoint(goal, pendingProposal, quarantine.safeGoal, quarantine.safePendingProposal)
+      || sameDurabilityCheckpoint(goal, pendingProposal, quarantine.unsafeGoal, quarantine.unsafePendingProposal);
+    if (!checkpointMatches) continue;
+    const membership = quarantineBranchMembership(quarantine, ctx, options);
+    if (membership !== "different") return { quarantine, membership };
+  }
+  return undefined;
+}
+
+function installResyncedProjection(
+  goal: GoalState | undefined,
+  pendingProposal: PendingProposalState | undefined,
+  history: PlanRunHistoryRecord[],
+): void {
+  goalRuntimeState.currentGoal = goal;
+  goalRuntimeState.pendingProposal = pendingProposal;
+  goalRuntimeState.planHistory = history;
+  goalRuntimeState.sessionProjectionValid = true;
+}
+
+function currentSessionScopeId(manager: {
+  getHeader?: () => { id?: unknown } | null;
+  getSessionId?: () => unknown;
+}): string | undefined {
+  const headerId = manager.getHeader?.()?.id;
+  if (typeof headerId === "string" && headerId) return headerId;
+  const sessionId = manager.getSessionId?.();
+  return typeof sessionId === "string" && sessionId ? sessionId : undefined;
+}
+
+function sessionScopeBelongsToCurrentBranch(scope: UncertainSessionScope, manager: {
+  getSessionId?: () => unknown;
+  getLeafId?: () => unknown;
+  getBranch?: () => unknown;
+}): boolean {
+  if (manager.getSessionId?.() !== scope.sessionId) return false;
+  if (scope.branchAnchorMode === "exact_leaf") {
+    const exactLeaf = scope.exactLeafId ?? null;
+    if ((manager.getLeafId?.() ?? null) === exactLeaf) return true;
+    if (typeof exactLeaf !== "string") return false;
+    const branch = manager.getBranch?.();
+    return Array.isArray(branch) && branch.some((entry) => entry && typeof entry === "object" && (entry as { id?: unknown }).id === exactLeaf);
+  }
+  const originEntryIds = scope.originEntryIds?.length
+    ? scope.originEntryIds
+    : scope.originEntryId
+      ? [scope.originEntryId]
+      : [];
+  if (originEntryIds.length === 0) return false;
+  const branch = manager.getBranch?.();
+  return Array.isArray(branch) && branch.some((entry) => entry && typeof entry === "object" && originEntryIds.includes(String((entry as { id?: unknown }).id ?? "")));
+}
+
+function ensureCurrentSessionScope(ctx: DgoalContext, forceScope = false): boolean {
+  bindCurrentSessionManager(ctx);
+  if (currentSessionManagerIsPoisoned()) return false;
+  const manager = ctx.sessionManager as {
+    getHeader?: () => { id?: unknown; parentSession?: unknown } | null;
+    getBranch?: () => unknown;
+    getSessionId?: () => unknown;
+    getLeafId?: () => unknown;
+  } | undefined;
+  if (typeof manager?.getBranch !== "function") return false;
+  const branchEntries = manager.getBranch();
+  if (!Array.isArray(branchEntries)) return false;
+  const header = manager?.getHeader?.();
+  const sessionId = currentSessionScopeId(manager);
+  const uncertain = goalRuntimeState.uncertainSessionScopes.find((scope) => sessionScopeBelongsToCurrentBranch(scope, manager));
+  if (!forceScope && !header?.parentSession && !uncertain) return true;
+  if (!sessionId) return false;
+  const alreadyScoped = (branchEntries as SessionBranchEntry[]).some((entry) => {
+    if (entry.type !== "custom" || entry.customType !== SESSION_SCOPE_ENTRY_TYPE) return false;
+    const data = entry.data as SessionScopeEntryData | undefined;
+    return data?.sessionId === sessionId;
+  });
+  if (alreadyScoped && !uncertain) return true;
+  if (!api) return false;
+  const beforeLeafId = manager.getLeafId?.() ?? null;
+  try {
+    appendDgoalEntry<SessionScopeEntryData>(SESSION_SCOPE_ENTRY_TYPE, { sessionId });
+    if (uncertain) goalRuntimeState.uncertainSessionScopes = goalRuntimeState.uncertainSessionScopes.filter((scope) => scope !== uncertain);
+    return true;
+  } catch (error) {
+    const afterLeafId = manager.getLeafId?.() ?? null;
+    const nextScope: UncertainSessionScope = typeof afterLeafId === "string" && afterLeafId !== beforeLeafId
+      ? { sessionId, branchAnchorMode: "contains_entry", originEntryId: afterLeafId, originEntryIds: [afterLeafId] }
+      : { sessionId, branchAnchorMode: "exact_leaf", exactLeafId: beforeLeafId as string | null };
+    if (uncertain) {
+      if (nextScope.branchAnchorMode === "contains_entry" || uncertain.branchAnchorMode !== "contains_entry") {
+        if (nextScope.branchAnchorMode === "contains_entry") {
+          nextScope.originEntryIds = [...new Set([...(uncertain.originEntryIds ?? (uncertain.originEntryId ? [uncertain.originEntryId] : [])), ...(nextScope.originEntryIds ?? [])])];
+        }
+        Object.assign(uncertain, nextScope);
+        if (nextScope.branchAnchorMode === "contains_entry") delete uncertain.exactLeafId;
+        else delete uncertain.originEntryId;
+      }
+    } else {
+      goalRuntimeState.uncertainSessionScopes.push(nextScope);
+    }
+    goalRuntimeState.sessionProjectionValid = false;
+    safeNotify(ctx, t("notify.sessionPersistenceQuarantined", { error: formatError(error) }), "error");
+    return false;
+  }
+}
+
+// session_start / session_tree / session_compact 共用：从当前 session 重加载 goal 并重同步 status/overlay。
+// 读取必须先成功，避免 stale session context 或其它读取错误把尚存的 currentGoal 清掉。
+export function resyncGoalFromSession(
+  ctx: DgoalContext,
+  options: { coldPlanRecovery?: boolean; cause?: "session_start" | "session_tree" | "session_compact"; forceSessionScope?: boolean } = {},
+): boolean {
+  bindCurrentSessionManager(ctx);
+  // A tree/session event invalidates old async work even when the host can no longer read the
+  // replaced branch. Keep the old projection on stale reads, but never let it write afterward.
+  invalidateSessionRuntime(ctx);
+  if (currentSessionManagerIsPoisoned()) {
+    safeNotify(ctx, t("notify.sessionPersistenceStillQuarantined"), "error");
+    safeSetDgoalStatus(ctx, undefined);
+    safeUpdatePlanOverlay();
+    return false;
+  }
+  if (!sessionFileHasCompleteTail(ctx)) {
+    goalRuntimeState.sessionProjectionValid = false;
+    safeNotify(ctx, t("notify.sessionFileTailInvalid"), "error");
+    safeSetDgoalStatus(ctx, undefined);
+    safeUpdatePlanOverlay();
+    return false;
+  }
+  let nextGoal: GoalState | undefined;
+  let nextPendingProposal: PendingProposalState | undefined;
+  let nextHistory: PlanRunHistoryRecord[];
+  try {
+    if (!ensureCurrentSessionScope(ctx, options.forceSessionScope)) return false;
+    const restored = loadPersistedState(ctx);
+    nextGoal = restored.goal;
+    nextPendingProposal = restored.pendingProposal;
+    nextHistory = loadPlanRunHistory(ctx);
+  } catch (error) {
+    if (isStaleSessionContextError(error)) return false;
+    throw error;
+  }
+  clearCurrentCheckSnapshot();
+  planOverlay?.clearDoneSnapshot();
   resetAuditorWorkspaceTracker();
   // 加载新 goal 前清空错误与无进展计数，避免跨 goal/session 继承旧计数。
   goalRuntimeState.consecutiveErrors = 0;
   resetProgressTracking(goalRuntimeState);
-  goalRuntimeState.currentGoal = nextGoal;
-  goalRuntimeState.planHistory = nextHistory!;
+  installResyncedProjection(nextGoal, nextPendingProposal, nextHistory!);
+
+  const quarantineMatch = matchingDurabilityQuarantine(nextGoal, nextPendingProposal, ctx, {
+    allowExactDescendantClaim: options.cause !== "session_tree",
+  });
+  if (quarantineMatch?.membership === "unknown") {
+    goalRuntimeState.sessionProjectionValid = false;
+    safeSetDgoalStatus(ctx, undefined);
+    safeUpdatePlanOverlay();
+    return false;
+  }
+  const quarantine = quarantineMatch?.quarantine;
+  if (options.coldPlanRecovery && nextGoal?.status === "active" && nextGoal.contract) {
+    const unsafeGoal = nextGoal;
+    nextGoal = markGoalPaused(nextGoal, Date.now(), { pauseReason: "session_recovery" });
+    installResyncedProjection(nextGoal, nextPendingProposal, nextHistory!);
+    const persistenceFrom = captureDurabilityBranch(ctx);
+    try {
+      persistWorkGoal(nextGoal, nextPendingProposal ?? null);
+    } catch (error) {
+      compensateUncertainWorkAppend(
+        ctx,
+        nextGoal,
+        nextPendingProposal,
+        unsafeGoal,
+        nextPendingProposal,
+        persistenceFrom,
+      );
+      safeNotify(ctx, t("notify.sessionPersistenceQuarantined", { error: formatError(error) }), "error");
+      return false;
+    }
+  }
+  installResyncedProjection(nextGoal, nextPendingProposal, nextHistory!);
   try {
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
     // 按 setWidget 能力恢复 overlay；不依赖不同 Pi 版本可能缺失的 hasUI/mode 标记。
@@ -4122,13 +5501,11 @@ export function resyncGoalFromSession(ctx: DgoalContext) {
   } catch {
     // UI 渲染失败不阻断状态重同步。
   }
+  return true;
 }
 
 export function resolveAuditorWorkspaceCwd(ctx: Pick<DgoalContext, "cwd" | "sessionManager">): string {
-  const sessionManager = ctx.sessionManager as
-    | { getBranch?: () => SessionBranchEntry[]; getEntries?: () => SessionBranchEntry[] }
-    | undefined;
-  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+  const entries = getCurrentBranchEntries(ctx);
   const baseGitRoot = findNearestGitRoot(ctx.cwd);
   if (!baseGitRoot) return ctx.cwd;
 
@@ -4221,10 +5598,7 @@ function sameFilesystemPath(left: string, right: string) {
 // 从当前会话分支里提取 user/assistant 对话文本，作为摘要子进程的输入素材。
 // 只取真实对话：toolResult / bashExecution / custom 等噪音过滤掉，每条裁到合理长度。
 function extractPriorDiscussion(ctx: DgoalContext, capBytes = CONTEXT_INPUT_CAP_BYTES): string {
-  const sessionManager = ctx.sessionManager as
-    | { getBranch?: () => SessionBranchEntry[]; getEntries?: () => SessionBranchEntry[] }
-    | undefined;
-  const entries = sessionManager?.getBranch?.() ?? sessionManager?.getEntries?.() ?? [];
+  const entries = getCurrentBranchEntries(ctx);
   const lines: string[] = [];
   for (const entry of entries) {
     if (entry.type !== "message") continue;
@@ -4416,6 +5790,7 @@ function softWorkListCanAutoClose(goal: GoalState): boolean {
 }
 
 function finalizeCompletedWorkGoal(ctx: DgoalContext, goal: GoalState): void {
+  goalRuntimeState.sessionGeneration += 1;
   const completed = { ...goal, status: "done" as GoalStatus, updatedAt: Date.now() };
   // done 与 null tombstone 必须先于任何 UI 后效持久化。
   commitCurrentGoal(completed, persistWorkGoal);
@@ -4474,20 +5849,26 @@ function completeWorkGoal(
   };
 }
 
-function clearActiveGoal(ctx: DgoalContext) {
+function clearActiveGoal(ctx: DgoalContext): boolean {
+  const unsafeGoal = goalRuntimeState.currentGoal;
+  const unsafePendingProposal = goalRuntimeState.pendingProposal;
+  goalRuntimeState.sessionGeneration += 1;
   cancelPendingContinuation();
-  goalRuntimeState.pendingProposal = undefined;
+  cancelPendingPlanDelivery();
+  goalRuntimeState.startupGateGoalId = undefined;
+  goalRuntimeState.proposalReviewInProgress = undefined;
   goalRuntimeState.consecutiveErrors = 0;
   resetProgressTracking(goalRuntimeState);
   resetAuditorWorkspaceTracker();
   clearCurrentCheckSnapshot();
   planOverlay?.clearDoneSnapshot();
-  clearCurrentGoal(persistWorkGoal);
+  const durable = commitSafetyCheckpoint(ctx, undefined, { unsafeGoal, unsafePendingProposal });
   clearExplicitPlanUpgradeAuthorization();
   clearNaturalLanguageStartAuthorization();
   clearExecutionPlanModelErrorRecovery();
   safeSetDgoalStatus(ctx, undefined);
   safeUpdatePlanOverlay();
+  return durable;
 }
 
 
@@ -5878,6 +7259,7 @@ export function __setApiForTest(mockApi: { appendEntry: <T>(type: string, data: 
 // 测试专用：重置模块级 goalRuntimeState.currentGoal，避免测试间状态泄漏。
 export function __resetGoalForTest() {
   resetGoalRuntimeState();
+  currentSessionManager = undefined;
   phaseCheckOverrideForTest = undefined;
   completionAuditorOverrideForTest = undefined;
   goalRuntimeState.currentCheckSnapshot = undefined;
@@ -5917,6 +7299,10 @@ export function __getPendingProposalForTest() {
   return goalRuntimeState.pendingProposal;
 }
 
+export function __fingerprintProposalBaseForTest(goal: GoalState) {
+  return fingerprintProposalBase(goal);
+}
+
 export function __setRuntimeStateForTest(patch: Partial<typeof goalRuntimeState>) {
   Object.assign(goalRuntimeState, patch);
 }
@@ -5926,10 +7312,18 @@ export function __getRuntimeStateForTest() {
     planHistory: goalRuntimeState.planHistory.map((record) => structuredClone(record)),
     proposalRetryCount: goalRuntimeState.proposalRetryCount,
     startGoalInProgress: goalRuntimeState.startGoalInProgress,
+    startupGateGoalId: goalRuntimeState.startupGateGoalId,
+    proposalReviewInProgress: goalRuntimeState.proposalReviewInProgress,
     naturalLanguageStartAuthorized: goalRuntimeState.naturalLanguageStartAuthorized,
     naturalLanguageStartInput: goalRuntimeState.naturalLanguageStartInput,
     executionPlanModelErrorRecovery: goalRuntimeState.executionPlanModelErrorRecovery
       ? { ...goalRuntimeState.executionPlanModelErrorRecovery }
+      : undefined,
+    pendingExecutionPlanUserResume: goalRuntimeState.pendingExecutionPlanUserResume
+      ? { ...goalRuntimeState.pendingExecutionPlanUserResume, guard: { ...goalRuntimeState.pendingExecutionPlanUserResume.guard } }
+      : undefined,
+    executionPlanUserResumeRun: goalRuntimeState.executionPlanUserResumeRun
+      ? { ...goalRuntimeState.executionPlanUserResumeRun }
       : undefined,
     consecutiveErrors: goalRuntimeState.consecutiveErrors,
     consecutiveNoProgressTurns: goalRuntimeState.consecutiveNoProgressTurns,
@@ -5939,9 +7333,24 @@ export function __getRuntimeStateForTest() {
     turnStartProgressFingerprint: goalRuntimeState.turnStartProgressFingerprint,
     pendingContinuation: goalRuntimeState.pendingContinuation ? { ...goalRuntimeState.pendingContinuation } : undefined,
     cancelledMarkers: [...goalRuntimeState.cancelledMarkers],
+    pendingPlanDelivery: goalRuntimeState.pendingPlanDelivery
+      ? { ...goalRuntimeState.pendingPlanDelivery, guard: { ...goalRuntimeState.pendingPlanDelivery.guard } }
+      : undefined,
+    planDeliveryRun: goalRuntimeState.planDeliveryRun ? { ...goalRuntimeState.planDeliveryRun } : undefined,
+    cancelledPlanDeliveryMarkers: [...goalRuntimeState.cancelledPlanDeliveryMarkers],
+    rejectedPlanDeliveryRuns: goalRuntimeState.rejectedPlanDeliveryRuns,
+    proposalFeedbackBaseline: goalRuntimeState.proposalFeedbackBaseline,
+    proposalFeedbackFlow: goalRuntimeState.proposalFeedbackFlow,
+    uncertainSessionScopes: structuredClone(goalRuntimeState.uncertainSessionScopes),
+    durabilityQuarantine: goalRuntimeState.durabilityQuarantines.length
+      ? structuredClone(goalRuntimeState.durabilityQuarantines.at(-1))
+      : undefined,
+    durabilityQuarantines: structuredClone(goalRuntimeState.durabilityQuarantines),
     latestSuccessfulModifiedFilePath: goalRuntimeState.latestSuccessfulModifiedFilePath,
     latestSuccessfulReadFilePath: goalRuntimeState.latestSuccessfulReadFilePath,
     currentCheckSnapshot: goalRuntimeState.currentCheckSnapshot ? { ...goalRuntimeState.currentCheckSnapshot } : undefined,
+    sessionGeneration: goalRuntimeState.sessionGeneration,
+    sessionProjectionValid: goalRuntimeState.sessionProjectionValid,
   };
 }
 // 测试专用：验证 goalRuntimeState.startGoalInProgress 标志在 startGoal 结束后正确清零
@@ -6124,6 +7533,11 @@ function workProfileCompactLabel(goal: GoalState): string {
       : goal.contract?.profile === "staged_check" ? "S" : "W";
 }
 
+function overlayCommands(goal: GoalState): string {
+  if (!goal.contract) return t("overlay.commandsSoft");
+  return goal.status === "paused" ? t("overlay.commandsPaused") : t("overlay.commandsActive");
+}
+
 function fitOverlayLines(lines: string[], width: number | undefined): string[] {
   if (width === undefined) return lines;
   if (!Number.isFinite(width) || width <= 0) return [];
@@ -6142,20 +7556,20 @@ function buildOverlayHeading(
   goal: GoalState,
   progress: string,
   compactProgress: string,
-  elapsed: string,
-  compactElapsed: string,
+  elapsed: string | undefined,
+  compactElapsed: string | undefined,
   width: number | undefined,
 ): string {
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
-  if (width === undefined) return `🎯 ${truncateLine(objectiveFirstLine, 40)} · ${progress} ⏱️ ${elapsed}`;
+  const hasElapsed = Boolean(elapsed && compactElapsed);
+  const suffixes = hasElapsed
+    ? [` · ${progress} ⏱️ ${elapsed}`, ` · ${compactProgress} ⏱${compactElapsed}`]
+    : [` · ${progress}`, ` · ${compactProgress}`];
+  if (width === undefined) return `🎯 ${truncateLine(objectiveFirstLine, 40)}${suffixes[0]}`;
   if (!Number.isFinite(width) || width <= 0) return "";
 
   const maxWidth = Math.floor(width);
   const prefix = "🎯 ";
-  const suffixes = [
-    ` · ${progress} ⏱️ ${elapsed}`,
-    ` · ${compactProgress} ⏱${compactElapsed}`,
-  ];
   for (const suffix of suffixes) {
     const objectiveWidth = maxWidth - visibleWidth(prefix) - visibleWidth(suffix);
     if (objectiveWidth < 1) continue;
@@ -6163,12 +7577,13 @@ function buildOverlayHeading(
     return `${prefix}${objective}${suffix}`;
   }
 
-  const compactStatus = `${compactProgress} ⏱${compactElapsed}`;
+  const compactStatus = hasElapsed ? `${compactProgress} ⏱${compactElapsed}` : compactProgress;
   if (visibleWidth(compactStatus) <= maxWidth) return compactStatus;
-  const progressWithTimer = `${compactProgress} ⏱`;
-  if (visibleWidth(progressWithTimer) <= maxWidth) return progressWithTimer;
-  const essentialWithTimer = `${compactProgress.split(/\s+/).slice(0, 2).join(" ")} ⏱`;
-  if (visibleWidth(essentialWithTimer) <= maxWidth) return essentialWithTimer;
+  const progressMarker = hasElapsed ? `${compactProgress} ⏱` : compactProgress;
+  if (visibleWidth(progressMarker) <= maxWidth) return progressMarker;
+  const essential = compactProgress.split(/\s+/).slice(0, 2).join(" ");
+  const essentialMarker = hasElapsed ? `${essential} ⏱` : essential;
+  if (visibleWidth(essentialMarker) <= maxWidth) return essentialMarker;
   if (visibleWidth(compactProgress) <= maxWidth) return compactProgress;
   return truncateToWidth(compactProgress, maxWidth, "…");
 }
@@ -6178,10 +7593,12 @@ function renderWorkListLines(goal: GoalState, opts: RenderPlanOptions, width?: n
   const allItems = flattenWorkItems(workList);
   const terminal = allItems.filter((item) => isTerminalItemStatus(item.status)).length;
   const donePhases = workList.phases.filter((phase) => phase.status === "done").length;
+  const isSoft = !goal.contract;
   const label = workProfileLabel(goal);
-  const progress = `${label} · ${terminal}/${allItems.length} items${workList.phases.length ? ` · ${donePhases}/${workList.phases.length} phases` : ""}`;
+  const progress = `${label} · ${terminal}/${allItems.length} items${workList.phases.length ? ` · ${donePhases}/${workList.phases.length} phases` : ""}${isSoft ? ` · ${t("overlay.softSaved")}` : ""}`;
   const compactProgress = `${workProfileCompactLabel(goal)} ${terminal}/${allItems.length}${workList.phases.length ? ` ${donePhases}/${workList.phases.length}p` : ""}`;
-  const heading = buildOverlayHeading(goal, progress, compactProgress, formatElapsed(getGoalElapsedMs(goal)), formatCompactElapsed(getGoalElapsedMs(goal)), width);
+  const elapsedMs = isSoft ? undefined : getGoalElapsedMs(goal);
+  const heading = buildOverlayHeading(goal, progress, compactProgress, elapsedMs === undefined ? undefined : formatElapsed(elapsedMs), elapsedMs === undefined ? undefined : formatCompactElapsed(elapsedMs), width);
   const activitySuffix = formatActivitySuffix(opts.activityFrame);
   const expanded = opts.expandItems || goal.status === "done";
   const bodyLines: string[] = [];
@@ -6201,7 +7618,7 @@ function renderWorkListLines(goal: GoalState, opts: RenderPlanOptions, width?: n
   const activityLine = formatCheckActivityLine(goalRuntimeState.currentCheckSnapshot);
   if (expanded && activityLine) bodyLines.unshift(`│ ${truncateLine(activityLine, 72)}`);
   if (goal.status === "done") return fitOverlayLines([heading, ...bodyLines], width);
-  const commands = t("overlay.commands");
+  const commands = overlayCommands(goal);
   const hintLine = expanded ? t("overlay.hideItems", { commands }) : t("overlay.showItems", { commands });
   const maxBodyLines = PLAN_OVERLAY_MAX_LINES - 2;
   if (bodyLines.length <= maxBodyLines) return fitOverlayLines([heading, ...bodyLines, hintLine], width);
@@ -6379,17 +7796,17 @@ export function buildPlanHistoryDetailLines(record: PlanRunHistoryRecord | undef
   return lines;
 }
 
-/** Build heading only — for pinned top of scrollable modal. 量化到秒避免 elapsed 跳变导致每行失效。 */
+/** Build heading only — for pinned top of scrollable modal. */
 export function buildHeadingLine(goal: GoalState): string {
   const items = goal.workList ? flattenWorkItems(goal.workList) : [];
   const progress = goal.workList
-    ? `${workProfileLabel(goal)} · ${items.filter((item) => isTerminalItemStatus(item.status)).length}/${items.length} items${goal.workList.phases.length ? ` · ${goal.workList.phases.filter((phase) => phase.status === "done").length}/${goal.workList.phases.length} phases` : ""}`
+    ? `${workProfileLabel(goal)} · ${items.filter((item) => isTerminalItemStatus(item.status)).length}/${items.length} items${goal.workList.phases.length ? ` · ${goal.workList.phases.filter((phase) => phase.status === "done").length}/${goal.workList.phases.length} phases` : ""}${goal.contract ? "" : ` · ${t("overlay.softSaved")}`}`
     : "Work List unavailable";
-  const elapsed = formatElapsed(getGoalElapsedMs(goal));
+  const elapsed = goal.contract ? ` ⏱️ ${formatElapsed(getGoalElapsedMs(goal))}` : "";
   const objectiveFirstLine = goal.objective.split(/\r?\n/, 1)[0] ?? goal.objective;
   const pauseReason = formatPauseReasonLabel(goal);
   const labels = [pauseReason].filter(Boolean).join(" · ");
-  return `🎯 ${objectiveFirstLine} · ${progress} ⏱️ ${elapsed}${labels ? ` · ${labels}` : ""}`;
+  return `🎯 ${objectiveFirstLine} · ${progress}${elapsed}${labels ? ` · ${labels}` : ""}`;
 }
 
 
@@ -6411,11 +7828,20 @@ export function buildNoProgressDetail(goal: GoalState | undefined): string {
   return `${phase ? `（当前 Phase #${phase.id}：${phase.subject}）` : ""}${item ? `，当前 Work Item #${item.id}：${item.subject}` : ""}`;
 }
 
+export function getPlanStatusNotice(goal: GoalState | undefined): string | undefined {
+  if (!goal) return undefined;
+  if (goalRuntimeState.pendingProposal?.goalId === goal.id) return t("status.savedProposalNotice");
+  if (goal.status === "paused" && goal.pauseReason === "session_recovery") return t("status.recoveredPlanNotice");
+  return undefined;
+}
+
 export function formatStatus(goal: GoalState | undefined) {
   if (!goal) return undefined;
+  if (goalRuntimeState.pendingProposal?.goalId === goal.id) return t("status.reviewPending");
   if (goal.status === "done") return t("status.done");
-  if (goal.status === "paused") return t("status.paused");
+  if (goal.status === "paused") return goal.pauseReason === "session_recovery" ? t("status.recoveryPaused") : t("status.paused");
   if (goal.status === "pending") return t("status.starting");
+  if (!goal.contract) return t("status.savedList");
   return t("status.active", { iteration: goal.iteration });
 }
 
@@ -6441,15 +7867,16 @@ function createPlanTuiDependencies(): PlanTuiDependencies {
     t,
     widgetKey: PLAN_WIDGET_KEY,
     doneHideDelayMs: 10_000,
-    getCurrentGoal: () => goalRuntimeState.currentGoal,
-    getCurrentCheckSnapshot: () => goalRuntimeState.currentCheckSnapshot,
+    getCurrentGoal: () => goalRuntimeState.sessionProjectionValid ? goalRuntimeState.currentGoal : undefined,
+    getCurrentNotice: getPlanStatusNotice,
+    getCurrentCheckSnapshot: () => goalRuntimeState.sessionProjectionValid ? goalRuntimeState.currentCheckSnapshot : undefined,
     isGoalRunning,
     renderPlanLines,
     buildHeadingLine,
     buildPlanStatusListLines,
     buildPlanStatusDetailLines,
     getPlanStatusTargets,
-    getPlanHistory: () => goalRuntimeState.planHistory,
+    getPlanHistory: () => goalRuntimeState.sessionProjectionValid ? goalRuntimeState.planHistory : [],
     buildPlanHistoryListLines,
     buildPlanHistoryDetailLines,
     computePlanStatusSelection,

@@ -191,6 +191,35 @@ describe("auditor workspace cwd", () => {
     expect(cwd).toBe(repo);
   });
 
+  test("does not infer an auditor worktree from whole-tree entries when current branch access is unavailable", () => {
+    const root = makeTempRoot();
+    const mainRepo = join(root, "Curio");
+    const otherBranchRepo = join(mainRepo, "worktrees", "other-branch", "Curio");
+    mkdirSync(join(mainRepo, ".git"), { recursive: true });
+    mkdirSync(otherBranchRepo, { recursive: true });
+    writeFileSync(join(otherBranchRepo, ".git"), "gitdir: /tmp/fake-other-branch-gitdir\n");
+    writeFileSync(join(otherBranchRepo, "ContentView.swift"), "// other branch\n");
+
+    const cwd = resolveAuditorWorkspaceCwd({
+      cwd: mainRepo,
+      sessionManager: {
+        getEntries: () => [{
+          type: "message",
+          message: {
+            role: "assistant",
+            content: [{
+              type: "toolCall",
+              name: "edit",
+              arguments: { path: "worktrees/other-branch/Curio/ContentView.swift" },
+            }],
+          },
+        }],
+      },
+    } as never);
+
+    expect(cwd).toBe(mainRepo);
+  });
+
   test("untracked file content changes invalidate the audit workspace fingerprint", () => {
     const repo = makeTempRoot();
     execFileSync("git", ["-C", repo, "init", "-q"]);

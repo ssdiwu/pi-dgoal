@@ -27,16 +27,18 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | `soft-forgetting-e2e-smoke.test.ts` | done Phase 执行上下文只留标题，结构化状态仍完整 |
 | `startup-gate.test.ts` | Goal Check / Staged Check 结构校验、语义预审、Profile 切换、确认 UI 与技术/语义失败分流 |
 | `session-tree-resync.test.ts` | `dgoal-work-v1` session tree / compact 恢复、旧 key 拒绝、迟到审核与 continuation 隔离 |
+| `session-recovery.test.ts` | 冷 startup/resume 安全暂停、fork scope 隔离、pending proposal 手动 review、延后/反馈失败后保留、真实 input/before/user-message-end 提交顺序、append 写前/写后 hard quarantine、同 manager 零补偿追加、fresh manager/JSONL 尾部恢复边界、并发异步回滚隔离、anti-replay resume/upgrade prompt |
 
 ## TUI 与工具投影
 
 | 文件 | 验证内容 |
 |---|---|
 | `plan-overlay-render.test.ts` | Profile / Phase / Work Item 常驻浮层、宽度裁切、展开、reload、完成快照与 UI 容错 |
+| `completion-next-goal-overlay.test.ts` | 公共 soft 完成后立即新建 soft / Execution，旧完成快照不覆盖新 Goal 且旧 hide timer 被取消 |
 | `plan-status-pure.test.ts` / `plan-status-dialog.test.ts` | Current / History Modal、逻辑项导航、Description / frontier / check / History 详情、换行滚动与组件契约 |
 | `tool-result-render.test.ts` | 九工具摘要、白名单化展开、check 活性与创建/更新具体详情 |
 | `show-status.test.ts` | 状态查询、Modal 调用与 fail-soft |
-| `help-command-routing.test.ts` / `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令、history clear、裸命令承接、中断与投递去重 |
+| `help-command-routing.test.ts` / `command-aliases.test.ts` / `startgoal-abort.test.ts` | `/dgoal` 命令、review/history clear、裸命令承接、中断与投递去重 |
 
 ## 审核、熔断与参数边界
 
@@ -52,6 +54,8 @@ npm run test:smoke          # 真实模型 smoke，消耗 token
 | `no-progress-stall.test.ts` / `no-progress-agent-end.test.ts` | Plan Contract 3/8 熔断、durable progress 分类、Execution model_error 精确用户输入恢复与生命周期重置 |
 | `paused-state-diagnostics.test.ts` | paused 下 read 可用、mutation / check 拒绝与原因投影 |
 | `prepare-arguments-schema.test.ts` | 九工具 strict schema nullable 与 blockedBy 字符串数组 coercion |
+| `provider-request-compat.test.ts` | 真实 pi-ai 请求构造的离线捕获：Anthropic 九工具退出 strict 编译，保留 schema/第三方工具；OpenAI strict 不变；禁止网络调用 |
+| `prompt-cache-context.test.ts` | 固定系统前缀、公共 update 后最新模型上下文、隐藏快照无历史写入/重复、保留其他扩展消息与暂停/清理边界 |
 
 ## Python smoke
 

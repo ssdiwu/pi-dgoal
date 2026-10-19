@@ -4,7 +4,7 @@ import type { AcceptanceCriterion, WorkCheckRecord, WorkList } from "../work-lis
 export type CheckRecord = WorkCheckRecord;
 
 export type GoalStatus = "pending" | "active" | "paused" | "done";
-export type PauseReason = "user_abort" | "model_error" | "audit_error" | "no_progress" | "agent_blocked";
+export type PauseReason = "user_abort" | "model_error" | "audit_error" | "no_progress" | "agent_blocked" | "session_recovery";
 export type AuditorScope = "phase" | "goal";
 export type AssuranceProfile = "execution" | "goal_check" | "staged_check";
 

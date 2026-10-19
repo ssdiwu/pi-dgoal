@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import dgoal, {
   __getGoalForTest,
   __getPendingProposalForTest,
+  __getRuntimeStateForTest,
   __resetGoalForTest,
   __setCompletionAuditorOverrideForTest,
   __setGoalForTest,
@@ -13,10 +14,12 @@ import dgoal, {
   disposePlanOverlay,
   goalCheckTool,
   loadGoal,
+  loadPlanRunHistory,
   phaseCheckTool,
   resyncGoalFromSession,
   sendContinuation,
   workReadTool,
+  workUpdateTool,
   type GoalState,
   type WorkItem,
   type WorkPhase,
@@ -105,6 +108,29 @@ describe("session_tree resynchronizes the current Work List", () => {
     expect(__getGoalForTest()).toMatchObject({ id: "pending-after-reload", status: "pending" });
   });
 
+  test("state and History loaders fail closed when the host cannot provide the current branch", () => {
+    const otherBranchGoal = makeGoal({ id: "other-branch" });
+    const historyRecord = {
+      id: otherBranchGoal.contract!.id,
+      goalId: otherBranchGoal.id,
+      objective: otherBranchGoal.objective,
+      description: otherBranchGoal.description,
+      goalStartedAt: otherBranchGoal.startedAt,
+      endedAt: otherBranchGoal.startedAt + 1,
+      terminalReason: "cleared",
+      workList: structuredClone(otherBranchGoal.workList!),
+      contract: structuredClone(otherBranchGoal.contract!),
+    };
+    const allTreeEntries = [
+      dgoalEntry(otherBranchGoal),
+      { type: "custom", customType: "dgoal-plan-history-v1", data: { records: [historyRecord] } },
+    ];
+    const legacyContext = { cwd: "/tmp", ui: {}, sessionManager: { getEntries: () => allTreeEntries } } as never;
+
+    expect(loadGoal(legacyContext)).toBeUndefined();
+    expect(loadPlanRunHistory(legacyContext)).toEqual([]);
+  });
+
   test("session_compact preserves deliverables and resumes an active Execution Plan once", async () => {
     __resetGoalForTest();
     const execution = makeGoal({
@@ -162,6 +188,35 @@ describe("session_tree resynchronizes the current Work List", () => {
     __setCompletionAuditorOverrideForTest(undefined);
   });
 
+  test("a rejected Goal Check survives compaction, can be rechecked and explicitly completed", async () => {
+    __resetGoalForTest();
+    const reviewed = makeGoal({
+      id: "compact-rejected", workList: { items: [item(1, "修复", "done")], phases: [], nextItemId: 2, nextPhaseId: 1, revision: 0 },
+      contract: {
+        id: "run-rejected", profile: "goal_check", startedAt: 1, revision: 0,
+        transitions: [{ to: "goal_check", at: 1, revision: 0 }], verification: "bun test",
+        acceptanceCriteria: [{ criterion: "修复通过", evidence: "bun test" }],
+        goalCheck: { status: "rejected", revision: 0, checkedAt: 1 },
+        finalFeedback: { report: "保留终审修复上下文", rejectedCount: 1, createdAt: 1 },
+      },
+    });
+    const { handlers } = captureHandlers();
+    const context = makeCtx([dgoalEntry(reviewed)]) as never;
+    await handlers.session_compact({ willRetry: true }, context);
+    expect(__getGoalForTest()?.contract?.goalCheck?.status).toBe("rejected");
+    expect(JSON.stringify(await handlers.context({ messages: [] }, context))).toContain("保留终审修复上下文");
+    __setCompletionAuditorOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
+    try {
+      const checked = await goalCheckTool.execute("test", { summary: "完成修复", verification: "bun test" }, undefined, undefined, context);
+      expect(checked.details?.approved).toBe(true);
+      const completed = await workUpdateTool.execute("test", { target: "goal", status: "done", summary: "完成修复", verification: "bun test" }, undefined, undefined, context);
+      expect(completed.details?.completed).toBe(true);
+      expect(__getGoalForTest()).toBeUndefined();
+    } finally {
+      __setCompletionAuditorOverrideForTest(undefined);
+    }
+  });
+
   test("stale session errors preserve state while unrelated read failures remain visible", () => {
     __resetGoalForTest();
     __setGoalForTest(makeGoal({ id: "keep-on-stale" }));
@@ -171,6 +226,27 @@ describe("session_tree resynchronizes the current Work List", () => {
     const brokenCtx = { ...makeCtx([]), sessionManager: { getBranch: () => { throw new Error("permission denied"); } } };
     expect(() => resyncGoalFromSession(brokenCtx as never)).toThrow("permission denied");
     expect(__getGoalForTest()?.id).toBe("keep-on-stale");
+  });
+
+  test("stale compact reads invalidate the old generation and never continue the retained old projection", async () => {
+    __resetGoalForTest();
+    const old = makeGoal({ id: "stale-compact-old" });
+    __setGoalForTest(old);
+    const { handlers, prompts } = captureHandlers(true);
+    const generation = __getRuntimeStateForTest().sessionGeneration;
+    const staleContext = {
+      cwd: "/tmp",
+      ui: {},
+      isIdle: () => true,
+      hasPendingMessages: () => false,
+      sessionManager: { getBranch: () => { throw new Error("stale after session replacement"); } },
+    } as never;
+
+    await handlers.session_compact({ willRetry: false }, staleContext);
+
+    expect(__getRuntimeStateForTest().sessionGeneration).toBe(generation + 1);
+    expect(__getGoalForTest()).toBe(old);
+    expect(prompts).toEqual([]);
   });
 
   test("done Goals and the removed persistence key are not restored", () => {

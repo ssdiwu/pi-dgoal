@@ -10,8 +10,8 @@ Pi 扩展：每个 session Goal 只维护**一份 Work List**，并只增加当�
 
 | 模式 | 适用场景 | 自动续跑 | 独立建检 |
 |---|---|---:|---|
-| **软性 Work List** | 普通多步工作值得跨 turn 跟踪 | 无 | 无 |
-| **Execution Plan** | agent 必须 Until Done（持续执行） | 有 | 无 |
+| **软性 Work List** | 用户明确只需记录、等待后续输入，而非由 agent 自主交付 | 无 | 无 |
+| **Execution Plan** | 请求有明确交付结果，且 agent 无需继续等待用户决策即可完成 | 有 | 无 |
 | **Goal Check Plan** | 最终结果需要独立终审 | 有 | `goal_check` |
 | **Staged Check Plan** | 真实串行 Phase 与最终结果都需要独立建检 | 有 | `phase_check` + `goal_check` |
 
@@ -37,9 +37,9 @@ pi -e ./index.ts
 
 ## 用法
 
-### 普通任务：软性 Work List
+### 被动跟踪：软性 Work List
 
-值得跟踪时，agent 调用 `work_list`，再用 `work_create` / `work_update` 推进 Work Item。
+只有在用户要为后续回合记录工作、或明确不要求当前完成时，agent 才使用 `work_list`。修复、实现、验证等有明确交付的请求必须进入 `execution_plan`，不能降级为软清单。
 
 ```text
 work_list
@@ -48,7 +48,7 @@ work_list
 → 自动收口 + 用户可见完成总结
 ```
 
-软清单跨 turn 持久化，但不启动 continuation（自动续跑）、no-progress 计数或 auditor（独立审核）。保持 soft 时，Work Item 的 Description 与 evidence 可省略。全部 Work Item 进入 `done` / `abandoned` 且真实 Phase 已显式完成后，当前 Goal 会原子清除，并返回结构化完成信号。
+软清单跨 turn 持久化，但不启动 continuation（自动续跑）、no-progress 计数或 auditor（独立审核）。TUI（终端界面）会明确显示“已保存，等待下一轮”，不显示递增计时或暂停/继续控制。保持 soft 时，Work Item 的 Description 与 evidence 可省略。全部 Work Item 进入 `done` / `abandoned` 且真实 Phase 已显式完成后，当前 Goal 会原子清除，并返回结构化完成信号。
 
 ### 持续工作：Execution Plan
 
@@ -120,8 +120,9 @@ Goal 与真实 Phase 的 Description 必填；进入任意 Plan Contract 后，W
 /dgoal <objective>       启动 Goal Check / Staged Check 选择与确认
 /dgoal                   承接前文进入启动闸门
 /dgoal status | s        查看当前 Work List 与 session History
+/dgoal review            查看、修改或确认当前 session 保存的待确认计划
 /dgoal pause  | p        暂停 active Plan Contract
-/dgoal resume | r        恢复 paused Plan Contract
+/dgoal resume | r        核对现状后恢复 paused Plan Contract
 /dgoal clear  | c        清除当前 Goal / Work List
 /dgoal history clear     二次确认后清空当前 session 的 Plan Run History
 /dgoal help   | h        查看当前行为说明
@@ -134,9 +135,14 @@ Goal 与真实 Phase 的 Description 必填；进入任意 Plan Contract 后，W
 - **持续浮层**：显示当前 Profile、聚合进度、真实 Phase 与当前 Work Item。
 - **`Ctrl+O`**：展开 Work Item 与当前审核活性。
 - **`/dgoal s` Modal**：同时浏览当前 Work List 与 Plan Run History；详情展示 Description、状态、依赖、证据、原因、deliverable 与适用 check。
+- **恢复提示**：保存的 proposal 显示 `/dgoal review`；冷恢复的未完成 Plan 显示 `/dgoal resume`。两者都不自动弹窗或自动执行。
 - **fail-soft（失败降级）**：widget、Modal、status 或 notify 异常只能影响展示，不能阻断持久化、完成或恢复。
 
 完成 Phase 在 TUI 与 History 中保持可见；进入执行 prompt 时只保留标题行，避免旧细节持续膨胀上下文。
+
+实时 Work List 状态与审核反馈在每次模型请求前投影到消息尾部。system prompt（系统提示词）只保留固定路由指引，计划更新不会使其缓存前缀失效。隐藏快照只用于当前请求，不写入会话历史，也不累积旧副本。
+
+Anthropic Messages 下，九个 dgoal 工具使用普通工具采样，避开其 strict schema（严格模式结构）全局 union 数量限制；工具结构、nullable 参数准备和本地校验保持不变。OpenAI/Codex 继续优先使用 strict schema。
 
 ## 独立建检
 
@@ -158,11 +164,13 @@ Goal 与真实 Phase 的 Description 必填；进入任意 Plan Contract 后，W
 - `dgoal-plan-history-v1` 保存当前 session 分支的 append-only（只追加）Plan Run History。
 - History 保留结构化完成证据与 check 结论，但删除 auditor 原始报告、feedback、thinking、transcript 和 mutation log；只读且不能 resume。
 - v0.8.1 之前的活动状态明确忽略、不迁移。升级后需重新建立当前 Work List。
-- `session_tree` / `session_compact` 只恢复严格校验后的结构化状态。压缩后，Pi 未自行 retry 时 active Plan Contract 会恢复 continuation；软性 Work List 不会。
+- 同一 Pi session 当前分支在冷 `startup` / `resume` 时会恢复完整 pending proposal；它保持待确认，必须显式 `/dgoal review`。已确认但未完成的 active Plan Contract 会先原地持久化为 `paused(session_recovery)`，再由 `/dgoal resume` 核对 `in_progress` 与外部副作用后继续同一 Goal、Plan Run、Work List 和 revision。
+- `reload` / `session_tree` / `session_compact` 只做结构重同步，不触发冷恢复暂停；压缩后，Pi 未自行 retry 时 active Plan Contract 会恢复 continuation。soft Work List 只恢复结构，不暂停、不续跑。
+- 任一 dgoal 会话追加抛错后，当前 `SessionManager` 会被硬锁：dgoal 不再对该 manager 追加补偿记录、修改状态或投递 continuation。必须真正重新打开任务或重启应用，以新 manager 从磁盘最后完整记录恢复；JSONL 尾部不完整或不可读取时继续 fail-closed，直到修复或更换会话文件。
 
 ## 设计边界
 
-- 每个 session 只有一个当前 Goal / Work List；不做多目标池、daemon、定时器或跨 session 后台执行。
+- 每个 session 只有一个当前 Goal / Work List；恢复只读取当前 session 分支最新一条 `dgoal-work-v1`。其中 current Goal 必须完整合法，否则 fail-closed，不回退复活更旧的 active Plan；无效 pending proposal 也不会恢复。`fork` 是新 session，以只含 session ID 的 `dgoal-session-scope-v1` 持久边界标记忽略宿主复制来的 Plan / History；恢复也不跨 session 搜索，不做多目标池、daemon 或后台执行。
 - 不自动执行 Git commit、rollback、push、publish 或部署。
 - 项目测试仍是权威；dgoal 不替代目标项目测试。
 - 视觉与体验检查放入 `userReviewItems`，不伪装为机器完成门。
@@ -198,7 +206,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)、[`doc/术语表.md`](./doc/术语表.md)、[ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md) 与 [v0.8.1 实施方案](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md)。
+架构入口见 [`doc/README.md`](./doc/README.md)、[`doc/术语表.md`](./doc/术语表.md)、[ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md)、[ADR 0052](./doc/决策档案/0052-同会话未完成计划原地恢复.md) 与 [v0.8.1 实施方案](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md)。
 
 ## 协议
 

@@ -254,6 +254,9 @@ describe("Execution Plan runtime", () => {
     const input = harness.handlers.get("input")!;
     input({ source: "interactive", text: "继续处理", streamingBehavior: undefined });
     await harness.handlers.get("before_agent_start")!({ prompt: "继续处理", systemPrompt: "system" }, harness.ctx);
+    await harness.handlers.get("message_end")!({
+      message: { role: "user", content: [{ type: "text", text: "继续处理" }], timestamp: Date.now() },
+    }, harness.ctx);
     expect(__getGoalForTest()).toMatchObject({ status: "active" });
     expect(__getGoalForTest()?.contract?.profile).toBe("execution");
   });

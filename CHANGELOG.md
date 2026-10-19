@@ -8,6 +8,28 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- **同 session 未完成计划恢复**（ADR 0052）：冷 `session_start(startup|resume)` 会恢复当前分支的完整 pending proposal，或把已确认但未结束的 active Plan Contract 原地持久化为 `paused(session_recovery)`。新增 `/dgoal review` 手动查看、反馈、延后、拒绝或确认保存提案；恢复不会自动弹窗、续跑或跨 session / History 搜索，`fork` 新 session 也不会继承宿主复制的 Plan / History。
+
+### Changed
+
+- **恢复后禁止猜测重放**：`/dgoal resume` 与恢复出的 upgrade proposal 确认都保留同一 Goal、Plan Run、Work List、revision、check 与 evidence；若来源是 session recovery，首轮必须先核对 `in_progress` 与工作区/外部副作用，不确定时 blocked/询问。
+- **取消确认不再丢计划**：Esc、空反馈与旧宿主 confirm=false 改为延后并保留 pending proposal；确认 UI 以 session generation + Goal/Contract/revision/proposal 隔离并发和迟到选择。
+- **跨分支与旧快照 fail-closed**：resume、START 与反馈重提通过一次性 input marker 绑定原 session generation；streaming 期间只排队，等 `agent_settled` 后以独立 turn 投递，并在精确 user `message_end` 的有效 abort 边界提交 active。未开跑、prompt 被改写或切换分支时保持 pending / paused。Pi 会先推进内存 leaf 再持久化，因此任一 `appendEntry()` 抛错都会硬锁当前 `SessionManager`：不追加补偿子节点或 continuation，extension reload、tree 与 compact 均不解锁；真正重建 manager 后才从磁盘最后完整记录恢复，JSONL 尾部不完整/不可读时继续 fail-closed。状态、History、前文承接与审核工作区推断不再从整棵 tree 的 `getEntries()` 猜测当前分支；fork 通过只含 session ID 的 scope marker 隔离复制状态。upgrade proposal 绑定 Goal/Work List/Contract 基线：延后后只暂停/恢复仍可 review，新进度或审核事实则使旧提案失效，绝不回滚当前状态。
+
+### Fixed
+
+- **恢复兼容宿主 system 更新**：START、显式 resume 和 model-error 用户恢复只由精确 user `message_end` 消费恢复门；Pi 先发出的 system 提示/工具更新不再误取消合法恢复，user 空正文或 marker 改写仍拒绝。
+- **连续目标的浮层生命周期**：前一 Goal 完成后立即新建 soft Work List 或 Execution Plan，会清除旧完成快照并取消其隐藏定时器，避免新目标仍 active 却被旧快照遮蔽或隐藏。该问题属于相连路径发现的存量缺陷。
+- **公共工具路由一致**：`work_list` 与 `execution_plan` 的工具描述及宿主 prompt guidelines 同步明确交付直接 Execution、记录或等待后续输入才用 soft Work List，消除默认 guidance 与工具指导冲突。
+
+- **Anthropic 请求不再触发 dgoal strict union 上限**：仅在 Anthropic Messages 载荷中让九工具退出 strict grammar 编译，保留参数结构和本地校验；OpenAI/Codex 的 strict 偏好不变。 (#2)
+- **计划更新保持系统缓存前缀稳定**：实时 Work List、revision、证据与审核反馈改为每次模型请求的消息尾部投影，不写会话历史或累积旧快照；系统提示仅保留固定 guidance。 (#3)
+
+- **交付任务不再误降级为软清单**：默认 agent 指引现在将修复、实现、验证和其他无需继续等待用户决策的明确交付路由到 `execution_plan`；soft `work_list` 仅用于记录或等待后续输入。
+- **Work List TUI 状态一致性**：soft Work List 显示“已保存，等待下一轮”，不再递增计时或显示无效的暂停/继续控制；首次直接创建 Work List 或 Execution Plan 会挂载常驻浮层，避免只剩工具回执和状态栏。
+
 ## [0.8.1] - 2026-08-08
 
 ### Breaking

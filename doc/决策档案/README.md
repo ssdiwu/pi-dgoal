@@ -1,6 +1,6 @@
 # 决策档案索引
 
-> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨。**v0.8.1 当前结构权威为 ADR 0051**；ADR 0038–0050 中仍成立的 check/update 分离、Description、交付物证据、审核局部 revision、结构化熔断与恢复边界由 0051 继承，旧 PlanType、隐藏 Phase、八工具和旧持久键只作历史背景。
+> 只收「难逆转 + 无上下文会困惑 + 有真实权衡」的决策（刻碑，记了就不删）。新增 / 更新 ADR 时同步本索引。每条一行：编号 + 标题 + 一句话主旨。**当前结构权威为 ADR 0051，未完成计划恢复权威为 ADR 0052**；ADR 0038–0050 中仍成立的 check/update 分离、Description、交付物证据、审核局部 revision 与结构化熔断由 0051 继承，旧 PlanType、隐藏 Phase、八工具和旧持久键只作历史背景。
 
 | 编号 | 标题 | 一句话主旨 |
 |---|---|---|
@@ -54,4 +54,5 @@
 | [0048](./0048-三档Plan任务耗尽决策边界.md) | 三档 Plan 任务耗尽决策边界 | 当前 Plan Contract 仍由主 agent 在耗尽时决定新增/重组或进入显式 Phase / Goal 完成链 |
 | [0049](./0049-TaskPlan无进展受限自恢复.md) | Task Plan 无进展受限自恢复 | no_progress 受限恢复由 Execution Plan 继承；soft Work List 没有 no_progress 状态 |
 | [0050](./0050-TaskPlan模型错误由真实用户输入恢复.md) | Task Plan 模型错误由真实用户输入恢复 | 精确绑定真实用户输入的恢复语义由 Execution Plan 继承，较高保障 Profile 仍显式恢复 |
-| [0051](./0051-单一工作清单与计划保障正交.md) | 单一工作清单与计划保障正交 | v0.8.1 当前权威：Goal 下唯一 Work List、可选真实 Phase、单向升级 Plan Contract、九工具、双持久键与 Plan Run History |
+| [0051](./0051-单一工作清单与计划保障正交.md) | 单一工作清单与计划保障正交 | v0.8.1 结构权威：Goal 下唯一 Work List、可选真实 Phase、单向升级 Plan Contract、九工具、双持久键与 Plan Run History |
+| [0052](./0052-同会话未完成计划原地恢复.md) | 同会话未完成计划原地恢复 | 当前分支恢复 pending proposal；active Plan 冷恢复先原地暂停，手动 review/resume 且禁止跨 session/History 与自动重放 |
