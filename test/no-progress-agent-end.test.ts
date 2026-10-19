@@ -99,7 +99,8 @@ describe("Execution Plan liveness integration", () => {
     handlers["input"]({ source: "interactive", text: "请用 dgoal 完成任务" });
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
     const guided = await handlers["before_agent_start"]({ prompt: "请用 dgoal 完成任务", systemPrompt: "base" }, mockCtx()) as { systemPrompt?: string };
-    expect(guided.systemPrompt).toContain("<dgoal_natural_language_start>");
+    expect(guided.systemPrompt).not.toContain("<dgoal_natural_language_start>");
+    expect(JSON.stringify(await handlers["context"]({ messages: [] }, mockCtx()))).toContain("<dgoal_natural_language_start>");
     handlers["input"]({ source: "interactive", text: "dgoal 是什么？" });
     expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
   });
@@ -159,7 +160,8 @@ describe("Execution Plan liveness integration", () => {
     }, recoveryCtx);
     expect(__getGoalForTest()).toMatchObject({ id: paused.id, status: "active", workList: { revision: 7, items: [{ evidence: "保留证据" }] } });
     expect(__getRuntimeStateForTest()).toMatchObject({ executionPlanModelErrorRecovery: undefined, consecutiveErrors: 0, consecutiveNoProgressTurns: 0, consecutiveNoDurableProgressTurns: 0 });
-    expect(guided.systemPrompt).toContain("当前 Plan Contract：execution");
+    expect(guided.systemPrompt).not.toContain("当前 Plan Contract：execution");
+    expect(JSON.stringify(await handlers["context"]({ messages: [] }, recoveryCtx))).toContain("当前 Plan Contract：execution");
   });
 
   test("a higher assurance model_error pause is never auto-resumed", async () => {

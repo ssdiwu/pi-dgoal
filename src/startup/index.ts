@@ -54,6 +54,7 @@ import {
   WORK_LIST_TOOL_NAME,
   EXECUTION_PLAN_TOOL_NAME,
   WORK_CREATE_TOOL_NAME,
+  WORK_READ_TOOL_NAME,
   WORK_UPDATE_TOOL_NAME,
   GOAL_PLAN_TOOL_NAME,
   STAGED_PLAN_TOOL_NAME,
@@ -140,6 +141,50 @@ export function registerDgoal(pi: ExtensionAPI) {
   pi.registerTool(workUpdateTool);
   pi.registerTool(phaseCheckTool);
   pi.registerTool(goalCheckTool);
+
+  // Anthropic's grammar compiler limits unions across all strict tools. Keep dgoal's
+  // schemas and local validation intact, but opt its nine tools out of that compiler.
+  // The other APIs retain the existing strict preference, including OpenAI/Codex.
+  const ownToolNames = new Set([workListTool, executionPlanTool, goalPlanTool, stagedPlanTool,
+    workCreateTool, workReadTool, workUpdateTool, phaseCheckTool, goalCheckTool].map((tool) => tool.name));
+  pi.on("before_provider_request", (event) => {
+    if (!event.payload || typeof event.payload !== "object") return;
+    const payload = event.payload as Record<string, unknown>;
+    if (!Array.isArray(payload.tools)) return;
+    let changed = false;
+    const tools = payload.tools.map((tool: unknown) => {
+      if (!tool || typeof tool !== "object") return tool;
+      const definition = tool as Record<string, unknown>;
+      if (typeof definition.name !== "string" || !ownToolNames.has(definition.name) || definition.strict !== true) return tool;
+      // A virtual selection can route to Anthropic while ctx.model still names
+      // the virtual model. Match the actual Anthropic client-tool payload; OpenAI
+      // tools use parameters/function.parameters and must keep their strict flag.
+      const schema = definition.input_schema;
+      if (!schema || typeof schema !== "object" || Array.isArray(schema) || (schema as Record<string, unknown>).type !== "object") return tool;
+      changed = true;
+      const { strict: _strict, ...nonStrict } = definition;
+      return nonStrict;
+    });
+    return changed ? { ...payload, tools } : undefined;
+  });
+
+  // context is a request-only projection: it is not appended to session history.
+  // Put the current snapshot at the tail so work updates do not invalidate the
+  // system/history cache prefix, and never accumulate or reuse an older snapshot.
+  pi.on("context", (event) => {
+    const messages = event.messages.filter((message) => message.role !== "custom" || message.customType !== "dgoal-plan-context");
+    const goal = goalRuntimeState.currentGoal;
+    const blocks: string[] = [];
+    if (goalRuntimeState.sessionProjectionValid) {
+      if (goal && isGoalRunning(goal.status)) {
+        blocks.push(goal.contract ? buildPlanContractContext(goal) : buildSoftWorkListContext(goal));
+      } else if (!goal && goalRuntimeState.naturalLanguageStartAuthorized) {
+        blocks.push(buildNaturalLanguageStartGuidance());
+      }
+    }
+    if (blocks.length) messages.push({ role: "custom", customType: "dgoal-plan-context", content: blocks.join("\n\n"), display: false, timestamp: 0 });
+    return { messages };
+  });
 
   pi.registerCommand("dgoal", {
     description: t("command.description"),
@@ -260,22 +305,10 @@ export function registerDgoal(pi: ExtensionAPI) {
     if (!planDelivery && !executionRecoveryGoal) {
       beginProgressTurn(goalRuntimeState, hasPlanContract(goalRuntimeState.currentGoal) ? goalRuntimeState.currentGoal : undefined);
     }
-    const effectiveGoal = planDelivery?.goal ?? executionRecoveryGoal ?? goalRuntimeState.currentGoal;
-    if (effectiveGoal) {
-      if (isGoalRunning(effectiveGoal.status)) {
-        const context = effectiveGoal.contract
-          ? buildPlanContractContext(effectiveGoal)
-          : buildSoftWorkListContext(effectiveGoal);
-        return { systemPrompt: `${event.systemPrompt}\n\n${context}` };
-      }
-      return;
-    }
-
-    // Cold sessions expose the unprivileged Work List default; explicit /dgoal authorization adds checked Plan entry guidance.
-    const guidance = [buildWorkListDefaultGuidance()];
-    if (goalRuntimeState.naturalLanguageStartAuthorized) guidance.push(buildNaturalLanguageStartGuidance());
+    // Only invariant routing guidance belongs in the system prefix. The context
+    // hook reads the committed Goal after user message_end, including recovery.
     return {
-      systemPrompt: `${event.systemPrompt}\n\n${guidance.join("\n\n")}`,
+      systemPrompt: `${event.systemPrompt}\n\n${buildWorkListDefaultGuidance()}`,
     };
   });
 

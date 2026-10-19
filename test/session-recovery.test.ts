@@ -240,6 +240,7 @@ function makeHarness(
       messageEndPrompt?: string;
       interleave?: () => Promise<void> | void;
       afterMessageEnd?: () => Promise<void> | void;
+      prefixMessages?: unknown[];
       settle?: boolean;
     } = {}) {
       const message = sent.at(-1);
@@ -257,6 +258,10 @@ function makeHarness(
       runActive = true;
       runAborted = false;
       await handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+      const prefixResults = [];
+      for (const prefixMessage of runOptions.prefixMessages ?? []) {
+        prefixResults.push(await handlers.get("message_end")?.({ type: "message_end", message: prefixMessage }, ctx));
+      }
       const userMessage = { role: "user", content: [{ type: "text", text: runOptions.messageEndPrompt ?? finalPrompt }], timestamp: Date.now() };
       const messageEndResult = await handlers.get("message_end")?.({ type: "message_end", message: userMessage }, ctx);
       const finalizedMessage = messageEndResult?.message ?? userMessage;
@@ -270,9 +275,9 @@ function makeHarness(
       runActive = false;
       idle = true;
       if (runAborted || runOptions.settle) await handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
-      return { inputResult, beforeResult, finalizedMessage, runAborted };
+      return { inputResult, beforeResult, finalizedMessage, runAborted, prefixResults };
     },
-    async driveDirectUserRun(prompt: string, messageEndPrompt = prompt) {
+    async driveDirectUserRun(prompt: string, messageEndPrompt = prompt, prefixMessages: unknown[] = []) {
       const inputResult = await handlers.get("input")?.({ source: "interactive", text: prompt }, ctx);
       const beforeResult = await handlers.get("before_agent_start")?.({
         prompt,
@@ -282,6 +287,10 @@ function makeHarness(
       idle = false;
       runActive = true;
       runAborted = false;
+      const prefixResults = [];
+      for (const prefixMessage of prefixMessages) {
+        prefixResults.push(await handlers.get("message_end")?.({ type: "message_end", message: prefixMessage }, ctx));
+      }
       const userMessage = { role: "user", content: [{ type: "text", text: messageEndPrompt }], timestamp: Date.now() };
       const messageEndResult = await handlers.get("message_end")?.({ type: "message_end", message: userMessage }, ctx);
       const finalizedMessage = messageEndResult?.message ?? userMessage;
@@ -294,7 +303,7 @@ function makeHarness(
       runActive = false;
       idle = true;
       if (runAborted) await handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
-      return { inputResult, beforeResult, finalizedMessage, runAborted };
+      return { inputResult, beforeResult, finalizedMessage, runAborted, prefixResults };
     },
   };
 }
@@ -307,6 +316,61 @@ afterEach(() => {
 });
 
 describe("unfinished Plan recovery", () => {
+  test("a system prompt update before the marked user message does not consume START or resume", async () => {
+    for (const kind of ["start", "resume"] as const) {
+      __resetGoalForTest();
+      const system = { role: "system", content: "", sections: { instructions: "fixed dgoal guidance" }, timestamp: 1 };
+      const harness = kind === "start"
+        ? makeHarness([workEntry(pendingGoal(), { goalId: pendingGoal().id, proposal: proposal() })], async () => "确认，开始执行")
+        : makeHarness([workEntry(executionGoal({ status: "paused", pauseReason: "session_recovery", pauseStartedAt: 20 }))]);
+      harness.handlers.get("session_start")!({ reason: "reload" }, harness.ctx);
+      await handleDgoalCommand(kind === "start" ? "review" : "resume", harness.pi, harness.ctx);
+      const result = await harness.driveLastPlanRun({ prefixMessages: [system] });
+      expect(result?.prefixResults).toEqual([undefined]);
+      expect(system).toEqual({ role: "system", content: "", sections: { instructions: "fixed dgoal guidance" }, timestamp: 1 });
+      expect(result?.runAborted).toBe(false);
+      expect(harness.getAbortCalls()).toBe(0);
+      expect(harness.providerRequests).toHaveLength(1);
+      expect(__getGoalForTest()?.status).toBe("active");
+      expect(JSON.stringify(result?.finalizedMessage)).not.toContain("pi-dgoal-delivery:");
+    }
+  });
+
+  test("a system prompt update before direct model-error recovery leaves the exact user gate intact", async () => {
+    const paused = executionGoal({ status: "paused", pauseReason: "model_error", pauseStartedAt: 20 });
+    const harness = makeHarness([workEntry(paused)]);
+    harness.handlers.get("session_start")!({ reason: "reload" }, harness.ctx);
+    const system = { role: "system", content: "", sections: { instructions: "updated prompt" }, timestamp: 1 };
+    const result = await harness.driveDirectUserRun("继续当前实现", "继续当前实现", [system]);
+    expect(result.prefixResults).toEqual([undefined]);
+    expect(result.runAborted).toBe(false);
+    expect(harness.getAbortCalls()).toBe(0);
+    expect(harness.providerRequests).toHaveLength(1);
+    expect(__getGoalForTest()).toMatchObject({ id: paused.id, status: "active", workList: { revision: 4 } });
+  });
+
+  test("ignoring a preceding system update does not admit an empty or rewritten user recovery", async () => {
+    for (const text of ["", "改写后的用户输入"]) {
+      for (const marked of [true, false]) {
+        __resetGoalForTest();
+        const paused = executionGoal({ status: "paused", pauseReason: marked ? "session_recovery" : "model_error", pauseStartedAt: 20 });
+        const harness = makeHarness([workEntry(paused)]);
+        harness.handlers.get("session_start")!({ reason: "reload" }, harness.ctx);
+        const system = { role: "system", content: "", sections: { instructions: "updated prompt" }, timestamp: 1 };
+        if (marked) await handleDgoalCommand("resume", harness.pi, harness.ctx);
+        const result = marked
+          ? await harness.driveLastPlanRun({ messageEndPrompt: text, prefixMessages: [system] })
+          : await harness.driveDirectUserRun("继续当前实现", text, [system]);
+        expect(result?.prefixResults).toEqual([undefined]);
+        expect(result?.runAborted).toBe(true);
+        expect(harness.getAbortCalls()).toBe(1);
+        expect(harness.providerRequests).toHaveLength(0);
+        expect(__getGoalForTest()).toMatchObject({ id: paused.id, status: "paused" });
+        expect(JSON.stringify(result?.finalizedMessage)).toContain("cancelled before execution");
+      }
+    }
+  });
+
   test("an incomplete persistent JSONL tail blocks recovery before any dgoal append", () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), "pi-dgoal-tail-"));
     temporaryDirectories.push(directory);
@@ -669,8 +733,8 @@ describe("unfinished Plan recovery", () => {
       systemPrompt: "system",
       systemPromptOptions: { cwd: "/tmp" },
     }, harness.ctx);
-    expect(before.systemPrompt).toContain("恢复待确认计划");
-    expect(before.systemPrompt).toContain("#1 实现恢复");
+    expect(before.systemPrompt).not.toContain("恢复待确认计划");
+    expect(JSON.stringify(await harness.handlers.get("context")!({ messages: [] }, harness.ctx))).not.toContain("#1 实现恢复");
     expect(__getGoalForTest()).toMatchObject({ status: "pending" });
 
     await harness.handlers.get("agent_start")?.({ type: "agent_start" }, harness.ctx);
@@ -680,6 +744,9 @@ describe("unfinished Plan recovery", () => {
     expect(__getGoalForTest()).toMatchObject({ status: "active", contract: { profile: "goal_check" } });
     expect(JSON.stringify(sanitized.message)).not.toContain("pi-dgoal-delivery:");
     expect(JSON.stringify(sanitized.message)).toContain("Goal Check Plan 已激活");
+    const modelContext = await harness.handlers.get("context")!({ messages: [sanitized.message] }, harness.ctx);
+    expect(JSON.stringify(modelContext)).toContain("恢复待确认计划");
+    expect(JSON.stringify(modelContext)).toContain("#1 实现恢复");
   });
 
   test("a session_tree between input and user message_end aborts the stale run without touching the new Goal", async () => {
@@ -1478,13 +1545,14 @@ describe("unfinished Plan recovery", () => {
       const before = await harness.handlers.get("before_agent_start")!({
         prompt, systemPrompt: "system", systemPromptOptions: { cwd: "/tmp" },
       }, harness.ctx);
-      expect(before?.systemPrompt).toContain(paused.objective);
+      expect(before?.systemPrompt).not.toContain(paused.objective);
 
       let message: unknown = { role: "user", content: [{ type: "text", text: prompt }] };
       if (switchAfterCommit) {
         const result = await harness.handlers.get("message_end")!({ type: "message_end", message }, harness.ctx);
         message = result?.message ?? message;
         expect(__getRuntimeStateForTest().executionPlanUserResumeRun).toMatchObject({ outcome: "accepted" });
+        expect(JSON.stringify(await harness.handlers.get("context")!({ messages: [] }, harness.ctx))).toContain(paused.objective);
       }
       const newer = executionGoal({ id: `direct-new-${switchAfterCommit}`, objective: "新分支目标", updatedAt: 99 });
       harness.entries.push({ ...workEntry(newer), id: `direct-new-leaf-${switchAfterCommit}` });
@@ -1607,11 +1675,12 @@ describe("unfinished Plan recovery", () => {
     await harness.handlers.get("agent_end")!({ messages: [{ role: "assistant", stopReason: "aborted" }] }, harness.ctx);
 
     const fresh = await harness.handlers.get("before_agent_start")!({ prompt: freshPrompt, systemPrompt: "system" }, harness.ctx);
-    expect(fresh?.systemPrompt).toContain("当前 Plan Contract");
+    expect(fresh?.systemPrompt).not.toContain("当前 Plan Contract");
     await harness.handlers.get("agent_start")?.({ type: "agent_start" }, harness.ctx);
     const freshMessage = { role: "user", content: [{ type: "text", text: freshPrompt }], timestamp: Date.now() };
     await harness.handlers.get("message_end")!({ type: "message_end", message: freshMessage }, harness.ctx);
     expect(__getGoalForTest()?.status).toBe("active");
+    expect(JSON.stringify(await harness.handlers.get("context")!({ messages: [] }, harness.ctx))).toContain("当前 Plan Contract");
   });
 
   test("cold recovery stays safely paused when persistence fails and is idempotent once persisted", () => {

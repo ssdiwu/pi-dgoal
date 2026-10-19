@@ -19,6 +19,7 @@ import dgoal, {
   resyncGoalFromSession,
   sendContinuation,
   workReadTool,
+  workUpdateTool,
   type GoalState,
   type WorkItem,
   type WorkPhase,
@@ -185,6 +186,35 @@ describe("session_tree resynchronizes the current Work List", () => {
     expect(goalResult.details?.approved).toBe(true);
     __setPhaseCheckOverrideForTest(undefined);
     __setCompletionAuditorOverrideForTest(undefined);
+  });
+
+  test("a rejected Goal Check survives compaction, can be rechecked and explicitly completed", async () => {
+    __resetGoalForTest();
+    const reviewed = makeGoal({
+      id: "compact-rejected", workList: { items: [item(1, "修复", "done")], phases: [], nextItemId: 2, nextPhaseId: 1, revision: 0 },
+      contract: {
+        id: "run-rejected", profile: "goal_check", startedAt: 1, revision: 0,
+        transitions: [{ to: "goal_check", at: 1, revision: 0 }], verification: "bun test",
+        acceptanceCriteria: [{ criterion: "修复通过", evidence: "bun test" }],
+        goalCheck: { status: "rejected", revision: 0, checkedAt: 1 },
+        finalFeedback: { report: "保留终审修复上下文", rejectedCount: 1, createdAt: 1 },
+      },
+    });
+    const { handlers } = captureHandlers();
+    const context = makeCtx([dgoalEntry(reviewed)]) as never;
+    await handlers.session_compact({ willRetry: true }, context);
+    expect(__getGoalForTest()?.contract?.goalCheck?.status).toBe("rejected");
+    expect(JSON.stringify(await handlers.context({ messages: [] }, context))).toContain("保留终审修复上下文");
+    __setCompletionAuditorOverrideForTest(async () => ({ approved: true, aborted: false, output: "<APPROVED>", liveness: "approved" }));
+    try {
+      const checked = await goalCheckTool.execute("test", { summary: "完成修复", verification: "bun test" }, undefined, undefined, context);
+      expect(checked.details?.approved).toBe(true);
+      const completed = await workUpdateTool.execute("test", { target: "goal", status: "done", summary: "完成修复", verification: "bun test" }, undefined, undefined, context);
+      expect(completed.details?.completed).toBe(true);
+      expect(__getGoalForTest()).toBeUndefined();
+    } finally {
+      __setCompletionAuditorOverrideForTest(undefined);
+    }
   });
 
   test("stale session errors preserve state while unrelated read failures remain visible", () => {

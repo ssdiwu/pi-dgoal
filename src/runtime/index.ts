@@ -1915,7 +1915,7 @@ function omitStrictSchemaNulls(value: unknown): unknown {
 
 function definePublicTool(definition: any): any {
   // Pi 0.82+: 在支持的 provider/model 上请求 JSON Schema strict 模式，让九工具参数匹配 TypeBox schema；
-  // 不支持时宿主自动回退为普通工具调用，跨 provider 行为不变。见 ADR 0051。
+  // Anthropic Messages 的九工具在 startup 的请求 hook 中显式退出 strict 编译，保留 schema 与本地校验。
   const prepareArguments = definition.prepareArguments;
   const execute = definition.execute;
   return defineTool({
@@ -2234,10 +2234,10 @@ const softWorkPhaseSchema = strictSchemaObject({
 export const workListTool = definePublicTool({
   name: WORK_LIST_TOOL_NAME,
   label: "Work List",
-  description: "为普通多步工作建立或原子重写当前 Goal 的唯一软性 Work List。清单跨 turn 保留，但不会启动自动续跑或独立审核。",
+  description: "仅为用户明确要求记录、整理或等待后续输入的工作建立或原子重写当前 Goal 的唯一软性 Work List。明确交付使用 execution_plan；软清单跨 turn 保留，但不会启动自动续跑或独立审核。",
   promptSnippet: "建立或重写软性 Work List",
   promptGuidelines: [
-    "普通多步工作先使用 work_list；软性 Work List 跨 turn 保留但不自动续跑。",
+    "work_list 只用于用户明确要记录、整理、等待后续输入或不要求本轮完成的工作；修复、实现、验证等无需继续等待用户决策的明确交付直接使用 execution_plan。软性 Work List 跨 turn 保留但不自动续跑。",
     "Goal 必须有 objective 与 description；Work Item 只要求 subject，description 可在升级 Plan Contract 前补齐。",
     "已有 Plan Contract 时不得用 work_list 绕过保障或整单替换；应使用 work_create/work_update 或对应升级工具。",
   ],
@@ -2555,7 +2555,7 @@ export const executionPlanTool = definePublicTool({
   description: "直接建立 Execution Plan，或把当前软性 Work List 原子归一为 Until Done 计划。无需用户确认，不启用独立审核；Phase 始终是真实且可见的串行边界。",
   promptSnippet: "建立或升级 Execution Plan",
   promptGuidelines: [
-    "当工作确实需要持续完成时，在同一 Goal/Work List 上使用 execution_plan；普通清单追踪继续用 work_list。",
+    "修复、实现、验证等有明确交付结果且无需继续等待用户决策的多步工作，直接在同一 Goal/Work List 上使用 execution_plan；work_list 仅用于明确记录或等待后续输入。",
     "所有计划态 Work Item 必须有 description；done/abandoned 前分别提供 evidence/abandonedReason，声明 deliverables 时逐项留证。",
     "Phase 可选且只用于真实串行阶段；所有真实 Phase 都必须通过 work_update 显式收口。",
     "Execution Plan 没有独立 check；Work Item 耗尽后新增/重组工作，或回读证据后显式关闭 Goal。",
@@ -3399,6 +3399,9 @@ export function finalizeExecutionPlanUserResumeMessage(
   message: unknown,
   ctx: DgoalContext,
 ): { message: unknown; accepted: boolean } | undefined {
+  // Pi can emit a system prompt/tool update before the starting user message.
+  // Only a user message may consume or reject the one-shot recovery gate.
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "user") return undefined;
   const pending = goalRuntimeState.pendingExecutionPlanUserResume;
   const prompt = userMessageText(message);
   if (!pending) return undefined;
@@ -3560,6 +3563,9 @@ function ensurePlanOverlay(ctx: DgoalContext): void {
   if (typeof ui.setWidget !== "function") return;
   try {
     planOverlay ??= new PlanOverlay();
+    // A live Goal owns the widget; an older completion snapshot and its hide
+    // timer must never cover or dispose the next Goal's newly bound widget.
+    if (goalRuntimeState.currentGoal) planOverlay.clearDoneSnapshot();
     planOverlay.setUI(ui as PlanOverlayUI);
     planOverlay.update();
   } catch {
@@ -4483,6 +4489,7 @@ export function finalizePlanDeliveryMessage(
   message: unknown,
   ctx: DgoalContext,
 ): { message: unknown; outcome: "accepted" | "rejected"; kind?: PendingPlanDelivery["kind"] } | undefined {
+  if (!message || typeof message !== "object" || (message as { role?: unknown }).role !== "user") return undefined;
   const prompt = userMessageText(message);
   if (prompt !== undefined && consumeRejectedPlanDeliveryPrompt(prompt)) {
     goalRuntimeState.planDeliveryRun = { outcome: "rejected", prompt };

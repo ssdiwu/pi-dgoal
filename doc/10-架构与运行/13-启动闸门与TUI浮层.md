@@ -8,7 +8,7 @@
 
 ```text
 用户明确要记录、整理、等待后续输入或不要求本轮完成
-  → before_agent_start 注入 soft guidance
+  → before_agent_start 注入固定路由 guidance
   → agent 调用 work_list
   → 立即 active；不启动 continuation / no-progress / auditor
 ```
@@ -42,9 +42,10 @@ Execution 不需要 `/dgoal`、语义预审或确认 UI，也不扩大宿主权�
   → ui.select 确认 / 拒绝 / 反馈 / 延后 / 切换 Profile
   → 确认后发送带一次性 marker 的 extension input
   → input 复核并落 paused checkpoint
-  → before_agent_start 预检最终 prompt 并注入目标 Plan context
+  → before_agent_start 只预检最终 prompt，系统提示保持固定 guidance
   → 精确 user message_end 在有效 abort signal 下原子 active
   → 同一步从会话/provider 输入中清除内部 marker；不匹配则取消该 run
+  → context 把已提交 Plan 投影到当前请求消息尾部，不写历史
 ```
 
 - **Goal Check**：允许零 Phase；只冻结 goal 条件，最终 `goal_check`。
@@ -70,6 +71,10 @@ Profile 切换由确认 UI 返回反馈，要求 agent 用另一 proposal 工具
 ## Proposal 确认内容
 
 确认框展示：Profile、Goal objective / description / verification、goal criteria、Staged Phase criteria、userReviewItems、Work List / Phase / Work Item 概览、nonGoals / guardrails 与 readiness。可展开 Work Item Description。它不展示旧 verification policy、runtime budget 或隐式权限。
+
+## Agent 上下文与缓存
+
+`before_agent_start` 的系统提示只含固定路由 guidance。当前 objective、Description、revision、Work Item 状态/证据和 check feedback 由 `context` 在每次模型请求前投影为消息尾部的隐藏 `dgoal-plan-context`；投影不进入会话历史，旧同类型快照会被过滤，其他扩展消息保持原序。无 active Goal、paused 或无效 session 时不投影旧执行指令。确认/恢复以精确 user `message_end` 提交后的实际结构化状态为准，不提前向模型宣告激活。
 
 ## 持续显示浮层
 
