@@ -53,7 +53,7 @@
 - `workflow`（预设路径编排）适合固定轨道任务；
 - `agent`（模型动态决策）适合开放式探索。
 
-这和 `pi-dgoal` 已有的 `doc/20-能力参考/20-范式对比-plan-mode-loop-goal.md` 一致：不要为了“更高级”而把所有东西都做成 agent。
+这和 `pi-dgoal` 已有的 `doc/references/20-能力参考/20-范式对比-plan-mode-loop-goal.md` 一致：不要为了“更高级”而把所有东西都做成 agent。
 
 ### 2.5 长任务要把 goal 放在显眼位置反复重申
 
@@ -137,7 +137,7 @@
 
 对应文档：
 
-- `doc/20-能力参考/20-范式对比-plan-mode-loop-goal.md`
+- `doc/references/20-能力参考/20-范式对比-plan-mode-loop-goal.md`
 
 #### 同思路 D：长任务要显式暴露进度与下一步
 
@@ -233,8 +233,8 @@
 
 ### 本项目内对应精读位置
 
-- `doc/20-能力参考/20-范式对比-plan-mode-loop-goal.md`
-- `doc/20-能力参考/22-ADaPT与建检模式.md`
+- `doc/references/20-能力参考/20-范式对比-plan-mode-loop-goal.md`
+- `doc/references/20-能力参考/22-ADaPT与建检模式.md`
 - `doc/10-架构与运行/10-建检循环与三层结构.md`
 - `doc/10-架构与运行/12-工具命令与数据模型.md`
 - `index.ts`

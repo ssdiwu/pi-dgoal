@@ -134,7 +134,7 @@ ClaudeDevs 强调 `/goal` 示例里应写 “stop after 5 tries”。dgoal 已�
 - Claude Code hooks docs：`https://docs.anthropic.com/en/docs/claude-code/hooks`
 - Claude Code skills docs：`https://docs.anthropic.com/en/docs/claude-code/skills`
 - Claude Code routines docs：`https://docs.anthropic.com/en/docs/claude-code/routines`
-- 相关既有参考：`doc/20-能力参考/28-循环工程与三层loop参考.md`、`doc/20-能力参考/27-独立规划agent与独立审核agent参考.md`
+- 相关既有参考：`doc/references/20-能力参考/28-循环工程与三层loop参考.md`、`doc/references/20-能力参考/27-独立规划agent与独立审核agent参考.md`
 
 ## 5. 决策记录
 

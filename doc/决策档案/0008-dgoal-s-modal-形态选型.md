@@ -1,6 +1,6 @@
 # ADR 0008：`/dgoal s` 命令弹窗形态选型
 
-> 选 `/dgoal s` 重新设计为 top-center overlay modal（Variant A）。完整探索过程和三个变体的取舍见 `doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`，本 ADR 只记录决策与理由。
+> 选 `/dgoal s` 重新设计为 top-center overlay modal（Variant A）。完整探索过程和三个变体的取舍见 `doc/references/20-能力参考/25-dgoal-s-modal变体探索参考.md`，本 ADR 只记录决策与理由。
 
 ## 背景
 
@@ -90,5 +90,5 @@ ADR 0042 在保留 center overlay 形态的基础上，把原单页滚动 body �
 
 ## 决策记录
 
-- 调研：`doc/20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md`（Pi 官方 `todo.ts` 形态 + pi-tui-design skill surface 选择规则）
-- 探索过程：`doc/20-能力参考/25-dgoal-s-modal变体探索参考.md`（3 个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘）
+- 调研：`doc/references/20-能力参考/24-pi官方todo例子与pi-tui-design借鉴参考.md`（Pi 官方 `todo.ts` 形态 + pi-tui-design skill surface 选择规则）
+- 探索过程：`doc/references/20-能力参考/25-dgoal-s-modal变体探索参考.md`（3 个变体的具体形态对比、Pi TUI 约束、v1→v2→v3 迭代 bug 复盘）

@@ -18,7 +18,7 @@
 
 ## 已归档方案
 
-- [v0.2.0 TaskPlan 与建检循环实施方案](../90-归档/版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md) — **已实施并归档**。8 个垂直切片全部完成，95 个测试通过，独立审核 APPROVED。
-- [v0.4.2 `/dgoal s` Modal 实施方案](../90-归档/版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md) — **已完成并归档**。把 `/dgoal s` 从 notify 升级为 top-center overlay modal（Variant A 形态）。6 个垂直切片。决策见 ADR 0008。
+- [v0.2.0 TaskPlan 与建检循环实施方案](../references/90-归档/版本实施方案/41-v0.2.0-TaskPlan与建检循环实施方案.md) — **已实施并归档**。8 个垂直切片全部完成，95 个测试通过，独立审核 APPROVED。
+- [v0.4.2 `/dgoal s` Modal 实施方案](../references/90-归档/版本实施方案/42-v0.4.2-dgoal-s-modal-实施方案.md) — **已完成并归档**。把 `/dgoal s` 从 notify 升级为 top-center overlay modal（Variant A 形态）。6 个垂直切片。决策见 ADR 0008。
 
 参考 dteam 的 `40-版本实施方案/` 风格（如 `41-v0.5.0-xxx实施方案.md`）。
