@@ -86,7 +86,7 @@ ADR 0042 在保留 center overlay 形态的基础上，把原单页滚动 body �
 
 - 实施完成后，prototype 整个删除（throwaway）
 - `index.ts:1051` 的 `showStatus` 重写，引入 `PlanStatusDialog` 类（~100 行 Component）
-- 文档同步：`doc/10-架构与运行/13-启动闸门与TUI浮层.md` 加 `/dgoal s` 章节；`README.md` 的 Usage 段更新
+- 文档同步：`doc/架构/13-启动闸门与TUI浮层.md` 加 `/dgoal s` 章节；`README.md` 的 Usage 段更新
 
 ## 决策记录
 

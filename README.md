@@ -202,7 +202,7 @@ pi-dgoal/
 └── doc/
 ```
 
-See [`doc/README.md`](./doc/README.md), [`doc/术语表.md`](./doc/术语表.md), [ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md), [ADR 0052](./doc/决策档案/0052-同会话未完成计划原地恢复.md), and the [v0.8.1 implementation plan](./doc/40-版本实施方案/44-v0.8.1-单一工作清单与计划保障实施方案.md).
+See [`doc/README.md`](./doc/README.md), [`doc/术语表.md`](./doc/术语表.md), [ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md), [ADR 0052](./doc/决策档案/0052-同会话未完成计划原地恢复.md), and the [v0.8.1 implementation plan](./doc/规格/44-v0.8.1-单一工作清单与计划保障实施方案.md).
 
 ## License
 

@@ -308,5 +308,5 @@ const color =
 - [ ] i18n：heading/phase/task 文案走 `t()`，emoji/颜色保留
 - [ ] 测试：纯函数单元测试（renderPlanLines + computeScrollOffset + colorize）
 - [ ] TUI smoke test：Pi TUI 里跑 `/dgoal s`，验证翻页键、ESC 退出、不挡 input
-- [ ] 同步文档：`doc/10-架构与运行/13-启动闸门与TUI浮层.md` 加 `/dgoal s` 章节；`README.md` Usage 更新
+- [ ] 同步文档：`doc/架构/13-启动闸门与TUI浮层.md` 加 `/dgoal s` 章节；`README.md` Usage 更新
 - [ ] 删除 prototype 目录

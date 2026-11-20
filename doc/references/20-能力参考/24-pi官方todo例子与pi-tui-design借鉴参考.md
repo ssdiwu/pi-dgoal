@@ -140,7 +140,7 @@ class DialogComponent implements Component, Focusable {
 - `invalidate()`：cache 清理（如果加滚动需要）
 - `dispose()`：no-op（无定时器）
 
-**改造点**：`doc/10-架构与运行/13-启动闸门与TUI浮层.md` 加一段"按 s 看完整 plan"；README 的 `Usage` 段更新 `s` 的描述。
+**改造点**：`doc/架构/13-启动闸门与TUI浮层.md` 加一段"按 s 看完整 plan"；README 的 `Usage` 段更新 `s` 的描述。
 
 #### 候选 2：用 `SelectList` 现成 Component 实现可滚动列表
 

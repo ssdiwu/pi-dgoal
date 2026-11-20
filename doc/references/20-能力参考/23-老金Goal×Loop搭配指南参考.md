@@ -113,7 +113,7 @@
 
 - `index.ts`：`buildAuditorTask()`
 - `index.ts`：`AUDITOR_SYSTEM_PROMPT`
-- `doc/10-架构与运行/10-建检循环与三层结构.md`
+- `doc/架构/10-建检循环与三层结构.md`
 
 #### 同思路 B：state 应是可续跑的摘要，而不是全文 transcript
 
@@ -129,7 +129,7 @@
 
 - `index.ts`：`LoopGoal.contextSummary` / `LoopGoal.plan`
 - `index.ts`：`persistGoal()` / `loadGoal()`
-- `doc/10-架构与运行/12-工具命令与数据模型.md`
+- `doc/架构/12-工具命令与数据模型.md`
 
 #### 同思路 C：workflow / agent 要区分，不要无脑 agent 化
 
@@ -146,8 +146,8 @@
 对应实现：
 
 - `index.ts`：`renderPlanLines()`
-- `doc/10-架构与运行/13-启动闸门与TUI浮层.md`
-- `doc/10-架构与运行/10-建检循环与三层结构.md`
+- `doc/架构/13-启动闸门与TUI浮层.md`
+- `doc/架构/10-建检循环与三层结构.md`
 
 ### 3.3 候选（值得吸收）
 
@@ -172,7 +172,7 @@
 - `index.ts`：`buildProposePrompt()`
 - `index.ts`：`dgoal_propose` tool schema 描述
 - `index.ts`：`formatProposalForConfirm()`
-- `doc/10-架构与运行/13-启动闸门与TUI浮层.md`
+- `doc/架构/13-启动闸门与TUI浮层.md`
 - `README.md` / `README-zh.md`
 
 #### 候选 B：补一层面向用户的“愿望 → 可验收 goal”文档表达
@@ -190,7 +190,7 @@
 - `README-zh.md`
 - `README.md`（英文等价表达）
 - `doc/术语表.md`
-- `doc/10-架构与运行/10-建检循环与三层结构.md`
+- `doc/架构/10-建检循环与三层结构.md`
 
 #### 候选 C：考虑补一个更轻量的“续跑纪要”字段，而不只靠启动摘要 + task 证据
 
@@ -208,7 +208,7 @@
 
 - `LoopGoal` 新增轻量 `progressNote` / `checkpointNote` 字段
 - `index.ts`：续跑 prompt 注入
-- `doc/10-架构与运行/12-工具命令与数据模型.md`
+- `doc/架构/12-工具命令与数据模型.md`
 - `test/context-input-cap.test.ts` / 状态机相关测试
 
 注意：这不是照搬文章的 state 文件，而是吸收其“state 应短而可续跑”的原则。
@@ -235,8 +235,8 @@
 
 - `doc/references/20-能力参考/20-范式对比-plan-mode-loop-goal.md`
 - `doc/references/20-能力参考/22-ADaPT与建检模式.md`
-- `doc/10-架构与运行/10-建检循环与三层结构.md`
-- `doc/10-架构与运行/12-工具命令与数据模型.md`
+- `doc/架构/10-建检循环与三层结构.md`
+- `doc/架构/12-工具命令与数据模型.md`
 - `index.ts`
   - `buildProposePrompt()`
   - `formatProposalForConfirm()`

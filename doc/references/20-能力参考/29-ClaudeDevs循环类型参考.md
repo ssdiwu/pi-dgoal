@@ -81,7 +81,7 @@ ClaudeDevs 的文章把 loop 质量归因于外围系统：
 改造点：
 
 - `README.md` / `README-zh.md`：在 “Design Boundaries” 或 “Goal Lifecycle” 前增加一句定位：dgoal 是 goal-based build-check loop，不是 time-based scheduler。
-- `doc/10-架构与运行/10-建检循环与三层结构.md`：补一段“dgoal 在四类 loop 中的位置”。
+- `doc/架构/10-建检循环与三层结构.md`：补一段“dgoal 在四类 loop 中的位置”。
 - `doc/术语表.md`：已补“触发器 / 停止条件 / 循环原语”三词，用来把 `/goal`、`/loop`、`/schedule` 与 dgoal 当前定位放进同一坐标系。
 
 价值：降低用户把 dgoal 误解成 plan mode 或 scheduler 的概率。
@@ -143,6 +143,6 @@ ClaudeDevs 强调 `/goal` 示例里应写 “stop after 5 tries”。dgoal 已�
 本次已同步两类项目文档：
 
 - `doc/术语表.md`：新增“触发器 / 停止条件 / 循环原语”，融合到建检循环、until-done、cadence、验收口的既有概念里。
-- `doc/30-路线图/30-项目路线图.md`：新增“运行可观测性（`/dgoal s` 运行计数）”与“结构化运行时预算（Budget hard cap）”两个后续候选。
+- `doc/references/30-路线图/30-项目路线图.md`：新增“运行可观测性（`/dgoal s` 运行计数）”与“结构化运行时预算（Budget hard cap）”两个后续候选。
 
 原因：这次主要是定位校准与候选增强，不构成新的难逆转决策。若后续决定实施“结构化 runtime budget”或“`/dgoal s` 运行消耗统计”，再按状态机 / 数据模型影响补 ADR。
