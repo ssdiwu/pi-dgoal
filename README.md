@@ -140,6 +140,10 @@ Soft Work Lists cannot enter Plan pause state. Fixed continuation circuit breake
 
 Completed Phases remain visible in the TUI and History. In the execution prompt they are soft-forgotten to a title-only line so old details do not keep expanding model context.
 
+Live Work List state and check feedback are projected at the message tail before each model request. The system prompt contains only fixed routing guidance, so plan updates do not invalidate its cache prefix. These hidden snapshots are request-only and do not accumulate in session history.
+
+For Anthropic Messages, the nine dgoal tools use normal tool sampling to stay outside Anthropic's global strict-schema union limit. Their schemas, nullable argument preparation, and local validation remain unchanged; OpenAI/Codex keeps the strict-schema preference.
+
 ## Independent Auditing
 
 `phase_check` and `goal_check` run isolated Pi subprocesses with fresh context and limited read/verification tools. They inherit the current session model by default, or use up to three ordered candidates:

@@ -20,6 +20,13 @@ All notable changes to `pi-dgoal` will be documented in this file.
 
 ### Fixed
 
+- **恢复兼容宿主 system 更新**：START、显式 resume 和 model-error 用户恢复只由精确 user `message_end` 消费恢复门；Pi 先发出的 system 提示/工具更新不再误取消合法恢复，user 空正文或 marker 改写仍拒绝。
+- **连续目标的浮层生命周期**：前一 Goal 完成后立即新建 soft Work List 或 Execution Plan，会清除旧完成快照并取消其隐藏定时器，避免新目标仍 active 却被旧快照遮蔽或隐藏。该问题属于相连路径发现的存量缺陷。
+- **公共工具路由一致**：`work_list` 与 `execution_plan` 的工具描述及宿主 prompt guidelines 同步明确交付直接 Execution、记录或等待后续输入才用 soft Work List，消除默认 guidance 与工具指导冲突。
+
+- **Anthropic 请求不再触发 dgoal strict union 上限**：仅在 Anthropic Messages 载荷中让九工具退出 strict grammar 编译，保留参数结构和本地校验；OpenAI/Codex 的 strict 偏好不变。 (#2)
+- **计划更新保持系统缓存前缀稳定**：实时 Work List、revision、证据与审核反馈改为每次模型请求的消息尾部投影，不写会话历史或累积旧快照；系统提示仅保留固定 guidance。 (#3)
+
 - **交付任务不再误降级为软清单**：默认 agent 指引现在将修复、实现、验证和其他无需继续等待用户决策的明确交付路由到 `execution_plan`；soft `work_list` 仅用于记录或等待后续输入。
 - **Work List TUI 状态一致性**：soft Work List 显示“已保存，等待下一轮”，不再递增计时或显示无效的暂停/继续控制；首次直接创建 Work List 或 Execution Plan 会挂载常驻浮层，避免只剩工具回执和状态栏。
 

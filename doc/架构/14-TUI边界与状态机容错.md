@@ -17,6 +17,7 @@
 | `work_update(goal,done)` | 归档或 UI 后效打断清理 | 先归档（如适用）、done、tombstone、运行态清理，再做 UI |
 | `phase_check` / `goal_check` | 活性或报告展示异常 | CheckRecord 优先落地；check 不代写 Phase / Goal done |
 | overlay / status bar | widget 组件或宽度路径异常 | 降级或跳过刷新，不影响状态 |
+| 完成快照尚未隐藏时新建 Goal | 旧 done snapshot 覆盖新目标，旧定时器随后隐藏新 widget | 绑定已有 active/pending/paused Goal 的浮层前清除旧完成快照并取消其 hide timer |
 | startup gate | select / editor / confirm 抛错 | 不半激活；保留原 Work List 与可恢复 proposal |
 | Current / History Modal | render / input handler 异常 | 只关闭 Modal，不修改 current / history |
 

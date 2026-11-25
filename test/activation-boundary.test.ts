@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { buildNaturalLanguageStartGuidance, buildWorkListDefaultGuidance, isNaturalLanguageDgoalStartRequest } from "../src/startup/index.ts";
-import { executionPlanTool, goalPlanTool, stagedPlanTool, workListTool } from "../index.ts";
+import { __resetGoalForTest, __setApiForTest, executionPlanTool, goalPlanTool, registerDgoal, stagedPlanTool, workListTool } from "../index.ts";
 
 describe("ADR 0051 activation boundary", () => {
   test("cold guidance routes autonomous delivery to Execution and reserves soft Work List for tracking", () => {
@@ -37,6 +37,30 @@ describe("ADR 0051 activation boundary", () => {
     expect(goalPlanTool.promptGuidelines.join("\n")).toContain("不调用 phase_check");
     expect(stagedPlanTool.promptGuidelines.join("\n")).toContain("每个 Phase 先 phase_check");
     expect(stagedPlanTool.promptGuidelines.join("\n")).toContain("主干冻结");
+  });
+
+  test("the full host prompt reserves soft tracking for later input and routes clear delivery to Execution", async () => {
+    const { buildSystemPrompt } = await import(new URL("./core/system-prompt.js", import.meta.resolve("@earendil-works/pi-coding-agent")).href);
+    const tools = [workListTool, executionPlanTool, goalPlanTool, stagedPlanTool];
+    const systemPrompt = buildSystemPrompt({
+      cwd: process.cwd(), contextFiles: [], skills: [], selectedTools: tools.map((tool) => tool.name),
+      toolSnippets: Object.fromEntries(tools.map((tool) => [tool.name, tool.promptSnippet])),
+      promptGuidelines: tools.flatMap((tool) => tool.promptGuidelines),
+    });
+    __resetGoalForTest();
+    const handlers: Record<string, Function> = {};
+    try {
+      registerDgoal({ registerTool: () => {}, registerCommand: () => {}, on: (name: string, handler: Function) => { handlers[name] = handler; }, events: { emit: () => {} }, appendEntry: () => {} } as never);
+      const composed = await handlers.before_agent_start({ prompt: "修复这个故障并验证", systemPrompt }, { ui: {} });
+      expect(composed.systemPrompt).not.toContain("普通多步工作先使用 work_list");
+      expect(workListTool.description).toContain("记录");
+      expect(composed.systemPrompt).toContain("明确交付");
+      expect(composed.systemPrompt).toContain("execution_plan");
+      expect(composed.systemPrompt).toContain("等待后续输入");
+    } finally {
+      __resetGoalForTest();
+      __setApiForTest(undefined);
+    }
   });
 
   test("public entry schemas expose no implicit or runtime budget bypass", () => {

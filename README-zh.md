@@ -140,6 +140,10 @@ Goal 与真实 Phase 的 Description 必填；进入任意 Plan Contract 后，W
 
 完成 Phase 在 TUI 与 History 中保持可见；进入执行 prompt 时只保留标题行，避免旧细节持续膨胀上下文。
 
+实时 Work List 状态与审核反馈在每次模型请求前投影到消息尾部。system prompt（系统提示词）只保留固定路由指引，计划更新不会使其缓存前缀失效。隐藏快照只用于当前请求，不写入会话历史，也不累积旧副本。
+
+Anthropic Messages 下，九个 dgoal 工具使用普通工具采样，避开其 strict schema（严格模式结构）全局 union 数量限制；工具结构、nullable 参数准备和本地校验保持不变。OpenAI/Codex 继续优先使用 strict schema。
+
 ## 独立建检
 
 `phase_check` / `goal_check` 使用 fresh context（新上下文）与受限只读/核验工具运行隔离 Pi 子进程。默认继承当前 session 模型，也可配置最多 3 个有序候选：
