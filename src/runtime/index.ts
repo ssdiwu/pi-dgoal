@@ -3328,7 +3328,7 @@ async function startGoal(objective: string, pi: ExtensionAPI, ctx: DgoalContext)
     // goalRuntimeState.proposalRetryCount 由 agent_end 消费做兜底（拷问25：重试2次失败中止）。
     goalRuntimeState.proposalRetryCount = 0;
     safeSetDgoalStatus(ctx, formatStatus(goalRuntimeState.currentGoal));
-    await sendPrompt(pi, ctx, buildProposePrompt(goalRuntimeState.currentGoal));
+    await sendPrompt(pi, ctx, buildProposePrompt(pendingGoal));
   } finally {
     goalRuntimeState.startGoalInProgress = false;
   }
@@ -3449,15 +3449,17 @@ async function resumeGoal(pi: ExtensionAPI, ctx: DgoalContext) {
     return;
   }
   const pausedGoal = goalRuntimeState.currentGoal;
+  const pausedContract = pausedGoal.contract;
+  if (!pausedContract) return;
   const resetAuditorCandidates = pausedGoal.pauseReason === "audit_error";
-  const auditErrorScope = pausedGoal.contract.auditErrorScope;
-  const contract = resetAuditorCandidates
+  const auditErrorScope = pausedContract.auditErrorScope;
+  const contract: PlanContract = resetAuditorCandidates
     ? {
-      ...pausedGoal.contract,
-      auditorCandidates: auditErrorScope ? { ...(pausedGoal.contract.auditorCandidates ?? {}), [auditErrorScope]: undefined } : undefined,
+      ...pausedContract,
+      auditorCandidates: auditErrorScope ? { ...(pausedContract.auditorCandidates ?? {}), [auditErrorScope]: undefined } : undefined,
       auditErrorScope: undefined,
     }
-    : pausedGoal.contract;
+    : pausedContract;
   const resumedGoal = markGoalResumed(pausedGoal, Date.now(), { contract });
   clearContinuation();
   enqueuePlanDelivery(
@@ -4451,7 +4453,7 @@ function commitValidatedPlanDelivery(ctx: DgoalContext, delivery: PendingPlanDel
     return true;
   } catch (error) {
     const safeGoal = delivery.kind === "start" ? delivery.preparedCheckpoint : goalRuntimeState.currentGoal;
-    if (safeGoal) {
+    if (safeGoal && delivery.kind !== "feedback") {
       compensateUncertainWorkAppend(ctx, safeGoal, undefined, delivery.targetGoal, undefined, persistenceFrom);
     }
     safeNotify(ctx, t("tool.propose.persistFailed", { reason: formatError(error) }), "error");
@@ -4532,9 +4534,13 @@ export function finalizePlanDeliveryMessage(
     rejectPlanDelivery(ctx, prompt ?? delivery.cleanPrompt);
     return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
   }
-  if (!delivery || delivery.phase !== "preflight_validated" || delivery.marker !== marker || delivery.prompt !== prompt) {
+  if (!delivery) {
+    rejectPlanDelivery(ctx, prompt ?? "");
+    return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
+  }
+  if (delivery.phase !== "preflight_validated" || delivery.marker !== marker || delivery.prompt !== prompt) {
     restorePreparedStartCheckpoint(delivery, ctx);
-    rejectPlanDelivery(ctx, prompt);
+    rejectPlanDelivery(ctx, prompt ?? delivery.cleanPrompt);
     return { message: replaceUserMessageText(message, "[pi-dgoal transition cancelled before execution]"), outcome: "rejected" };
   }
   const kind = delivery.kind;
@@ -6299,6 +6305,7 @@ function listAuditorModelOverrides(loaded: LoadedDgoalConfig, scope: AuditorScop
     for (const field of [candidateField, scopedField, "auditorModel" as const]) {
       if (!hasDgoalConfigField(config, field)) continue;
       const value = config[field];
+      if (value === undefined) continue;
       overrides.push({
         candidates: value === null ? null : (Array.isArray(value) ? value : [value]),
         field,
@@ -6430,7 +6437,7 @@ async function runIsolatedCheck(args: {
     messages: {
       interrupted: t("runtime.error.auditInterrupted"),
       spawnFailed: t("runtime.error.spawnFailed"),
-      piExitCode: (code) => t("runtime.error.piExitCode", { code }),
+      piExitCode: (code) => t("runtime.error.piExitCode", { code: code ?? "unknown" }),
       totalTimeout: formatAuditTotalTimeout,
     },
     usageLedger: {
