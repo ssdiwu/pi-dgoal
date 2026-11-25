@@ -178,6 +178,8 @@ Anthropic Messages 下，九个 dgoal 工具使用普通工具采样，避开其
 
 ## 测试
 
+开发与验证使用 Pi SDK 1.6.0。
+
 ```bash
 npm test                    # Bun 单元与集成测试
 npm run test:rpc            # RPC 加载与九工具注册
@@ -206,7 +208,7 @@ pi-dgoal/
 └── doc/
 ```
 
-架构入口见 [`doc/README.md`](./doc/README.md)、[`doc/术语表.md`](./doc/术语表.md)、[ADR 0051](./doc/决策档案/0051-单一工作清单与计划保障正交.md)、[ADR 0052](./doc/决策档案/0052-同会话未完成计划原地恢复.md) 与 [v0.8.1 实施方案](./doc/规格/44-v0.8.1-单一工作清单与计划保障实施方案.md)。
+贡献者约束见 [`AGENTS.md`](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/AGENTS.md)；架构入口见 [`doc/README.md`](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/doc/README.md)、[`doc/术语表.md`](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/doc/术语表.md)、[ADR 0051](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/doc/决策档案/0051-单一工作清单与计划保障正交.md)、[ADR 0052](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/doc/决策档案/0052-同会话未完成计划原地恢复.md) 与 [v0.8.1 实施方案](https://github.com/ssdiwu/pi-dgoal/blob/HEAD/doc/规格/44-v0.8.1-单一工作清单与计划保障实施方案.md)。
 
 ## 协议
 

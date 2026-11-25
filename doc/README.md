@@ -47,4 +47,10 @@
 
 - 机制变化 → 更新 `doc/架构/` 对应正文；契约或验收规则变化 → 更新 `doc/规格/`；难逆转决策 → 新增 ADR 并同步索引；可复用做法 → 追加 `经验笔记.md`。
 - 历史方案与来源沉淀 → 放入 `doc/references/` 对应子目录，不与现行正文并行维护。
-- 用户可感知的已完成变化 → `CHANGELOG.md`。
+- 用户可感知的已完成变化 → 日常写入本仓中文 `CHANGELOG-zh.md`，准备发布时按版本把同一版本条目同步进英文 `CHANGELOG.md`；两份只写用户可感知事实且都随 npm 包发布。
+
+## Contributing (English)
+
+- User-facing behavior and setup: [README.md](../README.md) / [README-zh.md](../README-zh.md), cross-linked at the top.
+- Development and verification: `npm test`, `npm run test:rpc`, `npm run test:context`; see the Tests section of either README and `test/README.md`.
+- Contracts: [AGENTS.md](../AGENTS.md), [规格/](./规格/), and [架构/](./架构/). Sections above are internal notes in Chinese.

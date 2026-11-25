@@ -47,6 +47,8 @@ npm test
 
 ## 文档与 Git
 
-- 公共工具、Plan 语义、状态机、配置、持久化或用户行为变化时同步 README、术语、架构文档和必要 ADR。
-- `CHANGELOG.md` 只记录用户可感知变化。
+- 公共工具、Plan 语义、状态机、配置、持久化或用户行为变化时同步两版 README、术语、架构文档和必要 ADR；`README.md` 与 `README-zh.md` 顶部互链，英文贡献导航在 `doc/README.md`。保留已有其它语言入口。
+- 两份变更日志都在本 GitHub 仓库维护：`CHANGELOG.md` 是英文发布记录，`CHANGELOG-zh.md` 是中文日常记录；两份只写用户可感知事实，不写验证日志、内部过程或纯文档整理。
+- 日常用中文把已完成的用户可感知变化写入 `CHANGELOG-zh.md`；准备发布（release）时按版本把同一版本的用户可感知条目同步进英文 `CHANGELOG.md`，两份都保留该版本记录，并核对版本、日期与 issue 链接。
+- `README.md` 是英文默认版（npm 默认展示），`README-zh.md` 是同包附带的中文版；两份 README 与两份 changelog 都随 npm 包发布。发布前用 `npm pack --dry-run --ignore-scripts --json` 核对清单包含 `README.md`、`README-zh.md`、`CHANGELOG.md`、`CHANGELOG-zh.md`。
 - 未经用户明确要求，不执行 commit、push、tag 或 npm publish；不得强推受保护分支。

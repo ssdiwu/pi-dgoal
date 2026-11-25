@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { convertToLlm } from "@earendil-works/pi-coding-agent";
-import dgoal, { __getGoalForTest, __resetGoalForTest, __setGoalForTest, workUpdateTool, type GoalState } from "../index.ts";
+import dgoal, { __getRuntimeStateForTest, __getGoalForTest, __resetGoalForTest, __setGoalForTest, workUpdateTool, type GoalState } from "../index.ts";
 
 const handlers: Record<string, (event: any, ctx: any) => any> = {};
 dgoal({ registerTool: () => {}, registerCommand: () => {}, on: (name: string, handler: any) => { handlers[name] = handler; }, appendEntry: () => {}, events: { emit: () => {} } } as never);
@@ -21,6 +21,14 @@ async function modelContext(messages: any[] = []) {
 
 describe("plan context uses message tail while the system prefix stays stable", () => {
   beforeEach(__resetGoalForTest);
+
+  test("a Pi custom-message turn cannot use authorization from earlier user input", async () => {
+    handlers.input({ source: "interactive", text: "请用 dgoal 完成这个任务" }, ctx);
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(true);
+    const result = await handlers.before_agent_start({ messageType: "custom", message: { content: "notification" }, systemPrompt: "base" }, ctx);
+    expect(result.systemPrompt).toContain("execution_plan");
+    expect(__getRuntimeStateForTest().naturalLanguageStartAuthorized).toBe(false);
+  });
 
   test("public Work Item updates change only the ephemeral model context", async () => {
     __setGoalForTest(goal());

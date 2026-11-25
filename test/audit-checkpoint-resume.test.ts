@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -127,6 +127,8 @@ test("重启后的阶段审核会把同工作区的成功命令检查点交给�
   writeFileSync(join(cwd, "tracked.txt"), "stable\n");
   execFileSync("git", ["-C", cwd, "add", "tracked.txt"]);
   execFileSync("git", ["-C", cwd, "commit", "-qm", "init"]);
+  mkdirSync(join(cwd, ".pi"));
+  writeFileSync(join(cwd, ".pi", "pi-dgoal.json"), JSON.stringify({ phaseAuditorModels: ["openai/gpt-5"] }));
   const checkpoint = applyCheckpointEvent(
     { workspaceFingerprint: __fingerprintAuditWorkspaceForTest(cwd), records: [] },
     {

@@ -152,7 +152,7 @@ export function registerDgoal(pi: ExtensionAPI) {
     const payload = event.payload as Record<string, unknown>;
     if (!Array.isArray(payload.tools)) return;
     let changed = false;
-    const tools = payload.tools.map((tool: unknown) => {
+    const adaptDefinition = (tool: unknown) => {
       if (!tool || typeof tool !== "object") return tool;
       const definition = tool as Record<string, unknown>;
       if (typeof definition.name !== "string" || !ownToolNames.has(definition.name) || definition.strict !== true) return tool;
@@ -164,8 +164,21 @@ export function registerDgoal(pi: ExtensionAPI) {
       changed = true;
       const { strict: _strict, ...nonStrict } = definition;
       return nonStrict;
-    });
-    return changed ? { ...payload, tools } : undefined;
+    };
+    const tools = payload.tools.map(adaptDefinition);
+    const messages = Array.isArray(payload.messages) ? payload.messages.map(message => {
+      if (message?.role !== "system" || !Array.isArray(message.content)) return message;
+      let updated = false;
+      const content = message.content.map((block: any) => {
+        if (block?.type !== "tool_addition" || block.tool?.type !== "tool_definition") return block;
+        const definition = adaptDefinition(block.tool.definition);
+        if (definition === block.tool.definition) return block;
+        updated = true;
+        return { ...block, tool: { ...block.tool, definition } };
+      });
+      return updated ? { ...message, content } : message;
+    }) : undefined;
+    return changed ? { ...payload, tools, ...(messages && { messages }) } : undefined;
   });
 
   // context is a request-only projection: it is not appended to session history.
@@ -279,6 +292,13 @@ export function registerDgoal(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
+    if (event.messageType === "custom") {
+      if (!goalRuntimeState.sessionProjectionValid) return;
+      clearNaturalLanguageStartAuthorization();
+      clearExecutionPlanModelErrorRecovery();
+      beginProgressTurn(goalRuntimeState, hasPlanContract(goalRuntimeState.currentGoal) ? goalRuntimeState.currentGoal : undefined);
+      return { systemPrompt: `${event.systemPrompt}\n\n${buildWorkListDefaultGuidance()}` };
+    }
     const planDelivery = preflightPlanDelivery(event.prompt, ctx);
     if (planDelivery?.outcome === "rejected") return;
     if (!goalRuntimeState.sessionProjectionValid) return;

@@ -237,7 +237,7 @@ export class PlanOverlayComponent {
 export class PlanStatusDialogComponent implements Component, Focusable {
   focused = false;
   private cachedWidth?: number;
-  private cachedLines?: string[];
+  private cachedLines?: readonly string[];
   private cachedElapsedSec?: number;
   private cachedCheckSnapshotKey?: string;
   private cachedWrappedBody?: string[];
@@ -406,7 +406,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     return wrapped;
   }
 
-  private cacheRenderedLines(lines: string[], width: number, elapsedSec: number, checkSnapshotKey: string): string[] {
+  private cacheRenderedLines(lines: readonly string[], width: number, elapsedSec: number, checkSnapshotKey: string): readonly string[] {
     this.cachedWidth = width;
     this.cachedElapsedSec = elapsedSec;
     this.cachedCheckSnapshotKey = checkSnapshotKey;
@@ -414,7 +414,7 @@ export class PlanStatusDialogComponent implements Component, Focusable {
     return lines;
   }
 
-  render(availableWidth: number): string[] {
+  render(availableWidth: number): readonly string[] {
     if (!Number.isFinite(availableWidth) || availableWidth <= 0) return [];
     const renderWidth = Math.floor(availableWidth);
     if (renderWidth < 20) return [truncateToWidth("dgoal", renderWidth)];

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, test } from "bun:test";
+import { normalizeContext } from "@earendil-works/pi-ai";
 import { stream as streamAnthropic } from "@earendil-works/pi-ai/api/anthropic-messages";
 import { stream as streamOpenAI } from "@earendil-works/pi-ai/api/openai-responses";
 import dgoal, { __resetGoalForTest } from "../index.ts";
@@ -19,20 +20,20 @@ function unionCount(value: unknown): number {
     + Object.values(schema).reduce<number>((sum, item) => sum + unionCount(item), 0);
 }
 
-async function capturePayload(api: "anthropic-messages" | "openai-responses", selectedApi: string = api) {
+async function capturePayload(api: "anthropic-messages" | "openai-responses", selectedApi: string = api, inline = false) {
   const model = {
     id: api === "anthropic-messages" ? "claude-sonnet-4-5" : "gpt-5", name: "offline fixture",
     api, provider: api === "anthropic-messages" ? "anthropic" : "openai", baseUrl: "https://offline.invalid",
     reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1024,
-    compat: api === "anthropic-messages" ? { supportsStrictTools: true } : { supportsStrictMode: true },
+    compat: api === "anthropic-messages" ? { supportsStrictTools: true, supportsMidConvoSystemMessages: inline, supportsMidConvoToolChanges: inline } : { supportsStrictMode: true },
   };
   let before: any;
   let after: any;
   let networkCalls = 0;
   const stream = api === "anthropic-messages" ? streamAnthropic : streamOpenAI;
-  const result = await stream(model as never, {
-    systemPrompt: "test", messages: [{ role: "user", content: "hi", timestamp: 1 }], tools,
-  }, {
+  const result = await stream(model as never, normalizeContext({
+    systemPrompt: "test", messages: [{ role: "user", content: "hi", timestamp: 1 }, ...(inline ? [{ role: "system" as const, content: "", toolsAdded: tools.slice(1), timestamp: 2 }] : [])], tools: inline ? tools.slice(0, 1) : tools,
+  }), {
     apiKey: "offline-test-key", env: {},
     fetch: async () => { networkCalls += 1; throw new Error("network forbidden"); },
     onPayload: async (payload: unknown) => {
@@ -53,7 +54,7 @@ describe("provider request compatibility without network or credentials", () => 
   test("Anthropic sends all nine dgoal tools without strict sampling's global union limit", async () => {
     const { before, after } = await capturePayload("anthropic-messages");
     expect(before.tools).toHaveLength(9);
-    expect(before.tools.every((tool: any) => tool.strict === true)).toBe(true);
+    expect(before.tools.filter((tool: any) => tool.strict === true).map((tool: any) => tool.name)).toEqual(["work_read", "phase_check"]);
     expect(unionCount(before.tools)).toBeGreaterThan(16);
     expect(after.tools.every((tool: any) => tool.strict !== true)).toBe(true);
     for (let index = 0; index < before.tools.length; index += 1) {
@@ -62,15 +63,24 @@ describe("provider request compatibility without network or credentials", () => 
     }
   });
 
+  test("Anthropic inline tool additions preserve their schemas and opt out of strict sampling", async () => {
+    const { before, after } = await capturePayload("anthropic-messages", "pi-virtual", true);
+    const definitions = (payload: any) => payload.messages.flatMap((m: any) => Array.isArray(m.content)
+      ? m.content.filter((b: any) => b.type === "tool_addition").map((b: any) => b.tool.definition) : []);
+    const original = definitions(before);
+    expect(original.filter((d: any) => d.strict).map((d: any) => d.name)).toEqual(["work_read", "phase_check"]);
+    expect(definitions(after)).toEqual(original.map(({ strict, ...definition }: any) => definition));
+  });
+
   test("OpenAI Responses keeps strict tool parameters unchanged", async () => {
     const { before, after } = await capturePayload("openai-responses");
-    expect(before.tools.every((tool: any) => tool.strict === true)).toBe(true);
+    expect(before.tools.filter((tool: any) => tool.strict === true).map((tool: any) => tool.name)).toEqual(["work_read", "phase_check"]);
     expect(after).toEqual(before);
   });
 
   test("a virtual selection routed to Anthropic adapts the actual provider payload", async () => {
     const { before, after } = await capturePayload("anthropic-messages", "pi-virtual");
-    expect(before.tools.every((tool: any) => tool.strict === true)).toBe(true);
+    expect(before.tools.filter((tool: any) => tool.strict === true).map((tool: any) => tool.name)).toEqual(["work_read", "phase_check"]);
     expect(after.tools.every((tool: any) => tool.strict !== true)).toBe(true);
     expect(after.tools.map((tool: any) => tool.input_schema)).toEqual(before.tools.map((tool: any) => tool.input_schema));
   });
